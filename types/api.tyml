@@ -1,0 +1,42 @@
+type User {
+    id: string
+    display_name: string
+    profile: string
+}
+
+type Token { jwt: string }
+
+type Claim {
+    iss: string
+    sub: string
+    sid: string
+    iat: int
+    exp: int
+}
+
+type ChannelID {
+    server_id: int
+    channel_id: int
+}
+
+type Message {
+    channel_id: ChannelID
+    content: Content
+}
+
+type Content { component: TextComponent }
+
+type TextComponent { text: [string | Emoji] }
+
+type Emoji {
+    server_id: string?
+    emoji: string
+}
+
+interface ChatAPI {
+    function login(id: string, password: string) -> Token
+
+    authed function logout(@claim: Claim) -> Token
+
+    authed function chat(@claim: Claim, channel_id: ChannelID, message: Message)
+}
