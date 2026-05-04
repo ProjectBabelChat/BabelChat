@@ -24,6 +24,11 @@ type Message {
     content: Content
 }
 
+type MessageID {
+    channel_id: ChannelID
+    id: int
+}
+
 type Content { component: TextComponent }
 
 type TextComponent { text: [string | Emoji] }
@@ -34,9 +39,11 @@ type Emoji {
 }
 
 interface ChatAPI {
-    function login(id: string, password: string) -> Token
+    cookie function login(id: string, password: string) -> Token
 
-    authed function logout(@claim: Claim) -> Token
+    cookie function logout()
 
-    authed function chat(@claim: Claim, channel_id: ChannelID, message: Message)
+    cookie function refresh_token() -> Token
+
+    authed function chat(@claim: Claim, channel_id: ChannelID, message: Message) -> MessageID
 }
