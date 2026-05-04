@@ -9,13 +9,21 @@ type Token { jwt: string }
 type Claim {
     iss: string
     sub: string
-    sid: string
     iat: int
     exp: int
 }
 
+type ServerID {
+    id: string
+}
+
+type CategoryID {
+    server_id: ServerID
+    category_id: int
+}
+
 type ChannelID {
-    server_id: int
+    server_id: ServerID
     channel_id: int
 }
 
@@ -38,12 +46,50 @@ type Emoji {
     emoji: string
 }
 
-interface ChatAPI {
-    cookie function login(id: string, password: string) -> Token
+type ServerProfile {
+    name: string
+}
 
-    cookie function logout()
+type CategoryProfile {
+    name: string
+}
 
-    cookie function refresh_token() -> Token
+type ChannelProfile {
+    name: string
+    path: string
+}
 
-    authed function chat(@claim: Claim, channel_id: ChannelID, message: Message) -> MessageID
+
+// -----------------------------------------
+// Errors
+// -----------------------------------------
+enum BadStatusError {
+    "InternalServerError"
+}
+
+enum LoginError {
+    "UserOrPasswordNotFound"
+}
+
+enum RefreshTokenError {
+    "OutOfExpiration"
+}
+
+enum CreateEntityError {
+    "PermissionDenied"
+}
+
+/// The API
+interface API {
+    cookie function login(id: string, password: string) -> Token throws LoginError | BadStatusError
+
+    cookie function logout() throws BadStatusError
+
+    cookie function refresh_token() -> Token throws RefreshTokenError | BadStatusError
+
+    authed function create_server(@claim: Claim, profile: ServerProfile) -> ServerID throws BadStatusError
+
+    authed function create_category(@claim: Claim, profile: CategoryProfile) -> CategoryID throws CreateEntityError | BadStatusError
+
+    authed function chat(@claim: Claim, channel_id: ChannelID, message: Message) -> MessageID throws CreateEntityError | BadStatusError
 }
