@@ -1,0 +1,22 @@
+[package]
+name = "gpui-md3e"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "Material Design 3 Expressive components for GPUI"
+
+[lib]
+name = "gpui_md3e"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+material-colors = "0.5"
+polymorpher = "0.1.4"
+smallvec.workspace = true
+unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

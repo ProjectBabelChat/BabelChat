@@ -1,0 +1,21 @@
+[package]
+name = "md3e-gallery"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "Interactive gallery for gpui-md3e components"
+
+[[bin]]
+name = "md3e-gallery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui-md3e = { path = ".." }
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+smol.workspace = true
+
+[lints]
+workspace = true
