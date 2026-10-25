@@ -28,6 +28,7 @@ patches below.
 | Area | Change |
 |---|---|
 | Text (Linux) | Variable fonts render at the requested weight. Upstream loads every face at `Weight::NORMAL` and rasterizes the default instance, so Noto Sans CJK VF (NixOS, Arch) drew all Japanese text in *Thin*. Instances are now created per `(face, weight)` and rasterized with the `wght` axis set (`gpui_wgpu/src/cosmic_text_system.rs`). |
+| Frame timing | `Window::frame_number()` counts drawn frames and `Window::frame_timestamp()` exposes the compositor's frame-callback time (Wayland; `None` elsewhere), so animations can advance on the display's vblank grid instead of the jittery render time (`gpui/src/window.rs`, `gpui/src/platform.rs`, `gpui_linux/src/linux/wayland`). |
 | Paths | `LineCap` and `LineJoin` are re-exported next to `StrokeOptions` so round-capped strokes can be built (`gpui/src/path_builder.rs`). |
 | Lints | `phi()` allows `clippy::approx_constant` so newer toolchains lint cleanly (`gpui/src/geometry.rs`). |
 | Examples | The `reqwest_client` dev-dependency and the `image` and `image_gallery` examples that need it are removed (`gpui/Cargo.toml`). |

@@ -547,6 +547,9 @@ pub struct WaylandWindowStatePtr {
     state: Rc<RefCell<WaylandWindowState>>,
     callbacks: Rc<RefCell<Callbacks>>,
     frame_loop: Rc<Cell<FrameLoop>>,
+    /// The time carried by the last `wl_surface.frame` callback, in the
+    /// compositor's milliseconds.
+    frame_timestamp: Rc<Cell<Option<u32>>>,
     frame_ping: Ping,
     scheduled_frame_at: Rc<Cell<Option<Instant>>>,
 }
@@ -876,6 +879,7 @@ impl WaylandWindow {
             )?)),
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
             frame_loop: Rc::new(Cell::new(FrameLoop::Unconfigured)),
+            frame_timestamp: Rc::new(Cell::new(None)),
             frame_ping,
             scheduled_frame_at: Rc::new(Cell::new(None)),
         });
@@ -1004,6 +1008,10 @@ impl WaylandWindowStatePtr {
         }
 
         self.frame_loop.set(FrameLoop::Parked);
+    }
+
+    pub fn set_frame_timestamp(&self, millis: u32) {
+        self.frame_timestamp.set(Some(millis));
     }
 
     pub fn frame_callback_fired(&self, signal_at: Option<Instant>) {
@@ -1711,6 +1719,13 @@ impl rwh::HasDisplayHandle for WaylandWindow {
 }
 
 impl PlatformWindow for WaylandWindow {
+    fn frame_timestamp(&self) -> Option<std::time::Duration> {
+        self.0
+            .frame_timestamp
+            .get()
+            .map(|millis| std::time::Duration::from_millis(u64::from(millis)))
+    }
+
     fn bounds(&self) -> Bounds<Pixels> {
         self.borrow().bounds
     }

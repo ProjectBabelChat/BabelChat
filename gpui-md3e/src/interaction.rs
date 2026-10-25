@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 
 use crate::{
     StyledExt as _, child_id,
-    motion::{MotionToken, animate, fast_out_slow_in},
+    motion::{MotionToken, animate, fast_out_slow_in, frame_now},
     paint::{distance, paint_clipped_circle},
     theme::ActiveTheme as _,
 };
@@ -217,7 +217,7 @@ pub fn state_layer(
         .max(focus * layers.focus)
         .clamp(0.0, 1.0);
 
-    let now = Instant::now();
+    let now = frame_now(window, cx);
     let (ripples, bounds_cell) = state.update(cx, |state, _| {
         state.ripples.retain(|ripple| !ripple.finished(now));
         (state.ripples.clone(), state.bounds.clone())

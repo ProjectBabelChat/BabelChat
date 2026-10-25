@@ -1250,6 +1250,13 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn scale_factor(&self) -> f32;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;
+    /// The compositor's timestamp for the frame being drawn, if the platform
+    /// reports one. The epoch is unspecified: only the difference between
+    /// two frames is meaningful, e.g. to count the refresh periods between
+    /// them.
+    fn frame_timestamp(&self) -> Option<Duration> {
+        None
+    }
     fn mouse_position(&self) -> Point<Pixels>;
     fn modifiers(&self) -> Modifiers;
     fn capslock(&self) -> Capslock;

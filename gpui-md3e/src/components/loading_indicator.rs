@@ -92,7 +92,7 @@ impl RenderOnce for LoadingIndicator {
             ),
             None => {
                 window.request_animation_frame();
-                let elapsed = clock(cx);
+                let elapsed = clock(window, cx);
                 let interval = MORPH_INTERVAL.as_secs_f32();
                 let step = (elapsed.as_secs_f32() / interval).floor();
                 let local = elapsed.as_secs_f32() - step * interval;

@@ -1286,6 +1286,8 @@ pub struct Window {
     pub(crate) input_rate_tracker: Rc<RefCell<InputRateTracker>>,
     #[cfg(feature = "profiler")]
     pub(crate) window_profiler: profiler::WindowProfiler,
+    /// Incremented at the start of every draw. See [`Window::frame_number`].
+    frame_number: u64,
     last_input_modality: InputModality,
     touch_gestures: TouchGestureRecognizer,
     touch_prediction_enabled: bool,
@@ -2187,6 +2189,7 @@ impl Window {
             input_rate_tracker,
             #[cfg(feature = "profiler")]
             window_profiler: profiler::WindowProfiler::new(handle.window_id())?,
+            frame_number: 0,
             last_input_modality: InputModality::Mouse,
             touch_gestures: TouchGestureRecognizer::new(
                 cx.platform
@@ -3419,6 +3422,19 @@ impl Window {
         self.modifiers
     }
 
+    /// A counter that advances once per drawn frame. Elements that sample a
+    /// clock can use it to tell whether they are still in the same frame.
+    pub fn frame_number(&self) -> u64 {
+        self.frame_number
+    }
+
+    /// The compositor's timestamp for the frame being drawn, where the platform
+    /// reports one (Wayland frame callbacks). The epoch is unspecified; compare
+    /// two frames' timestamps to count the refresh periods between them.
+    pub fn frame_timestamp(&self) -> Option<Duration> {
+        self.platform_window.frame_timestamp()
+    }
+
     /// Returns true if the last input event was keyboard-based (key press, tab navigation, etc.)
     /// This is used for focus-visible styling to show focus indicators only for keyboard navigation.
     pub fn last_input_was_keyboard(&self) -> bool {
@@ -3439,6 +3455,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
+        self.frame_number = self.frame_number.wrapping_add(1);
         // Drain every draw in profiler builds so a previous frame's
         // first-invalidation timestamp can't be attributed to this one.
         #[cfg(feature = "profiler")]

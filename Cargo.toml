@@ -344,18 +344,34 @@ debug = "limited"
 codegen-units = 16
 debug = "limited"
 
+# Animations have to keep up with the display in debug builds too, so every
+# third-party crate (wgpu, lyon, text shaping, layout, ...) is optimized.
+[profile.dev.package."*"]
+opt-level = 3
+
+# The GPUI fork is rarely stepped through; optimize it as well. Only the app
+# crates (gpui-md3e, the gallery, BabelChat) build without optimization.
 [profile.dev.package]
+gpui = { opt-level = 3 }
+gpui_wgpu = { opt-level = 3 }
+gpui_linux = { opt-level = 3 }
+gpui_macos = { opt-level = 3 }
+gpui_windows = { opt-level = 3 }
+gpui_apple = { opt-level = 3 }
+gpui_platform = { opt-level = 3 }
+gpui_util = { opt-level = 3 }
+gpui_shared_string = { opt-level = 3 }
 gpui_macros = { opt-level = 3 }
 derive_refineable = { opt-level = 3 }
+refineable = { opt-level = 3 }
 util_macros = { opt-level = 3 }
+util = { opt-level = 3 }
+sum_tree = { opt-level = 3 }
+collections = { opt-level = 3 }
+scheduler = { opt-level = 3 }
+proc-macro2 = { opt-level = 3 }
 quote = { opt-level = 3 }
 syn = { opt-level = 3 }
-proc-macro2 = { opt-level = 3 }
-taffy = { opt-level = 3 }
-resvg = { opt-level = 3 }
-lyon_tessellation = { opt-level = 3 }
-swash = { opt-level = 3 }
-cosmic-text = { opt-level = 3 }
 
 [profile.release]
 debug = "limited"

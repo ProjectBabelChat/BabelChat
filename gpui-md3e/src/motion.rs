@@ -4,9 +4,12 @@
 //! springs move, resize and reshape things and may overshoot; effects springs
 //! drive color and opacity and never bounce.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
-use gpui::{App, ElementId, Hsla, SpringConfig, SpringState, Window};
+use gpui::{App, ElementId, Global, Hsla, SpringConfig, SpringState, Window, WindowId};
 
 use crate::theme::{ActiveTheme as _, lerp_color};
 
@@ -122,8 +125,13 @@ impl SpringValue {
 
     /// Moves the rest position, keeping the current velocity.
     pub fn set_target(&mut self, target: f32, spring: Spring) {
+        self.set_target_at(target, spring, Instant::now());
+    }
+
+    /// Like [`SpringValue::set_target`], starting a settled spring at `now`.
+    pub fn set_target_at(&mut self, target: f32, spring: Spring, now: Instant) {
         if self.is_settled() {
-            self.last_tick = Instant::now();
+            self.last_tick = now;
         }
         self.target = target;
         self.config = spring.config();
@@ -216,10 +224,10 @@ pub fn animate_with(
         value: SpringValue::new(initial, spring),
     });
     let reduce_motion = cx.reduce_motion();
-    let now = Instant::now();
+    let now = frame_now(window, cx);
     let (value, settled) = state.update(cx, |state, _| {
         if state.value.target() != target {
-            state.value.set_target(target, spring);
+            state.value.set_target_at(target, spring, now);
         }
         if reduce_motion {
             state.value.snap(target);
@@ -252,10 +260,91 @@ pub fn animate_color(
     lerp_color(from, to, phase.clamp(0.0, 1.0))
 }
 
-/// Time elapsed since a shared epoch, for looping animations that should stay
-/// in phase across elements.
-pub fn clock(cx: &App) -> Duration {
-    cx.md().epoch.elapsed()
+/// Animation time since a shared epoch, for looping animations that should
+/// stay in phase across elements. Advances with [`frame_now`].
+pub fn clock(window: &Window, cx: &mut App) -> Duration {
+    let epoch = cx.md().epoch;
+    frame_now(window, cx).saturating_duration_since(epoch)
+}
+
+/// Per-window animation clocks; see [`frame_now`].
+#[derive(Default)]
+struct FrameClocks(HashMap<WindowId, FrameClock>);
+
+impl Global for FrameClocks {}
+
+struct FrameClock {
+    frame: u64,
+    /// The animation time of `frame`.
+    now: Instant,
+    /// When `frame` was sampled.
+    sampled_at: Instant,
+    /// The compositor's timestamp for `frame`, if any.
+    timestamp: Option<Duration>,
+}
+
+/// Fallback when the platform does not report the display's refresh rate.
+const DEFAULT_REFRESH: Duration = Duration::from_micros(16_667);
+
+/// The time to evaluate animations at in the frame being drawn.
+///
+/// Frames are rendered at irregular moments (whenever the compositor's frame
+/// callback is handled) but shown on the display's fixed vblank grid. Sampling
+/// the wall clock would make motion speed up and slow down with that jitter,
+/// so this clock advances by whole refresh periods instead: once per frame, by
+/// the number of periods that passed since the previous frame. Those are
+/// counted from the compositor's frame timestamps when the platform reports
+/// them (Wayland), and from the render times otherwise. The clock resyncs with
+/// the wall clock whenever the two drift more than a period apart.
+pub fn frame_now(window: &Window, cx: &mut App) -> Instant {
+    let frame = window.frame_number();
+    let period = window
+        .refresh_interval(cx)
+        .filter(|period| !period.is_zero())
+        .unwrap_or(DEFAULT_REFRESH);
+    let window_id = window.window_handle().window_id();
+    let timestamp = window.frame_timestamp();
+    let wall = Instant::now();
+    let clocks = cx.default_global::<FrameClocks>();
+    let clock = clocks.0.entry(window_id).or_insert(FrameClock {
+        frame,
+        now: wall,
+        sampled_at: wall,
+        timestamp,
+    });
+    if clock.frame != frame {
+        *clock = FrameClock {
+            frame,
+            now: clock.next(wall, timestamp, period),
+            sampled_at: wall,
+            timestamp,
+        };
+    }
+    clock.now
+}
+
+impl FrameClock {
+    /// The animation time of a new frame sampled at `wall`.
+    fn next(&self, wall: Instant, timestamp: Option<Duration>, period: Duration) -> Instant {
+        let periods_in = |elapsed: Duration| elapsed.as_secs_f64() / period.as_secs_f64();
+        let by_wall = periods_in(wall.saturating_duration_since(self.sampled_at));
+        // Trust the compositor when its timestamp advanced and roughly agrees
+        // with the wall clock (it may be stale for locally scheduled frames).
+        let by_timestamp = match (self.timestamp, timestamp) {
+            (Some(previous), Some(current)) if current > previous => {
+                Some(periods_in(current - previous))
+                    .filter(|periods| (periods - by_wall).abs() < 1.5)
+            }
+            _ => None,
+        };
+        let periods = by_timestamp.unwrap_or(by_wall).round().max(1.0);
+        let now = self.now + period.mul_f64(periods);
+        if now + period < wall || now > wall + period {
+            wall
+        } else {
+            now
+        }
+    }
 }
 
 /// Material's "emphasized decelerate" curve, approximated with a cubic
@@ -325,6 +414,53 @@ mod tests {
         }
         assert!(value.is_settled());
         assert_eq!(value.value(), 1.0);
+    }
+
+    fn clock_at(now: Instant, timestamp: Option<Duration>) -> FrameClock {
+        FrameClock {
+            frame: 0,
+            now,
+            sampled_at: now,
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn frame_clock_steps_whole_periods_despite_render_jitter() {
+        let period = Duration::from_micros(15_151);
+        let start = Instant::now();
+        let clock = clock_at(start, None);
+        for jittered in [11_000, 13_500, 15_151, 17_800, 19_900] {
+            let wall = start + Duration::from_micros(jittered);
+            assert_eq!(clock.next(wall, None, period), start + period);
+        }
+        // A dropped frame shows up as two periods.
+        let wall = start + Duration::from_micros(29_000);
+        assert_eq!(clock.next(wall, None, period), start + period * 2);
+    }
+
+    #[test]
+    fn frame_clock_prefers_agreeing_compositor_timestamps() {
+        let period = Duration::from_micros(15_151);
+        let start = Instant::now();
+        let clock = clock_at(start, Some(Duration::from_millis(1_000)));
+        // Ambiguous render gap, but the compositor says two vblanks passed.
+        let wall = start + Duration::from_micros(22_000);
+        let timestamp = Some(Duration::from_millis(1_030));
+        assert_eq!(clock.next(wall, timestamp, period), start + period * 2);
+        // A stale timestamp (locally scheduled frame) falls back to the wall clock.
+        let stale = Some(Duration::from_millis(1_000));
+        assert_eq!(clock.next(wall, stale, period), start + period);
+    }
+
+    #[test]
+    fn frame_clock_resyncs_after_drift() {
+        let period = Duration::from_micros(15_151);
+        let start = Instant::now();
+        let mut clock = clock_at(start, None);
+        clock.now = start - period * 3;
+        let wall = start + period;
+        assert_eq!(clock.next(wall, None, period), wall);
     }
 
     #[test]

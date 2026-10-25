@@ -107,7 +107,7 @@ impl RenderOnce for LinearProgress {
         } else {
             4.0
         };
-        let elapsed = clock(cx).as_secs_f32();
+        let elapsed = clock(window, cx).as_secs_f32();
         let active = colors.primary;
         let track = colors.secondary_container;
 
@@ -297,7 +297,7 @@ impl RenderOnce for CircularProgress {
         } else {
             40.0
         };
-        let elapsed = clock(cx).as_secs_f32();
+        let elapsed = clock(window, cx).as_secs_f32();
         let active = colors.primary;
         let track = colors.secondary_container;
 

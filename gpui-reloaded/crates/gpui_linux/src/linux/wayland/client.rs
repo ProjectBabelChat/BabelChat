@@ -1691,6 +1691,7 @@ impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
         drop(state);
 
         if let wl_callback::Event::Done { callback_data } = event {
+            window.set_frame_timestamp(callback_data);
             window.frame_callback_fired(PlatformFrameSignal::capture(|| {
                 frame_callback_signal_at(callback_data)
             }));

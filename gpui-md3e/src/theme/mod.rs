@@ -12,7 +12,7 @@ pub use elevation::*;
 pub use shape::*;
 pub use typography::*;
 
-use crate::motion::{MotionScheme, emphasized_decelerate};
+use crate::motion::{MotionScheme, emphasized_decelerate, frame_now};
 
 /// How long a theme change cross-fades every color role.
 const THEME_TRANSITION: Duration = Duration::from_millis(550);
@@ -76,11 +76,18 @@ impl Theme {
     /// Advances an in-flight theme transition. Call once per frame from the
     /// root view's render.
     pub fn tick(window: &mut Window, cx: &mut App) {
+        if cx.global::<Theme>().transition.is_none() {
+            return;
+        }
+        let now = frame_now(window, cx);
         let theme = cx.global_mut::<Theme>();
         let Some(transition) = &theme.transition else {
             return;
         };
-        let t = transition.start.elapsed().as_secs_f32() / THEME_TRANSITION.as_secs_f32();
+        let t = now
+            .saturating_duration_since(transition.start)
+            .as_secs_f32()
+            / THEME_TRANSITION.as_secs_f32();
         if t >= 1.0 {
             theme.colors = transition.to;
             theme.transition = None;

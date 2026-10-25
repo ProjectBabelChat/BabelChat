@@ -8,7 +8,7 @@ use gpui::{
 use super::pressable::{ClickHandler, GroupOverrides, Pressable, SurfaceColors};
 use crate::{
     ActiveTheme as _, Icon, StyledExt as _, child_id, icon,
-    motion::{MotionToken, animate},
+    motion::{MotionToken, animate, frame_now},
     theme::{TypeRole, lerp_color},
 };
 
@@ -93,18 +93,21 @@ impl RenderOnce for FabMenu {
         let label_style = theme.typography.style(TypeRole::TitleMedium);
         let id = self.id.clone();
 
+        let now = frame_now(window, cx);
         let state = window.use_keyed_state(child_id(&id, "menu"), cx, |_, _| FabMenuState {
-            changed_at: Instant::now(),
+            changed_at: now,
             open: self.open,
         });
         if state.read(cx).open != self.open {
             let open = self.open;
             state.update(cx, |state, _| {
                 state.open = open;
-                state.changed_at = Instant::now();
+                state.changed_at = now;
             });
         }
-        let since = state.read(cx).changed_at.elapsed().as_secs_f32();
+        let since = now
+            .saturating_duration_since(state.read(cx).changed_at)
+            .as_secs_f32();
         let count = self.items.len();
 
         let open_t = animate(

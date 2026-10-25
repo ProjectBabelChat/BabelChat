@@ -38,7 +38,9 @@ Apps with their own assets can serve `Md3eAssets::get(path)` from their
   corner scale; elevation shadows for fractional levels.
 - `motion`: the six expressive and standard spring tokens, a retargetable
   `SpringValue`, and `animate` for per-element springs in `RenderOnce`
-  components.
+  components. Animations run on `frame_now`, a clock that advances in whole
+  display refresh periods, so motion stays even when frames are rendered at
+  irregular moments.
 - `interaction`: hover, press and keyboard state with state layers, ripples
   clipped to the container and the focus ring.
 - `shapes`: the 35 shapes of the M3E library and cached shape morphing
