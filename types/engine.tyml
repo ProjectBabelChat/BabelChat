@@ -1,0 +1,126 @@
+// Translation Engine API
+//
+// Called by Translation Cells. The engine is stateless: nothing sent here is
+// stored. Translation Cells assemble the context; engines decide how to turn
+// it into a prompt and where to put cache breakpoints, because that differs
+// per backend (Claude, OpenAI-compatible servers, vLLM, llama.cpp).
+//
+// Implementations:
+// - the OSS reference engine (server/engine): Mock and OpenAI-compatible
+//   backends, for development and self-hosting
+// - BabelChat Cloud (closed): same API, tuned prompts and models
+//
+// See docs/architecture/translation-engine.md.
+
+/// One layer of context, ordered from the broadest (the space) to the
+/// narrowest (the rolling summary of the conversation).
+///
+/// A given `id` and `version` always carry the same `content`, so an engine
+/// may treat the pair as a cache key for the rendered prefix.
+type ContextLayer {
+    id: string
+    version: int
+    kind: LayerKind
+    /// Language the content is written in, when known.
+    lang: string?
+    content: string
+}
+
+enum LayerKind {
+    /// Server name, description digest, glossary and style of a space.
+    "space"
+    /// A category or channel: its name and topic.
+    "conversation"
+    /// Where a thread forked from: parent conversation and starter message,
+    /// frozen when the thread was created.
+    "fork"
+    /// Rolling summary of the messages that left the window.
+    "summary"
+}
+
+type SourceMessage {
+    author: string
+    text: string
+}
+
+type TargetLanguage {
+    /// Normalized BCP 47 tag, e.g. "pt-BR".
+    tag: string
+    /// English name for prompts, e.g. "Portuguese (Brazil)".
+    name: string
+}
+
+type TranslateRequest {
+    layers: [ContextLayer]
+    /// Recent messages of the conversation, oldest first. The window only
+    /// grows between resets, so a prefix cache keeps hitting.
+    window: [SourceMessage]
+    message: SourceMessage
+    /// Normalized tag of the source language.
+    source_lang: string
+    /// Every target is translated directly from the source (N to N): no
+    /// pivot language, so errors do not compound.
+    targets: [TargetLanguage]
+}
+
+type Translation {
+    lang: string
+    text: string
+}
+
+/// Token accounting. The mock backend estimates these so that cache hit
+/// rates can be measured before real models are wired in.
+type Usage {
+    input_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+}
+
+type TranslateResponse {
+    translations: [Translation]
+    usage: Usage
+}
+
+enum SummaryPurpose {
+    /// Condense descriptions and reference text into a context layer.
+    "digest"
+    /// Fold messages that left the window into the rolling summary.
+    "conversation"
+}
+
+type SummarizeRequest {
+    purpose: SummaryPurpose
+    /// Summary to extend, if any.
+    previous: string?
+    messages: [SourceMessage]
+    max_chars: int
+    /// Language to write the summary in. Null keeps the source language.
+    lang: string?
+}
+
+type SummarizeResponse {
+    text: string
+    usage: Usage
+}
+
+type EngineInfo {
+    backend: string
+    model: string
+}
+
+enum EngineError {
+    "unavailable"
+    "rate_limited"
+    "invalid_output"
+    "unsupported_language"
+}
+
+interface Engine {
+    function translate(@body: TranslateRequest) -> TranslateResponse throws EngineError
+
+    function summarize(@body: SummarizeRequest) -> SummarizeResponse throws EngineError
+
+    #[kind = "get"]
+    function info() -> EngineInfo
+}

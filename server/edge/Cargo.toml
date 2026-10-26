@@ -1,0 +1,25 @@
+[package]
+name = "babel-edge"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat Edge: the public entry point that relays to cells it never reveals"
+
+[dependencies]
+async-trait.workspace = true
+babel-api-account.workspace = true
+babel-api-directory.workspace = true
+babel-api-edge.workspace = true
+babel-api-message-cell.workspace = true
+babel-api-translation-cell.workspace = true
+babel-common.workspace = true
+babel-lang.workspace = true
+jsonwebtoken.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

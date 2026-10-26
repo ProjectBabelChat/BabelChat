@@ -1,0 +1,194 @@
+// Message Cell API (internal)
+//
+// A Message Cell owns a set of guilds: their channels, members and original
+// messages. It is never reachable from the internet; Edges call it after
+// authenticating the user and resolving which cell holds the guild.
+//
+// Every change is appended to the guild's event log. The log drives Edge
+// fan-out (poll_events) and the outbox that forwards messages and context to
+// the guild's Translation Cell.
+//
+// Permission checks happen here, because roles are guild data. Edges ask
+// `check_permission` before calling other services on a user's behalf.
+//
+// See docs/architecture/message-cell.md.
+
+type Guild {
+    id: string
+    name: string
+    description: string?
+    owner_id: string
+    created_at: int
+}
+
+enum ChannelKind {
+    "category"
+    "text"
+    "thread"
+}
+
+type Channel {
+    id: string
+    guild_id: string
+    kind: ChannelKind
+    name: string
+    topic: string?
+    /// Category of a channel, or channel of a thread.
+    parent_id: string?
+    /// For threads: the message the thread was started from.
+    starter_message_id: string?
+    created_at: int
+}
+
+enum Role {
+    "owner"
+    "member"
+}
+
+type Member {
+    user_id: string
+    name: string
+    role: Role
+    joined_at: int
+}
+
+type Message {
+    /// Time-ordered and unique within the guild. Carries no cell number.
+    id: string
+    guild_id: string
+    channel_id: string
+    author_id: string
+    author_name: string
+    /// Forwarded to the Translation Cell to complete language detection.
+    /// Internal: Edges do not expose it.
+    author_locale: string?
+    text: string
+    /// Starts at 1 and increases on every edit.
+    rev: int
+    created_at: int
+    edited_at: int?
+}
+
+type GuildSnapshot {
+    guild: Guild
+    channels: [Channel]
+    members: [Member]
+    /// Sequence number of the last event included in this snapshot.
+    last_seq: int
+}
+
+type NewGuild {
+    /// Assigned by the Directory.
+    guild_id: string
+    /// Translation Cell assigned by the Directory; the outbox forwards here.
+    translation_cell: string
+    name: string
+    description: string?
+    owner_id: string
+    owner_name: string
+}
+
+type NewChannel {
+    guild_id: string
+    user_id: string
+    kind: ChannelKind
+    name: string
+    topic: string?
+    parent_id: string?
+    starter_message_id: string?
+}
+
+type NewMessage {
+    guild_id: string
+    channel_id: string
+    user_id: string
+    /// The author's locale, forwarded to the Translation Cell to complete
+    /// language detection.
+    author_locale: string?
+    text: string
+}
+
+type MessageEdit {
+    guild_id: string
+    channel_id: string
+    message_id: string
+    user_id: string
+    text: string
+}
+
+type DeletedMessage {
+    channel_id: string
+    message_id: string
+}
+
+enum GuildEventKind {
+    "guild_created"
+    "member_joined"
+    "channel_created"
+    "message_created"
+    "message_edited"
+    "message_deleted"
+}
+
+/// One entry of a guild's event log. Exactly one payload is set, chosen by
+/// `kind`.
+type GuildEvent {
+    seq: int
+    kind: GuildEventKind
+    guild: Guild?
+    member: Member?
+    channel: Channel?
+    message: Message?
+    deleted: DeletedMessage?
+}
+
+type GuildEventBatch {
+    events: [GuildEvent]
+    /// Pass as `after` to the next poll.
+    next: int
+    /// Sequence number of the newest event of the guild. Polling with an
+    /// `after` beyond it returns at once, so followers can start at the head.
+    head: int
+}
+
+enum Permission {
+    "view"
+    "send_messages"
+    "manage_guild"
+}
+
+enum MessageCellError {
+    "not_found"
+    "forbidden"
+    "invalid_request"
+    "unavailable"
+}
+
+interface MessageCell {
+    function create_guild(@body: NewGuild) -> Guild throws MessageCellError
+
+    /// Fails with `forbidden` unless the user is a member.
+    #[kind = "get"]
+    function get_guild(guild_id: string, user_id: string) -> GuildSnapshot throws MessageCellError
+
+    function join_guild(guild_id: string, user_id: string, user_name: string) -> GuildSnapshot throws MessageCellError
+
+    #[kind = "get"]
+    function check_permission(guild_id: string, user_id: string, permission: Permission) throws MessageCellError
+
+    function create_channel(@body: NewChannel) -> Channel throws MessageCellError
+
+    function send_message(@body: NewMessage) -> Message throws MessageCellError
+
+    function edit_message(@body: MessageEdit) -> Message throws MessageCellError
+
+    function delete_message(guild_id: string, channel_id: string, message_id: string, user_id: string) throws MessageCellError
+
+    /// Newest first, strictly before `before` when given.
+    #[kind = "get"]
+    function get_messages(guild_id: string, channel_id: string, user_id: string, before: string?, limit: int) -> [Message] throws MessageCellError
+
+    /// Long poll on the guild's event log, for Edges.
+    #[kind = "get"]
+    function poll_events(guild_id: string, after: int, wait_ms: int) -> GuildEventBatch throws MessageCellError
+}

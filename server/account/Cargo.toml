@@ -1,0 +1,25 @@
+[package]
+name = "babel-account"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "Development stand-in for the closed BabelChat Account service"
+
+[dependencies]
+argon2.workspace = true
+async-trait.workspace = true
+babel-api-account.workspace = true
+babel-common.workspace = true
+babel-lang.workspace = true
+babel-store.workspace = true
+jsonwebtoken.workspace = true
+rand = { workspace = true, features = ["thread_rng"] }
+serde = { workspace = true, features = ["derive"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

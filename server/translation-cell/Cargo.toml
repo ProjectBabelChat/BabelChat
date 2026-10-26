@@ -1,0 +1,26 @@
+[package]
+name = "babel-translation-cell"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat Translation Cell: translations, context and language policy of spaces"
+
+[dependencies]
+async-trait.workspace = true
+babel-api-engine.workspace = true
+babel-api-translation-cell.workspace = true
+babel-common.workspace = true
+babel-lang.workspace = true
+babel-store.workspace = true
+parking_lot.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tokio.workspace = true
+tracing.workspace = true
+whatlang.workspace = true
+
+[dev-dependencies]
+babel-engine.workspace = true
+
+[lints]
+workspace = true

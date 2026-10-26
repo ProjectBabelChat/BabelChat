@@ -1,0 +1,199 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum ThrowsOrOtherError<T> {
+    Throws(T),
+    Other(reqwest::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslateRequest {
+    pub layers: Vec<ContextLayer>,
+    /// Recent messages of the conversation, oldest first. The window only
+    /// grows between resets, so a prefix cache keeps hitting.
+    pub window: Vec<SourceMessage>,
+    pub message: SourceMessage,
+    /// Normalized tag of the source language.
+    pub source_lang: String,
+    /// Every target is translated directly from the source (N to N): no
+    /// pivot language, so errors do not compound.
+    pub targets: Vec<TargetLanguage>,
+}
+
+/// One layer of context, ordered from the broadest (the space) to the
+/// narrowest (the rolling summary of the conversation).
+///
+/// A given `id` and `version` always carry the same `content`, so an engine
+/// may treat the pair as a cache key for the rendered prefix.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ContextLayer {
+    pub id: String,
+    pub version: i64,
+    pub kind: LayerKind,
+    /// Language the content is written in, when known.
+    pub lang: Option<String>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum LayerKind {
+    /// Server name, description digest, glossary and style of a space.
+    #[serde(rename = "space")]
+    Space,
+    /// A category or channel: its name and topic.
+    #[serde(rename = "conversation")]
+    Conversation,
+    /// Where a thread forked from: parent conversation and starter message,
+    /// frozen when the thread was created.
+    #[serde(rename = "fork")]
+    Fork,
+    /// Rolling summary of the messages that left the window.
+    #[serde(rename = "summary")]
+    Summary,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct SourceMessage {
+    pub author: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TargetLanguage {
+    /// Normalized BCP 47 tag, e.g. "pt-BR".
+    pub tag: String,
+    /// English name for prompts, e.g. "Portuguese (Brazil)".
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslateResponse {
+    pub translations: Vec<Translation>,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Translation {
+    pub lang: String,
+    pub text: String,
+}
+
+/// Token accounting. The mock backend estimates these so that cache hit
+/// rates can be measured before real models are wired in.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Usage {
+    pub input_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum EngineError {
+    #[serde(rename = "unavailable")]
+    Unavailable,
+    #[serde(rename = "rate_limited")]
+    RateLimited,
+    #[serde(rename = "invalid_output")]
+    InvalidOutput,
+    #[serde(rename = "unsupported_language")]
+    UnsupportedLanguage,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct SummarizeRequest {
+    pub purpose: SummaryPurpose,
+    /// Summary to extend, if any.
+    pub previous: Option<String>,
+    pub messages: Vec<SourceMessage>,
+    pub max_chars: i64,
+    /// Language to write the summary in. Null keeps the source language.
+    pub lang: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum SummaryPurpose {
+    /// Condense descriptions and reference text into a context layer.
+    #[serde(rename = "digest")]
+    Digest,
+    /// Fold messages that left the window into the rolling summary.
+    #[serde(rename = "conversation")]
+    Conversation,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct SummarizeResponse {
+    pub text: String,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct EngineInfo {
+    pub backend: String,
+    pub model: String,
+}
+
+
+
+pub struct Engine {
+    pub url: String,
+    pub client: reqwest::Client,
+}
+
+impl Engine {
+    pub fn new(url: impl Into<String>) -> Self {
+        let client = reqwest::Client::new();
+        Self { url: url.into(), client }
+    }
+
+    pub async fn translate(&self, __body: TranslateRequest) -> Result<TranslateResponse, ThrowsOrOtherError<EngineError>> {
+        let mut request = self.client.post(format!("{}/engine/translate", &self.url));
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    pub async fn summarize(&self, __body: SummarizeRequest) -> Result<SummarizeResponse, ThrowsOrOtherError<EngineError>> {
+        let mut request = self.client.post(format!("{}/engine/summarize", &self.url));
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    pub async fn info(&self) -> Result<EngineInfo, reqwest::Error> {
+        let mut request = self.client.get(format!("{}/engine/info", &self.url));
+        request = request.header("Accept", "application/json");
+        let response = request.send().await?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await
+            }
+            Err(error) => {
+                Err(error)
+            }
+        }
+    }
+}

@@ -1,0 +1,62 @@
+// Directory API (internal)
+//
+// The global index:
+// - placement: which Message Cell and Translation Cell hold each guild
+// - membership: which guilds each user belongs to (written from Message Cell
+//   events; the Message Cell stays the source of truth)
+//
+// Edges keep a full copy of the placement table, updated through
+// watch_placements, and fall back to get_placement for guilds they have not
+// seen yet. Traffic keeps flowing while the Directory is down; only guild
+// creation and migration stop.
+//
+// See docs/architecture/directory.md.
+
+type Placement {
+    guild_id: string
+    message_cell: string
+    translation_cell: string
+    /// Increases when the guild moves; older writers are fenced off.
+    epoch: int
+    /// Version of the placement table that introduced this entry.
+    version: int
+}
+
+type PlacementBatch {
+    placements: [Placement]
+    /// Pass as `after` to the next watch.
+    version: int
+}
+
+type GuildRequest {
+    owner_id: string
+    owner_name: string
+    name: string
+    description: string?
+}
+
+enum DirectoryError {
+    "not_found"
+    "no_capacity"
+    "unavailable"
+}
+
+interface Directory {
+    /// Picks cells for a new guild, creates it there and commits the
+    /// placement. The returned placement is already visible to get_placement.
+    function create_guild(@body: GuildRequest) -> Placement throws DirectoryError
+
+    #[kind = "get"]
+    function get_placement(guild_id: string) -> Placement throws DirectoryError
+
+    /// Long poll: placements committed after version `after`.
+    #[kind = "get"]
+    function watch_placements(after: int, wait_ms: int) -> PlacementBatch
+
+    function add_membership(user_id: string, guild_id: string)
+
+    function remove_membership(user_id: string, guild_id: string)
+
+    #[kind = "get"]
+    function list_memberships(user_id: string) -> [string]
+}

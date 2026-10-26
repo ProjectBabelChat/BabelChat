@@ -1,0 +1,19 @@
+# Regenerates server/api/* from types/*.tyml.
+#
+# Kept out of the main workspace: it depends on a local checkout of TYML
+# (../tyml next to this repository) while generator changes are in flight.
+# The generated crates are committed, so building BabelChat never needs it.
+#
+#   cargo run --manifest-path tools/apigen/Cargo.toml
+
+[package]
+name = "babel-apigen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tyml_api_generator = { path = "../../../tyml/src/tyml_api_generator" }
+tyml_core = { path = "../../../tyml/src/tyml" }

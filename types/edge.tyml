@@ -1,0 +1,306 @@
+// Edge API (public)
+//
+// The only API reachable from the internet. Clients never learn which cell
+// holds a guild: these types deliberately carry no cell names, epochs or
+// placement versions, and "not found" and "forbidden" are the same error.
+//
+// Edges verify tokens locally, rate-limit, resolve placement and fan events
+// out to connected clients.
+//
+// See docs/architecture/edge.md.
+
+type Claim {
+    /// User ID.
+    sub: string
+    name: string
+    iat: int
+    exp: int
+}
+
+type Registration {
+    name: string
+    password: string
+    /// BCP 47, e.g. "ja-JP".
+    locale: string
+}
+
+type Credentials {
+    name: string
+    password: string
+}
+
+type Token {
+    jwt: string
+    user_id: string
+    expires_at: int
+}
+
+type UserSettings {
+    locale: string
+    /// Translate on device even languages a guild does not declare.
+    translate_outside_set: bool
+    show_original: bool
+}
+
+// ---- Guilds ----------------------------------------------------------------
+
+type Guild {
+    id: string
+    name: string
+    description: string?
+    owner_id: string
+    created_at: int
+}
+
+enum ChannelKind {
+    "category"
+    "text"
+    "thread"
+}
+
+type Channel {
+    id: string
+    guild_id: string
+    kind: ChannelKind
+    name: string
+    topic: string?
+    parent_id: string?
+    starter_message_id: string?
+    created_at: int
+}
+
+type Member {
+    user_id: string
+    name: string
+    owner: bool
+    joined_at: int
+}
+
+enum RegionMode {
+    "merged"
+    "distinct"
+}
+
+type LanguageAlias {
+    from: string
+    to: string
+}
+
+type LanguagePolicy {
+    guild_id: string
+    /// "free", "paid1", "paid2" or "paid3".
+    plan: string
+    languages: [string]
+    llm_languages: [string]
+    max_languages: int
+    max_llm_languages: int
+    region_mode: RegionMode
+    aliases: [LanguageAlias]
+    translate_regional_variants: bool
+}
+
+/// How the current user reads a guild. Computed by the Edge from the user's
+/// settings and the guild's policy, so clients need no normalization tables.
+type LanguageView {
+    /// The user's locale normalized with the guild's policy.
+    effective: string
+    in_set: bool
+    /// Translations into `effective` come from the LLM.
+    llm: bool
+    /// The client should translate on device into `effective`.
+    client_translation: bool
+}
+
+type GuildView {
+    guild: Guild
+    channels: [Channel]
+    members: [Member]
+    policy: LanguagePolicy
+    language: LanguageView
+}
+
+type NewGuild {
+    name: string
+    description: string?
+}
+
+type NewChannel {
+    guild_id: string
+    kind: ChannelKind
+    name: string
+    topic: string?
+    parent_id: string?
+    starter_message_id: string?
+}
+
+type LanguagePolicyUpdate {
+    guild_id: string
+    languages: [string]
+    llm_languages: [string]
+    region_mode: RegionMode
+    aliases: [LanguageAlias]
+    translate_regional_variants: bool
+}
+
+// ---- Messages --------------------------------------------------------------
+
+type Message {
+    id: string
+    guild_id: string
+    channel_id: string
+    author_id: string
+    author_name: string
+    text: string
+    rev: int
+    created_at: int
+    edited_at: int?
+}
+
+type Translation {
+    lang: string
+    text: string
+}
+
+/// Translations of one message, filtered to what the user needs: their own
+/// language and English (the pivot for on-device translation).
+type MessageTranslation {
+    message_id: string
+    channel_id: string
+    /// Revision of the text these translations were made from. Ignore them
+    /// when it differs from the message's `rev`.
+    rev: int
+    /// Detected source language; on-device translation starts from it.
+    source_lang: string
+    /// "done", "pending", "budget_exceeded" or "failed".
+    status: string
+    translations: [Translation]
+}
+
+type MessageView {
+    message: Message
+    translation: MessageTranslation?
+}
+
+type NewMessage {
+    guild_id: string
+    channel_id: string
+    text: string
+}
+
+type MessageEdit {
+    guild_id: string
+    channel_id: string
+    message_id: string
+    text: string
+}
+
+// ---- Gateway ---------------------------------------------------------------
+
+type Ready {
+    session_id: string
+    user_id: string
+    guilds: [GuildView]
+    /// Pass as `after` to the first poll.
+    cursor: int
+}
+
+enum EventKind {
+    "guild_joined"
+    "member_joined"
+    "channel_created"
+    "message_created"
+    "message_edited"
+    "message_deleted"
+    "message_translated"
+    "policy_updated"
+}
+
+type DeletedMessage {
+    channel_id: string
+    message_id: string
+}
+
+/// One event for this session. Exactly one payload is set, chosen by `kind`.
+type Event {
+    seq: int
+    kind: EventKind
+    guild_id: string
+    guild: GuildView?
+    member: Member?
+    channel: Channel?
+    message: Message?
+    deleted: DeletedMessage?
+    translation: MessageTranslation?
+    /// For policy_updated: the new policy and the user's resulting view.
+    policy: LanguagePolicy?
+    language: LanguageView?
+}
+
+type EventBatch {
+    events: [Event]
+    /// Pass as `after` to the next poll.
+    next: int
+}
+
+enum ApiError {
+    /// Also returned when the guild exists but the user may not see it, so
+    /// IDs cannot be probed.
+    "not_found"
+    "unauthorized"
+    "invalid_request"
+    "invalid_language"
+    "limit_exceeded"
+    "name_taken"
+    "invalid_credentials"
+    "rate_limited"
+    "unavailable"
+}
+
+interface Auth {
+    function register(@body: Registration) -> Token throws ApiError
+
+    function login(@body: Credentials) -> Token throws ApiError
+}
+
+interface Me {
+    #[kind = "get"]
+    authed function get_settings(@claim: Claim) -> UserSettings throws ApiError
+
+    authed function put_settings(@claim: Claim, @body: UserSettings) -> UserSettings throws ApiError
+}
+
+interface Guilds {
+    authed function create_guild(@claim: Claim, @body: NewGuild) -> GuildView throws ApiError
+
+    authed function join_guild(@claim: Claim, guild_id: string) -> GuildView throws ApiError
+
+    #[kind = "get"]
+    authed function get_guild(@claim: Claim, guild_id: string) -> GuildView throws ApiError
+
+    authed function create_channel(@claim: Claim, @body: NewChannel) -> Channel throws ApiError
+
+    /// Only the owner may change the policy. Languages are normalized and
+    /// counted after normalization.
+    authed function put_language_policy(@claim: Claim, @body: LanguagePolicyUpdate) -> LanguagePolicy throws ApiError
+}
+
+interface Messages {
+    authed function send_message(@claim: Claim, @body: NewMessage) -> MessageView throws ApiError
+
+    authed function edit_message(@claim: Claim, @body: MessageEdit) -> MessageView throws ApiError
+
+    authed function delete_message(@claim: Claim, guild_id: string, channel_id: string, message_id: string) throws ApiError
+
+    /// Newest first, with translations for the user's language and English.
+    #[kind = "get"]
+    authed function get_messages(@claim: Claim, guild_id: string, channel_id: string, before: string?, limit: int) -> [MessageView] throws ApiError
+}
+
+/// Phase 0 delivers events by long polling. A WebSocket transport will carry
+/// the same Event type.
+interface Gateway {
+    authed function connect(@claim: Claim) -> Ready throws ApiError
+
+    #[kind = "get"]
+    authed function poll(@claim: Claim, session_id: string, after: int, wait_ms: int) -> EventBatch throws ApiError
+}

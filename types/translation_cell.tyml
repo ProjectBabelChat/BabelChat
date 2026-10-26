@@ -1,0 +1,261 @@
+// Translation Cell API
+//
+// The part other platforms adopt. A platform keeps its own message store and
+// only needs to:
+//   1. stream messages in   (ingest / delete_message)
+//   2. describe its spaces  (put_space / put_node), optional but improves context
+//   3. read translations    (get_translations / poll_events)
+//
+// BabelChat itself uses this API exactly like an external platform: its
+// Message Cells are the first tenant.
+//
+// Identifiers are opaque strings chosen by the platform. The tenant is taken
+// from the caller's credentials, never from the request (Phase 0 runs a
+// single local tenant).
+//
+// See docs/architecture/translation-cell.md.
+
+/// A message as the platform identifies it.
+type MessageRef {
+    /// A guild, workspace or server.
+    space: string
+    /// A channel or thread: the unit of conversation context.
+    conversation: string
+    id: string
+}
+
+/// A glossary entry: names and jargon the engine should keep consistent.
+type Term {
+    term: string
+    note: string?
+}
+
+/// Root context of a space, kept as a translation-ready copy. The platform
+/// stays the source of truth and re-sends it when it changes.
+type SpaceContext {
+    space: string
+    name: string
+    description: string?
+    /// Language the description is written in, when known. English is
+    /// recommended to owners but not required.
+    description_lang: string?
+    glossary: [Term]
+}
+
+enum NodeKind {
+    "category"
+    "channel"
+    "thread"
+}
+
+/// A conversation node under a space. Nodes form a tree (category > channel
+/// > thread); prompts are built by walking from a conversation up to the root.
+type ContextNode {
+    space: string
+    id: string
+    /// Parent node. Null attaches the node directly to the space.
+    parent: string?
+    kind: NodeKind
+    title: string
+    description: string?
+    /// For threads: the message the thread was started from.
+    starter: MessageRef?
+}
+
+enum Plan {
+    "free"
+    "paid1"
+    "paid2"
+    "paid3"
+}
+
+enum RegionMode {
+    /// Regional variants collapse to one tag: en-GB becomes en-US.
+    "merged"
+    /// Regional variants stay distinct: en-GB and en-US are two languages.
+    "distinct"
+}
+
+/// A space-specific normalization override, e.g. "pt" to "pt-PT".
+type LanguageAlias {
+    from: string
+    to: string
+}
+
+/// The language policy of a space. The Translation Cell is its source of
+/// truth; Edges keep a copy to resolve each viewer's language.
+type SpacePolicy {
+    space: string
+    /// Increases on every change.
+    version: int
+    plan: Plan
+    /// Languages the space declares, normalized. Includes the LLM ones.
+    languages: [string]
+    /// Languages translated by the LLM as soon as a message arrives.
+    llm_languages: [string]
+    max_languages: int
+    max_llm_languages: int
+    region_mode: RegionMode
+    aliases: [LanguageAlias]
+    /// Whether to translate between regional variants of one language
+    /// (pt-BR to pt-PT) in distinct mode.
+    translate_regional_variants: bool
+}
+
+type PolicyUpdate {
+    space: string
+    languages: [string]
+    llm_languages: [string]
+    region_mode: RegionMode
+    aliases: [LanguageAlias]
+    translate_regional_variants: bool
+}
+
+/// How one viewer reads a space.
+type ViewerLanguage {
+    /// The viewer's locale normalized with the space's policy.
+    effective: string
+    /// Whether `effective` is one of the space's languages.
+    in_set: bool
+    /// Whether the LLM translates into `effective`.
+    llm: bool
+    /// Whether the client should translate on device into `effective`.
+    client_translation: bool
+}
+
+type IngestMessage {
+    message: MessageRef
+    /// Opaque revision chosen by the platform; it changes when the text is
+    /// edited. Translations carry the revision they were made from.
+    rev: string
+    author: string
+    /// The author's locale, used to fill in the region (and script) that
+    /// language detection cannot tell from the text.
+    author_locale: string?
+    text: string
+    reply_to: MessageRef?
+    sent_at: int
+}
+
+enum TranslationStatus {
+    /// Translations are ready (possibly none, for free spaces).
+    "done"
+    "pending"
+    /// The daily translation budget of the space ran out; clients fall back
+    /// to on-device translation.
+    "budget_exceeded"
+    "failed"
+}
+
+type MessageTranslation {
+    message: MessageRef
+    rev: string
+    /// Detected language, normalized. Clients pick their on-device models
+    /// from it, so all clients agree on the source language.
+    source_lang: string
+    status: TranslationStatus
+    translations: [Translation]
+}
+
+type Translation {
+    lang: string
+    text: string
+}
+
+type TranslationQuery {
+    messages: [MessageRef]
+    /// Languages to return. Edges ask for the viewer's language and English
+    /// (the pivot for on-device translation).
+    langs: [string]
+}
+
+enum TranslationEventKind {
+    "translated"
+    "removed"
+    "policy"
+}
+
+/// One event of a space. Exactly one payload is set, chosen by `kind`.
+type TranslationEvent {
+    seq: int
+    kind: TranslationEventKind
+    translated: MessageTranslation?
+    removed: MessageRef?
+    policy: SpacePolicy?
+}
+
+type TranslationEventBatch {
+    events: [TranslationEvent]
+    /// Pass as `after` to the next poll.
+    next: int
+    /// Sequence number of the newest event of the space. Polling with an
+    /// `after` beyond it returns at once, so followers can start at the head.
+    head: int
+}
+
+type SpaceUsage {
+    space: string
+    translated_messages: int
+    input_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+}
+
+enum TranslationCellError {
+    "not_found"
+    "invalid_language"
+    "limit_exceeded"
+    "invalid_request"
+    "unavailable"
+}
+
+interface TranslationCell {
+    // ---- Context ----------------------------------------------------------
+
+    function put_space(@body: SpaceContext) throws TranslationCellError
+
+    function put_node(@body: ContextNode) throws TranslationCellError
+
+    function delete_space(space: string) throws TranslationCellError
+
+    // ---- Language policy --------------------------------------------------
+
+    #[kind = "get"]
+    function get_policy(space: string) -> SpacePolicy throws TranslationCellError
+
+    /// Called by the platform after it checked the caller may manage the
+    /// space; the Translation Cell has no notion of roles.
+    function put_policy(@body: PolicyUpdate) -> SpacePolicy throws TranslationCellError
+
+    /// Billing hook. Until billing exists, plans are set by configuration.
+    function set_plan(space: string, plan: Plan) -> SpacePolicy throws TranslationCellError
+
+    /// Normalizes a language tag with the space's policy. Rust callers use
+    /// the babel-lang crate on a policy snapshot instead of calling this.
+    #[kind = "get"]
+    function normalize(space: string, tag: string) -> string throws TranslationCellError
+
+    #[kind = "get"]
+    function resolve_viewer(space: string, locale: string, translate_outside_set: bool) -> ViewerLanguage throws TranslationCellError
+
+    // ---- Messages ---------------------------------------------------------
+
+    /// Translation starts as soon as a message arrives. Idempotent for the
+    /// same message and revision.
+    function ingest(@body: IngestMessage) throws TranslationCellError
+
+    function delete_message(@body: MessageRef) throws TranslationCellError
+
+    function get_translations(@body: TranslationQuery) -> [MessageTranslation] throws TranslationCellError
+
+    // ---- Events -----------------------------------------------------------
+
+    /// Long poll: returns as soon as there are events after `after`, or
+    /// after `wait_ms` with none.
+    #[kind = "get"]
+    function poll_events(space: string, after: int, wait_ms: int) -> TranslationEventBatch throws TranslationCellError
+
+    #[kind = "get"]
+    function get_usage(space: string) -> SpaceUsage throws TranslationCellError
+}

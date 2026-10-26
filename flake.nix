@@ -57,6 +57,8 @@
                 openssl
                 zstd
               ]);
+            # rocksdb generates its bindings with bindgen.
+            LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
             LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
           };

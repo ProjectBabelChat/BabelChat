@@ -1,0 +1,21 @@
+[package]
+name = "babel-store"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "Embedded key-value storage for BabelChat cells (RocksDB)"
+
+[dependencies]
+parking_lot.workspace = true
+rocksdb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde = { workspace = true, features = ["derive"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

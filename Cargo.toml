@@ -6,13 +6,56 @@ members = [
     "gpui-reloaded/tooling/perf",
     "gpui-md3e",
     "gpui-md3e/gallery",
+    "crates/*",
+    "server/api/*",
+    "server/store",
+    "server/common",
+    "server/engine",
+    "server/translation-cell",
+    "server/message-cell",
+    "server/directory",
+    "server/account",
+    "server/edge",
+    "server/all-in-one",
 ]
+exclude = ["tools/apigen"]
 
 [workspace.package]
 publish = false
 edition = "2024"
 
 [workspace.dependencies]
+# ---- BabelChat (crates/, server/) ----
+babel-lang = { path = "crates/babel-lang" }
+babel-store = { path = "server/store" }
+babel-account = { path = "server/account" }
+babel-directory = { path = "server/directory" }
+babel-message-cell = { path = "server/message-cell" }
+babel-translation-cell = { path = "server/translation-cell" }
+babel-engine = { path = "server/engine" }
+babel-edge = { path = "server/edge" }
+babel-server = { path = "server/all-in-one" }
+babel-api-account = { path = "server/api/account" }
+babel-api-directory = { path = "server/api/directory" }
+babel-api-edge = { path = "server/api/edge" }
+babel-api-edge-client = { path = "server/api/edge-client" }
+babel-api-engine = { path = "server/api/engine" }
+babel-api-engine-client = { path = "server/api/engine-client" }
+babel-api-translation-cell-client = { path = "server/api/translation-cell-client" }
+babel-common = { path = "server/common" }
+babel-api-message-cell = { path = "server/api/message-cell" }
+babel-api-translation-cell = { path = "server/api/translation-cell" }
+argon2 = "0.5"
+async-trait = "0.1"
+axum = "0.8"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+jsonwebtoken = "9"
+reqwest = { version = "0.12", features = ["json"] }
+rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+whatlang = "0.16"
+# ---- end BabelChat ----
 bench_metrics = { path = "gpui-reloaded/crates/bench_metrics" }
 collections = { path = "gpui-reloaded/crates/collections", version = "0.1.0" }
 derive_refineable = { path = "gpui-reloaded/crates/refineable/derive_refineable" }

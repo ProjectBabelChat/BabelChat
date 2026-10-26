@@ -1,0 +1,41 @@
+[package]
+name = "babel-server"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat Phase 0: every service in one process, wired as if they were apart"
+
+[[bin]]
+name = "babel-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+babel-account.workspace = true
+babel-api-account.workspace = true
+babel-api-directory.workspace = true
+babel-api-edge.workspace = true
+babel-api-engine.workspace = true
+babel-api-message-cell.workspace = true
+babel-api-translation-cell.workspace = true
+babel-directory.workspace = true
+babel-edge.workspace = true
+babel-engine.workspace = true
+babel-message-cell.workspace = true
+babel-store.workspace = true
+babel-translation-cell.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+babel-api-edge-client.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
+
+[lints]
+workspace = true

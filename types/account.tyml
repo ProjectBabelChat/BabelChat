@@ -1,0 +1,64 @@
+// Account API
+//
+// The production Account service is closed: it also handles billing and
+// Discord account linking. This file is the contract the OSS services rely
+// on, implemented by a development stub (server/account).
+//
+// Tokens are JWTs. Edges verify them locally; they never call the Account
+// service on the request path.
+//
+// See docs/architecture/overview.md.
+
+type Registration {
+    name: string
+    password: string
+    /// BCP 47, e.g. "ja-JP".
+    locale: string
+}
+
+type Credentials {
+    name: string
+    password: string
+}
+
+type Token {
+    jwt: string
+    user_id: string
+    expires_at: int
+}
+
+/// Personal settings. They follow the user across guilds and, through the
+/// SDK, across platforms.
+type UserSettings {
+    locale: string
+    /// Translate on device even languages a guild does not declare.
+    translate_outside_set: bool
+    /// Show the original text next to translations.
+    show_original: bool
+}
+
+type User {
+    id: string
+    name: string
+}
+
+enum AccountError {
+    "name_taken"
+    "invalid_credentials"
+    "invalid_request"
+    "not_found"
+}
+
+interface Account {
+    function register(@body: Registration) -> Token throws AccountError
+
+    function login(@body: Credentials) -> Token throws AccountError
+
+    #[kind = "get"]
+    function get_user(user_id: string) -> User throws AccountError
+
+    #[kind = "get"]
+    function get_settings(user_id: string) -> UserSettings throws AccountError
+
+    function put_settings(user_id: string, @body: UserSettings) -> UserSettings throws AccountError
+}
