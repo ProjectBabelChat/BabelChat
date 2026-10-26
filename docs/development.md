@@ -48,18 +48,44 @@ Then type. Alice writes Japanese; Bob reads English:
 ```
 
 The mock engine marks LLM translations with the target tag
-(`[en-US] …`), and the mock device translator marks on-device ones
-(`[device fr-FR] [en-US] …` is French on device, from the LLM's English).
-A reader outside the guild's languages, or any reader of a `--plan free`
-server, sees device translations. `/help` lists the commands: channels,
-threads (`/thread #1 name`), `/edit #1 …`, `/delete #1`, `/locale fr-FR`,
-`/original on` and more.
+(`[en-US] …`). On-device translations are real: the Firefox Translations
+(Bergamot) models, downloaded on first use of each direction (35–55 MB)
+into `~/.cache/babelchat/models`. A reader outside the guild's languages,
+or any reader of a `--plan free` server, sees them:
+
+```
+#general #3 carol: いいアイデアですね、何時ですか?  ‹fr-FR→en→ja-JP on device›
+```
+
+`--device mock` swaps in a mock that marks device translations instead
+(`[device fr-FR] [en-US] …` is French on device, from the LLM's English). `/help` lists the commands: channels,
+threads (`/thread #1 name`), `/reply #1 …`, `/edit #1 …`, `/delete #1`,
+`/locale fr-FR`, `/original on` and more.
+
+The open channel prints its messages; other channels speak up through
+notifications, already translated:
+
+```
+🔔 mention #random #2 alice: [en-US] @bob 見て  ‹ja-JP→en-US›
+```
+
+`@name` mentions someone, `/reply #n` answers a message (and notifies its
+author), `/unread` lists unread channels with their mention counts, and
+`/notify mentions` (or `all`, `none`; add `here` for the open channel only)
+chooses what notifies you. Owners `/kick` and `/ban` members; `/leave`,
+`/invites`, `/bans`, `/unban` and `/status` (WebSocket, long polling or
+offline) do what they say. Each profile keeps a cache next to its sign-in,
+so the next start shows the last messages at once, offline too.
 
 | Option | Environment | Default |
 |---|---|---|
 | `--server` | `BABEL_SERVER` | `http://127.0.0.1:7000` (used by `register` and `login`) |
 | `--profile` | `BABEL_PROFILE` | `default` |
-| `--config-dir` | `BABEL_CONFIG_DIR` | `~/.config/babelchat` (sign-ins, mode 0600) |
+| `--config-dir` | `BABEL_CONFIG_DIR` | `~/.config/babelchat` (sign-ins and caches, mode 0600) |
+| `--transport` | `BABEL_TRANSPORT` | `auto` (WebSocket, falling back to long polling), `websocket`, `poll` |
+| `--no-cache` | | start without the cache and write none |
+| `--device` | `BABEL_DEVICE` | `bergamot` (real models) or `mock` |
+| `--models-dir` | `BABEL_MODELS_DIR` | `~/.cache/babelchat/models` |
 | password | `BABEL_PASSWORD` | prompted |
 
 Without a terminal, input can be piped; the client exits at end of input:
@@ -108,7 +134,12 @@ curl -s -G $U/messages/get_messages -H "authorization: Bearer $B" \
 
 For live events, `POST /gateway/connect` returns a session, and
 `GET /gateway/poll` long-polls it (`session_id="..."`, `after=0`,
-`wait_ms=25000`, each JSON-encoded like the other query arguments).
+`wait_ms=25000`, each JSON-encoded like the other query arguments). The
+same events stream over a WebSocket, with plain query arguments:
+
+```sh
+websocat -H "authorization: Bearer $B" "ws://127.0.0.1:7000/gateway/ws?session_id=$S&after=0"
+```
 
 ## Translating with a local model
 
@@ -137,20 +168,24 @@ model yet.
 ```sh
 cargo test -p babel-lang -p babel-store -p babel-common -p babel-engine \
   -p babel-translation-cell -p babel-message-cell -p babel-directory \
-  -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli
+  -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli \
+  -p babel-bergamot
+cargo test -p babel-bergamot -- --ignored   # downloads three models
 ```
 
 | Crate | What the tests show |
 |---|---|
 | `babel-lang` | normalization rules, viewer resolution |
 | `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike |
+| `babel-account` | registration and sign-in; names are one mentionable word |
 | `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; OpenAI-compatible request shape; remote engine over HTTP |
 | `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart |
-| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls |
-| `babel-edge` | sessions that fall behind their queue must reconnect |
+| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings |
+| `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart |
-| `babel-sdk` | display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server |
-| `babel-cli` | two people chatting through the terminal client, as typed |
+| `babel-sdk` | display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling |
+| `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
+| `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks |
 
 ## Changing an API
 

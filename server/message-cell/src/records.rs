@@ -7,6 +7,9 @@
 //! channels  guild / channel                  Channel
 //! messages  guild / channel / message id     Message      (ids are time-ordered)
 //! invites   guild / secret                   Invite
+//! bans      guild / user                     Ban
+//! reads     guild / user / channel           ReadState    (members' read markers)
+//! notify    guild / user                     NotificationSettings
 //! log       guild / seq                      GuildEvent   (the guild's event log)
 //! outbox    seq                              OutboxEntry  (cell-wide, in commit order)
 //! ```
@@ -23,10 +26,15 @@ pub const MEMBERS: Table = "members";
 pub const CHANNELS: Table = "channels";
 pub const MESSAGES: Table = "messages";
 pub const INVITES: Table = "invites";
+pub const BANS: Table = "bans";
+pub const READS: Table = "reads";
+pub const NOTIFY: Table = "notify";
 pub const LOG: Table = "log";
 pub const OUTBOX: Table = "outbox";
 
-pub const TABLES: &[Table] = &[GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, LOG, OUTBOX];
+pub const TABLES: &[Table] = &[
+    GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, LOG, OUTBOX,
+];
 
 pub fn guild_key(guild: &str) -> Vec<u8> {
     Key::new().str(guild).build()
@@ -38,6 +46,16 @@ pub fn member_key(guild: &str, user: &str) -> Vec<u8> {
 
 pub fn invite_key(guild: &str, secret: &str) -> Vec<u8> {
     Key::new().str(guild).str(secret).build()
+}
+
+/// A member's read states. (Bans and notification settings use the member
+/// key.)
+pub fn read_prefix(guild: &str, user: &str) -> Vec<u8> {
+    Key::new().str(guild).str(user).build()
+}
+
+pub fn read_key(guild: &str, user: &str, channel: &str) -> Vec<u8> {
+    Key::new().str(guild).str(user).str(channel).build()
 }
 
 pub fn channel_key(guild: &str, channel: &str) -> Vec<u8> {

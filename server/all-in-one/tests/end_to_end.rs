@@ -191,6 +191,7 @@ async fn messages_reach_every_reader_in_their_language() {
                 guild_id: guild_id.clone(),
                 channel_id: channel.id.clone(),
                 text: JAPANESE.into(),
+                reply_to: None,
             },
         )
         .await

@@ -60,3 +60,17 @@ The `JwtValidator` change breaks existing implementations: they need a
 No TYML changes. The SDK needed one shared connection pool for all
 interfaces; the generated clients already expose `url` and `client` as
 public fields, so it builds them directly instead of calling `new`.
+
+## Phase 2 (chat basics)
+
+No TYML changes. Two needs were met with existing features:
+
+| Need | How |
+|---|---|
+| A WebSocket gateway | TYML describes request/response functions. The socket is a hand-written Axum route next to the generated router; it carries the generated `EventBatch` type, and its protocol is written in the `Gateway` interface's doc comment |
+| Adding a field to a stored type without breaking older data | The field is optional (`mentions: [string]?` in the Message Cell's `Message`); the public type keeps it required and the Edge fills in an empty list |
+
+TYML's declared default values (`field: T = value`) would express the
+second more directly, but the Rust API generator ignores them today (no
+`#[serde(default)]`). Worth adding when a required stored field must be
+added again.

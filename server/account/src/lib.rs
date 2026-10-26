@@ -117,7 +117,11 @@ impl babel_api_account::types::Account for Account {
     async fn register(&self, body: Registration) -> Result<Token, AccountError> {
         let name = body.name.trim().to_string();
         let name_len = name.chars().count();
-        if !(2..=32).contains(&name_len) || body.password.chars().count() < 8 {
+        // `@name` mentions a user, so a name is one word with no `@`.
+        let one_word = name
+            .chars()
+            .all(|c| !c.is_whitespace() && !c.is_control() && c != '@');
+        if !(2..=32).contains(&name_len) || !one_word || body.password.chars().count() < 8 {
             return Err(AccountError::InvalidRequest);
         }
         babel_lang::Normalizer::new()
@@ -249,5 +253,25 @@ mod tests {
 
         let settings = account.get_settings(token.user_id).await.unwrap();
         assert_eq!(settings.locale, "ja-JP");
+    }
+
+    #[tokio::test]
+    async fn names_are_one_mentionable_word() {
+        let account = Account::open(Arc::new(MemStore::new())).unwrap();
+        let register = |name: &str| {
+            account.register(Registration {
+                name: name.into(),
+                password: "correct horse".into(),
+                locale: "ja-JP".into(),
+            })
+        };
+        assert!(register("さくら").await.is_ok());
+        assert!(register("bob.smith_2").await.is_ok());
+        for name in ["bob smith", "bob@home", "x"] {
+            assert_eq!(
+                register(name).await.unwrap_err(),
+                AccountError::InvalidRequest
+            );
+        }
     }
 }

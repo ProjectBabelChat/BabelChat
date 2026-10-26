@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+babel-bergamot.workspace = true
 babel-sdk.workspace = true
 clap = { workspace = true, features = ["env"] }
 dirs = "6"

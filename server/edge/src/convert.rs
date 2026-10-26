@@ -87,6 +87,7 @@ pub fn channel(channel: &cell::Channel) -> public::Channel {
         parent_id: channel.parent_id.clone(),
         starter_message_id: channel.starter_message_id.clone(),
         created_at: channel.created_at,
+        last_message_id: channel.last_message_id.clone(),
     }
 }
 
@@ -106,6 +107,8 @@ pub fn invite(invite: &cell::Invite) -> public::Invite {
     public::Invite {
         code: format!("{}-{}", invite.guild_id, invite.secret),
         guild_id: invite.guild_id.clone(),
+        created_by: invite.created_by.clone(),
+        created_at: invite.created_at,
         expires_at: invite.expires_at,
         max_uses: invite.max_uses,
         uses: invite.uses,
@@ -130,6 +133,8 @@ pub fn message(message: &cell::Message) -> public::Message {
         author_id: message.author_id.clone(),
         author_name: message.author_name.clone(),
         text: message.text.clone(),
+        reply_to: message.reply_to.clone(),
+        mentions: message.mentions.clone().unwrap_or_default(),
         rev: message.rev,
         created_at: message.created_at,
         edited_at: message.edited_at,
@@ -227,5 +232,72 @@ pub fn translation(
                 text: translated.text.clone(),
             })
             .collect(),
+    }
+}
+
+// ---- Reading and notifications ---------------------------------------------
+
+pub fn read_state(state: &cell::ReadState) -> public::ReadState {
+    public::ReadState {
+        channel_id: state.channel_id.clone(),
+        last_read_id: state.last_read_id.clone(),
+        mention_count: state.mention_count,
+    }
+}
+
+fn notify_level(level: cell::NotifyLevel) -> public::NotifyLevel {
+    match level {
+        cell::NotifyLevel::All => public::NotifyLevel::All,
+        cell::NotifyLevel::Mentions => public::NotifyLevel::Mentions,
+        cell::NotifyLevel::None => public::NotifyLevel::None,
+    }
+}
+
+fn internal_notify_level(level: public::NotifyLevel) -> cell::NotifyLevel {
+    match level {
+        public::NotifyLevel::All => cell::NotifyLevel::All,
+        public::NotifyLevel::Mentions => cell::NotifyLevel::Mentions,
+        public::NotifyLevel::None => cell::NotifyLevel::None,
+    }
+}
+
+pub fn notifications(settings: &cell::NotificationSettings) -> public::NotificationSettings {
+    public::NotificationSettings {
+        guild_id: settings.guild_id.clone(),
+        level: notify_level(settings.level),
+        channels: settings
+            .channels
+            .iter()
+            .map(|entry| public::ChannelNotify {
+                channel_id: entry.channel_id.clone(),
+                level: notify_level(entry.level),
+            })
+            .collect(),
+    }
+}
+
+pub fn internal_notifications(
+    settings: public::NotificationSettings,
+) -> cell::NotificationSettings {
+    cell::NotificationSettings {
+        guild_id: settings.guild_id,
+        level: internal_notify_level(settings.level),
+        channels: settings
+            .channels
+            .into_iter()
+            .map(|entry| cell::ChannelNotify {
+                channel_id: entry.channel_id,
+                level: internal_notify_level(entry.level),
+            })
+            .collect(),
+    }
+}
+
+pub fn ban(ban: &cell::Ban) -> public::Ban {
+    public::Ban {
+        user_id: ban.user_id.clone(),
+        name: ban.name.clone(),
+        banned_by: ban.banned_by.clone(),
+        banned_at: ban.banned_at,
     }
 }

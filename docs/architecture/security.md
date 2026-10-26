@@ -16,7 +16,7 @@ target guild. So placement does not leak either:
 | Node numbers inside IDs (Snowflake IDs carry worker numbers) | Guild, channel and session IDs are random; message IDs are time + random |
 | Cell names in responses or headers | Public types are generated separately and converted field by field (`server/edge/src/convert.rs`) |
 | "not found" vs "forbidden" | Both are `not_found` |
-| Joining a guild by its ID | Joining needs an invite: a random 96-bit secret checked by the guild's cell, with expiry (7 days by default) and use limits; bad, expired and used-up invites are all `not_found` |
+| Joining a guild by its ID | Joining needs an invite: a random 96-bit secret checked by the guild's cell, with expiry (7 days by default) and use limits; bad, expired and used-up invites are all `not_found`; so are invites used by a banned user |
 | Outgoing requests (link previews, webhooks) revealing a cell's address | All outbound traffic leaves through an egress proxy (planned) |
 | Attachment URLs | Served through object storage and a CDN with no cell in the path (planned) |
 | Correlated outages | Cannot be prevented; moving guilds between cells blurs them |
@@ -25,6 +25,12 @@ target guild. So placement does not leak either:
 
 - Tokens are verified locally; unauthenticated requests never reach a cell.
 - Writes are rate-limited per user (token bucket).
+- A member who leaves or is removed stops receiving the guild's events as
+  soon as the guild's log reaches the Edge, and every request is checked by
+  the cell anyway. A session subscribed from a stale membership (the
+  Directory's copy lags) is unsubscribed when the cell refuses its snapshot.
+- WebSocket upgrades are authorized like requests (bearer token) and only
+  for the caller's own session.
 - Unknown guild IDs are looked up once and the miss remembered, so random IDs
   cannot flood the Directory.
 - L3/L4 floods are handled in front of the Edges (a provider's DDoS

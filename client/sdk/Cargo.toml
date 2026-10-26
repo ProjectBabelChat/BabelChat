@@ -10,13 +10,18 @@ description = "BabelChat client SDK: sessions, live state, display language and 
 async-trait.workspace = true
 babel-api-edge-client.workspace = true
 babel-lang.workspace = true
+futures.workspace = true
 parking_lot.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 tracing.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 babel-api-translation-cell.workspace = true
 babel-server.workspace = true
 tempfile.workspace = true

@@ -9,11 +9,12 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, bail};
+use babel_bergamot::{BergamotConfig, BergamotTranslator};
 use babel_cli::{
     profile::{self, Profile},
     repl::{Flow, Repl},
 };
-use babel_sdk::{Client, MockDeviceTranslator};
+use babel_sdk::{Client, DeviceTranslator, MockDeviceTranslator, SessionConfig, Transport};
 use clap::{Parser, Subcommand};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -32,6 +33,20 @@ struct Args {
     /// Where sign-ins are saved.
     #[arg(long, env = "BABEL_CONFIG_DIR")]
     config_dir: Option<PathBuf>,
+    /// Start without the saved messages, and save none.
+    #[arg(long)]
+    no_cache: bool,
+    /// How events arrive: WebSocket, falling back to long polling (auto), or
+    /// only one of them.
+    #[arg(long, env = "BABEL_TRANSPORT", default_value = "auto", value_parser = ["auto", "websocket", "poll"])]
+    transport: String,
+    /// Who translates on this device: the Firefox Translations (Bergamot)
+    /// models, fetched on first use, or a mock that only tags the text.
+    #[arg(long, env = "BABEL_DEVICE", default_value = "bergamot", value_parser = ["bergamot", "mock"])]
+    device: String,
+    /// Where on-device models are kept.
+    #[arg(long, env = "BABEL_MODELS_DIR")]
+    models_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -94,7 +109,28 @@ async fn main() -> anyhow::Result<()> {
             let Some(saved) = profile::load(&dir, &args.profile)? else {
                 bail!("not signed in: run `babel register <name>` or `babel login <name>` first");
             };
-            return chat(Client::with_token(&saved.server, saved.token)?).await;
+            let config = SessionConfig {
+                cache: (!args.no_cache).then(|| profile::cache_path(&dir, &args.profile)),
+                transport: match args.transport.as_str() {
+                    "websocket" => Transport::WebSocket,
+                    "poll" => Transport::LongPoll,
+                    _ => Transport::Auto,
+                },
+                ..SessionConfig::default()
+            };
+            let translator: Arc<dyn DeviceTranslator> = match args.device.as_str() {
+                "mock" => Arc::new(MockDeviceTranslator::default()),
+                _ => Arc::new(BergamotTranslator::new(BergamotConfig {
+                    models_dir: args.models_dir.clone().unwrap_or_else(profile::models_dir),
+                    download: true,
+                })),
+            };
+            return chat(
+                Client::with_token(&saved.server, saved.token)?,
+                translator,
+                config,
+            )
+            .await;
         }
     };
 
@@ -115,9 +151,13 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn chat(client: Client) -> anyhow::Result<()> {
+async fn chat(
+    client: Client,
+    translator: Arc<dyn DeviceTranslator>,
+    config: SessionConfig,
+) -> anyhow::Result<()> {
     let session = client
-        .connect(Arc::new(MockDeviceTranslator::default()))
+        .connect_with(translator, config)
         .await
         .context("could not connect")?;
     let mut updates = session.updates();

@@ -575,7 +575,7 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
- "tungstenite",
+ "tungstenite 0.28.0",
 ]
 
 [[package]]
@@ -696,6 +696,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -714,8 +715,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -893,11 +896,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "babel-bergamot"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "babel-sdk",
+ "fxtranslate",
+ "parking_lot",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "babel-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "babel-api-translation-cell",
+ "babel-bergamot",
  "babel-sdk",
  "babel-server",
  "clap",
@@ -939,6 +956,7 @@ name = "babel-edge"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "babel-api-account",
  "babel-api-directory",
  "babel-api-edge",
@@ -946,9 +964,11 @@ dependencies = [
  "babel-api-translation-cell",
  "babel-common",
  "babel-lang",
+ "futures",
  "jsonwebtoken",
  "parking_lot",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
@@ -1005,16 +1025,21 @@ dependencies = [
 name = "babel-sdk"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "babel-api-edge-client",
  "babel-api-translation-cell",
  "babel-lang",
  "babel-server",
+ "futures",
  "parking_lot",
  "reqwest",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 
@@ -2864,6 +2889,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxtranslate"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dfa6e74911486c9d59495e595163d4965dec37aa92b08545782b696b3eec2eb"
+dependencies = [
+ "cc",
+ "dirs",
+ "icu_segmenter",
+ "memmap2",
+ "ruzstd",
+ "sha2 0.10.9",
+ "tinyjson",
+ "ureq",
+]
+
+[[package]]
 name = "generational-box"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3862,6 +3903,30 @@ dependencies = [
  "zerotrie",
  "zerovec",
 ]
+
+[[package]]
+name = "icu_segmenter"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61b195dc605f81aa181bec9b3bd14e26cc71b903e4644f6af578ca9772c7a710"
+dependencies = [
+ "core_maths",
+ "icu_collections",
+ "icu_locale_fallback",
+ "icu_provider",
+ "icu_segmenter_data",
+ "potential_utf",
+ "smallvec",
+ "utf8_iter",
+ "zerotrie",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_segmenter_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913a7d294ad056474749152107309fdee3ec17d2482d1ab70fdc61a81c64b9a3"
 
 [[package]]
 name = "idna"
@@ -6626,7 +6691,9 @@ version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -6687,6 +6754,15 @@ dependencies = [
  "unicode-ccc",
  "unicode-properties",
  "unicode-script",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
+dependencies = [
+ "twox-hash",
 ]
 
 [[package]]
@@ -7714,6 +7790,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyjson"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ab95735ea2c8fd51154d01e39cf13912a78071c2d89abc49a7ef102a7dd725a"
+
+[[package]]
 name = "tinystr"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7785,6 +7867,20 @@ checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
+dependencies = [
+ "futures-util",
+ "log",
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tungstenite 0.29.0",
 ]
 
 [[package]]
@@ -8066,6 +8162,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "tungstenite"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "native-tls",
+ "rand 0.9.5",
+ "sha1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "twox-hash"
+version = "1.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+dependencies = [
+ "cfg-if",
+ "static_assertions",
+]
+
+[[package]]
 name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8171,6 +8294,22 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "log",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "url",
+ "webpki-roots 0.26.11",
+]
 
 [[package]]
 name = "url"
@@ -8609,6 +8748,24 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.11",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5f280bbb2b287bc8e7de7e3852945a0ff50d1bbcb5ed42b6c7a568c546df171"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

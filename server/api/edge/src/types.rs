@@ -75,6 +75,9 @@ pub struct GuildView {
     pub members: Vec<Member>,
     pub policy: LanguagePolicy,
     pub language: LanguageView,
+    /// The user's, one per channel.
+    pub read_states: Vec<ReadState>,
+    pub notifications: NotificationSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -96,6 +99,9 @@ pub struct Channel {
     pub parent_id: Option<String>,
     pub starter_message_id: Option<String>,
     pub created_at: i64,
+    /// Newest message ever sent here. The channel is unread while it is
+    /// newer than the read state's `last_read_id`.
+    pub last_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -157,6 +163,43 @@ pub struct LanguageView {
     pub client_translation: bool,
 }
 
+/// How far the user has read one channel.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ReadState {
+    pub channel_id: String,
+    /// Later messages are unread. Starts at the member's join time, so it
+    /// may name no message.
+    pub last_read_id: String,
+    /// Messages after `last_read_id` that mention the user.
+    pub mention_count: i64,
+}
+
+/// What the user wants to be notified of in one guild. Channel entries
+/// override the guild's level; a thread follows its channel unless it has
+/// its own entry. Clients decide what to show; the server keeps the choice.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NotificationSettings {
+    pub guild_id: String,
+    pub level: NotifyLevel,
+    pub channels: Vec<ChannelNotify>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum NotifyLevel {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ChannelNotify {
+    pub channel_id: String,
+    pub level: NotifyLevel,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewInvite {
     pub guild_id: String,
@@ -170,6 +213,8 @@ pub struct Invite {
     /// Share this: anyone holding it can join until it expires or runs out.
     pub code: String,
     pub guild_id: String,
+    pub created_by: String,
+    pub created_at: i64,
     pub expires_at: Option<i64>,
     pub max_uses: Option<i64>,
     pub uses: i64,
@@ -196,10 +241,20 @@ pub struct LanguagePolicyUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Ban {
+    pub user_id: String,
+    pub name: String,
+    pub banned_by: String,
+    pub banned_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewMessage {
     pub guild_id: String,
     pub channel_id: String,
+    /// `@name` notifies that member.
     pub text: String,
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -216,6 +271,11 @@ pub struct Message {
     pub author_id: String,
     pub author_name: String,
     pub text: String,
+    /// A message in the same channel this one answers.
+    pub reply_to: Option<String>,
+    /// Users this message notifies: members named with `@name` in the text,
+    /// and the author of the message replied to. Set by the server.
+    pub mentions: Vec<String>,
     pub rev: i64,
     pub created_at: i64,
     pub edited_at: Option<i64>,
@@ -285,6 +345,8 @@ pub struct Event {
     /// For policy_updated: the new policy and the user's resulting view.
     pub policy: Option<LanguagePolicy>,
     pub language: Option<LanguageView>,
+    pub read_state: Option<ReadState>,
+    pub notifications: Option<NotificationSettings>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -293,6 +355,12 @@ pub enum EventKind {
     GuildJoined,
     #[serde(rename = "member_joined")]
     MemberJoined,
+    /// For the leaving user too: their last event from the guild.
+    #[serde(rename = "member_left")]
+    MemberLeft,
+    /// Kicked or banned.
+    #[serde(rename = "member_removed")]
+    MemberRemoved,
     #[serde(rename = "channel_created")]
     ChannelCreated,
     #[serde(rename = "message_created")]
@@ -305,6 +373,11 @@ pub enum EventKind {
     MessageTranslated,
     #[serde(rename = "policy_updated")]
     PolicyUpdated,
+    /// The user read a channel, here or on another device.
+    #[serde(rename = "read_state_updated")]
+    ReadStateUpdated,
+    #[serde(rename = "notifications_updated")]
+    NotificationsUpdated,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -367,6 +440,8 @@ pub trait Guilds: Send + Sync + 'static {
     async fn create_invite(&self, claim: Claim, body: NewInvite) -> Result<Invite, ApiError>;
     /// The invite's creator or the owner may revoke it.
     async fn revoke_invite(&self, claim: Claim, code: String) -> Result<(), ApiError>;
+    /// Valid invites: all of them for the owner, the user's own otherwise.
+    async fn get_invites(&self, claim: Claim, guild_id: String) -> Result<Vec<Invite>, ApiError>;
     /// Joins with an invite code. Invalid, expired and used-up codes are all
     /// `not_found`.
     async fn join_guild(&self, claim: Claim, invite: String) -> Result<GuildView, ApiError>;
@@ -375,6 +450,14 @@ pub trait Guilds: Send + Sync + 'static {
     /// Only the owner may change the policy. Languages are normalized and
     /// counted after normalization.
     async fn put_language_policy(&self, claim: Claim, body: LanguagePolicyUpdate) -> Result<LanguagePolicy, ApiError>;
+    /// The owner cannot leave (`invalid_request`).
+    async fn leave_guild(&self, claim: Claim, guild_id: String) -> Result<(), ApiError>;
+    /// Owner only. With `ban`, invites no longer let the user back in.
+    async fn remove_member(&self, claim: Claim, guild_id: String, user_id: String, ban: bool) -> Result<(), ApiError>;
+    async fn unban_member(&self, claim: Claim, guild_id: String, user_id: String) -> Result<(), ApiError>;
+    async fn get_bans(&self, claim: Claim, guild_id: String) -> Result<Vec<Ban>, ApiError>;
+    /// Saved for the user's other devices; they hear `notifications_updated`.
+    async fn put_notification_settings(&self, claim: Claim, body: NotificationSettings) -> Result<NotificationSettings, ApiError>;
 }
 
 #[async_trait]
@@ -384,10 +467,17 @@ pub trait Messages: Send + Sync + 'static {
     async fn delete_message(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String) -> Result<(), ApiError>;
     /// Newest first, with translations for the user's language and English.
     async fn get_messages(&self, claim: Claim, guild_id: String, channel_id: String, before: Option<String>, limit: i64) -> Result<Vec<MessageView>, ApiError>;
+    /// Marks the channel read up to `message_id`; never moves backwards.
+    /// Sending a message marks its channel read for the author.
+    async fn ack(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String) -> Result<ReadState, ApiError>;
 }
 
-/// Events are delivered by long polling for now. A WebSocket transport will
-/// carry the same Event type.
+/// Events reach a session by long polling (`poll`) or over a WebSocket at
+/// `GET /gateway/ws?session_id=...&after=...`, authorized with the same
+/// bearer token. The server sends each `EventBatch` as one JSON text frame,
+/// as soon as events exist; the client sends nothing. Resume after a drop by
+/// opening the socket again with the last `next`. Close code 4404 means the
+/// session is gone, like `poll`'s `not_found`.
 #[async_trait]
 pub trait Gateway: Send + Sync + 'static {
     async fn connect(&self, claim: Claim) -> Result<Ready, ApiError>;

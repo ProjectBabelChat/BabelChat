@@ -41,11 +41,16 @@ ones:
 - **Streams.** Long polls: `poll_events(after, wait_ms) -> { events, next, head }`
   returns as soon as there are events after `after`, or after `wait_ms`
   without any. `head` lets a follower start at the end. The same shape works
-  in-process and over HTTP; a WebSocket transport can carry the same types.
+  in-process and over HTTP. Clients can also take the gateway's batches
+  over a WebSocket (`/gateway/ws`), which carries the same `EventBatch`
+  type and is documented on the `Gateway` interface.
 - **Maps.** Arrays of pairs (`[LanguageAlias]`) where order matters or keys
   are user input.
 - **Timestamps.** `int` milliseconds since the Unix epoch.
-- **IDs.** `string`, so JavaScript clients never lose precision.
+- **IDs.** `string`, so JavaScript clients never lose precision. Message
+  IDs and read markers are time-ordered integers: compare them as numbers.
+- **Evolving stored types.** Fields added to types that services store are
+  optional, so older records still decode.
 - **Errors.** One enum per file, used with `throws`. The generated router
   answers 400 with the error as JSON; 401 for a missing or invalid token.
 

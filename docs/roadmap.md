@@ -36,7 +36,25 @@ People can chat, translated, from a terminal:
   `not_found`, so clients know to reload instead of silently missing events.
 - Tokens carry the user's name.
 
-## Phase 2 — split it up
+## Phase 2 — chat basics (done)
+
+Everything a chat needs apart from the UI, in the SDK and the terminal
+client:
+
+- Members leave; owners kick and ban (and unban). Invites can be listed.
+- Replies and `@name` mentions, resolved by the server.
+- Read markers per member and channel, kept by the server and synced
+  across a user's devices; unread channels and mention counts.
+- Notification settings per guild and channel (all, mentions, none); the
+  SDK raises notifications with the text already in the reader's language,
+  and leaves the channel on screen alone.
+- WebSocket gateway, with long polling as the fallback.
+- A client cache: apps start from what they showed last time, offline too,
+  and keep device translations between runs.
+- Real on-device translation: the Firefox Translations (Bergamot) models,
+  run by fxtranslate behind `DeviceTranslator`, downloaded on first use.
+
+## Phase 3 — split it up
 
 - HTTP clients behind the internal traits; each service as its own binary.
 - Internal network: WireGuard plus mutual TLS; service credentials; tenant
@@ -44,10 +62,10 @@ People can chat, translated, from a terminal:
 - Egress proxy for all outbound traffic.
 - Backups (`BackupEngine` + log shipping) and a standby per cell.
 - Guild migration (export, catch-up, fenced switch-over).
-- WebSocket gateway.
+- Per-user events (read markers, notification settings) across Edges.
 - Log trimming.
 
-## Phase 3 — real translation
+## Phase 4 — real translation
 
 - Validate the OpenAI-compatible backend against llama.cpp / vLLM with
   Hy-MT2 and Qwen3; tune window and summary sizes with real usage numbers.
@@ -56,15 +74,15 @@ People can chat, translated, from a terminal:
 - Translation Cell as a standalone, self-hostable product for other
   platforms; Server SDK documentation.
 
-## Phase 4 — the product
+## Phase 5 — the product
 
 - BabelChat Cloud engine; billing setting plans; Discord account linking.
 - Managed Translation Cells for platforms that do not want to host one.
-- Desktop client (GPUI + MD3E) on the SDK, with on-device Bergamot
-  translation behind `DeviceTranslator`.
-- Chat basics not built yet: leaving guilds and removing members, listing
-  invites, roles beyond owner and member, attachments, typing and read
-  state, client-side caching between runs.
+- Desktop client (GPUI + MD3E) on the SDK.
+- Mirrored hosting for the on-device models, and model updates.
+- Chat features not built yet: roles beyond owner and member, attachments,
+  reactions, typing indicators, renaming and deleting guilds and channels,
+  push notifications to devices that are offline.
 
 ## Open questions
 

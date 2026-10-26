@@ -139,7 +139,8 @@ impl Server {
 
     /// Serves the public Edge API on `listener` until the process ends.
     pub async fn serve(self, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
-        axum::serve(listener, babel_api_edge::router(self.edge)).await?;
+        let router = self.edge.websocket_router();
+        axum::serve(listener, babel_api_edge::router(self.edge).merge(router)).await?;
         Ok(())
     }
 }

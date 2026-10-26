@@ -90,8 +90,9 @@ start on-device translation from the same source.
 
 ## On-device translation (free tier)
 
-Clients will bundle Bergamot (Firefox's engine) and Mozilla's models. Those
-models pair languages with English, so translation is N → English → N:
+Clients run Mozilla's Firefox Translations models (the Bergamot lineage),
+through fxtranslate, a Rust port of Firefox's engine. Those models pair
+languages with English, so translation is N → English → N:
 
 - one hop when the source or the target is English, two otherwise;
 - readers need `source → en` and `en → own language` models, downloaded on
@@ -100,5 +101,5 @@ models pair languages with English, so translation is N → English → N:
   instead of the original: one hop, and context-aware. Edges always send the
   English translation along for this reason.
 
-The client SDK implements this chaining; see [client SDK](client.md). Real
-models are not wired in yet: a mock stands in for them.
+The client SDK implements this chaining, and `babel-bergamot` the models;
+see [client SDK](client.md).

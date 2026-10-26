@@ -44,5 +44,6 @@ for BabelChat.
 | `server/all-in-one` | `babel-server`: every service in one process |
 | `client/sdk` | Client SDK: sessions, display language, on-device translation |
 | `client/cli` | `babel`: a terminal chat client on the SDK |
+| `client/bergamot` | On-device translation with the Firefox Translations (Bergamot) models |
 | `crates/babel-lang` | Language tag normalization, shared with clients |
 | `tools/apigen` | Regenerates `server/api` from `types` |

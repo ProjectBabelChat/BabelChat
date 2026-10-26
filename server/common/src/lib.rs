@@ -36,13 +36,19 @@ pub struct TimeOrderedIds {
     last: u64,
 }
 
+/// The smallest ID [`TimeOrderedIds`] hands out at `ms`: stands for
+/// "everything before this moment".
+pub fn id_floor(ms: i64) -> u64 {
+    (ms.max(0) as u64) << 20
+}
+
 impl TimeOrderedIds {
     pub fn new(last: u64) -> Self {
         Self { last }
     }
 
     pub fn next(&mut self, now_ms: i64) -> u64 {
-        let candidate = ((now_ms.max(0) as u64) << 20) | rand::rng().random_range(0..1 << 19);
+        let candidate = id_floor(now_ms) | rand::rng().random_range(0..1 << 19);
         self.last = candidate.max(self.last + 1);
         self.last
     }

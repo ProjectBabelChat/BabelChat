@@ -36,7 +36,10 @@ batches are enough; no transactions are needed.
 - Values are a format byte followed by JSON (`encode` / `decode`). JSON keeps
   Phase 0 data inspectable; a binary format can replace it behind a new format
   byte. A newer binary must open an older data directory, so format changes
-  come with a migration on open.
+  come with a migration on open. Fields added to stored types are optional
+  (`?` in TYML), so records written before they existed still decode
+  (`Message.mentions`, `Channel.last_message_id`); new tables are created on
+  open.
 
 ## The event log is the backbone
 

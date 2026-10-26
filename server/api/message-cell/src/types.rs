@@ -36,6 +36,9 @@ pub struct GuildSnapshot {
     pub guild: Guild,
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
+    /// The requesting member's, one per channel.
+    pub read_states: Vec<ReadState>,
+    pub notifications: NotificationSettings,
     /// Sequence number of the last event included in this snapshot.
     pub last_seq: i64,
 }
@@ -52,6 +55,9 @@ pub struct Channel {
     /// For threads: the message the thread was started from.
     pub starter_message_id: Option<String>,
     pub created_at: i64,
+    /// Newest message ever sent here; compared with read states to tell
+    /// unread channels.
+    pub last_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -80,6 +86,43 @@ pub enum Role {
     Member,
 }
 
+/// How far one member has read one channel.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ReadState {
+    pub channel_id: String,
+    /// Later messages are unread. Starts at the member's join time, so it
+    /// may name no message.
+    pub last_read_id: String,
+    /// Messages after `last_read_id` that mention the member.
+    pub mention_count: i64,
+}
+
+/// What one member wants to be notified of in one guild. Channel entries
+/// override the guild's level; a thread follows its channel unless it has
+/// its own entry.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NotificationSettings {
+    pub guild_id: String,
+    pub level: NotifyLevel,
+    pub channels: Vec<ChannelNotify>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum NotifyLevel {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "mentions")]
+    Mentions,
+    #[serde(rename = "none")]
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ChannelNotify {
+    pub channel_id: String,
+    pub level: NotifyLevel,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewInvite {
     pub guild_id: String,
@@ -100,6 +143,14 @@ pub struct Invite {
     pub expires_at: Option<i64>,
     pub max_uses: Option<i64>,
     pub uses: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Ban {
+    pub user_id: String,
+    pub name: String,
+    pub banned_by: String,
+    pub banned_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -134,6 +185,7 @@ pub struct NewMessage {
     /// language detection.
     pub author_locale: Option<String>,
     pub text: String,
+    pub reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -148,6 +200,12 @@ pub struct Message {
     /// Internal: Edges do not expose it.
     pub author_locale: Option<String>,
     pub text: String,
+    /// A message in the same channel this one answers.
+    pub reply_to: Option<String>,
+    /// Members this message notifies: `@name`s in the text, and the author
+    /// of the message replied to. Set by the cell; absent on messages stored
+    /// before mentions existed.
+    pub mentions: Option<Vec<String>>,
     /// Starts at 1 and increases on every edit.
     pub rev: i64,
     pub created_at: i64,
@@ -192,6 +250,11 @@ pub enum GuildEventKind {
     GuildCreated,
     #[serde(rename = "member_joined")]
     MemberJoined,
+    #[serde(rename = "member_left")]
+    MemberLeft,
+    /// Kicked or banned.
+    #[serde(rename = "member_removed")]
+    MemberRemoved,
     #[serde(rename = "channel_created")]
     ChannelCreated,
     #[serde(rename = "message_created")]
@@ -224,6 +287,18 @@ pub trait MessageCell: Send + Sync + 'static {
     async fn create_invite(&self, body: NewInvite) -> Result<Invite, MessageCellError>;
     /// The invite's creator or a manager may revoke it.
     async fn revoke_invite(&self, guild_id: String, secret: String, user_id: String) -> Result<(), MessageCellError>;
+    /// Valid invites: all of them for managers, a member's own otherwise.
+    async fn get_invites(&self, guild_id: String, user_id: String) -> Result<Vec<Invite>, MessageCellError>;
+    /// The owner cannot leave (`invalid_request`).
+    async fn leave_guild(&self, guild_id: String, user_id: String) -> Result<(), MessageCellError>;
+    /// Managers only. With `ban`, invites no longer let the member back in.
+    async fn remove_member(&self, guild_id: String, user_id: String, member_id: String, ban: bool) -> Result<(), MessageCellError>;
+    async fn unban_member(&self, guild_id: String, user_id: String, member_id: String) -> Result<(), MessageCellError>;
+    async fn get_bans(&self, guild_id: String, user_id: String) -> Result<Vec<Ban>, MessageCellError>;
+    /// Marks the channel read up to `message_id` (never backwards) and
+    /// recounts the mentions after it.
+    async fn ack(&self, guild_id: String, channel_id: String, user_id: String, message_id: String) -> Result<ReadState, MessageCellError>;
+    async fn put_notification_settings(&self, body: NotificationSettings, user_id: String) -> Result<NotificationSettings, MessageCellError>;
     async fn check_permission(&self, guild_id: String, user_id: String, permission: Permission) -> Result<(), MessageCellError>;
     async fn create_channel(&self, body: NewChannel) -> Result<Channel, MessageCellError>;
     async fn send_message(&self, body: NewMessage) -> Result<Message, MessageCellError>;

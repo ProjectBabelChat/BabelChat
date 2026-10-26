@@ -26,20 +26,25 @@
 //! spawned on that runtime and their `JoinHandle` awaited from anywhere.
 
 mod api;
+mod cache;
 mod device;
 mod display;
 mod session;
 mod state;
+mod websocket;
 
 pub use api::{Client, Error, Result};
 pub use babel_api_edge_client::types::{
-    ApiError, Channel, ChannelKind, GuildView, Invite, LanguageAlias, LanguagePolicy,
-    LanguagePolicyUpdate, LanguageView, Member, Message, MessageTranslation, RegionMode, Token,
-    Translation, UserSettings,
+    ApiError, Ban, Channel, ChannelKind, ChannelNotify, GuildView, Invite, LanguageAlias,
+    LanguagePolicy, LanguagePolicyUpdate, LanguageView, Member, Message, MessageTranslation,
+    NotificationSettings, NotifyLevel, ReadState, RegionMode, Token, Translation, UserSettings,
 };
 pub use device::{DeviceError, DeviceTranslator, MockDeviceTranslator};
 pub use display::{Display, Shown};
-pub use session::{ChatMessage, GuildChange, MessageChange, Session, SessionConfig, Update};
+pub use session::{
+    ChatMessage, GuildChange, MessageChange, Notification, NotifyReason, Session, SessionConfig,
+    Transport, Unread, Update,
+};
 
 // Apps share one session between their UI thread and the runtime.
 const _: () = {

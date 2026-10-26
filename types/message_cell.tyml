@@ -38,6 +38,9 @@ type Channel {
     /// For threads: the message the thread was started from.
     starter_message_id: string?
     created_at: int
+    /// Newest message ever sent here; compared with read states to tell
+    /// unread channels.
+    last_message_id: string?
 }
 
 enum Role {
@@ -63,16 +66,62 @@ type Message {
     /// Internal: Edges do not expose it.
     author_locale: string?
     text: string
+    /// A message in the same channel this one answers.
+    reply_to: string?
+    /// Members this message notifies: `@name`s in the text, and the author
+    /// of the message replied to. Set by the cell; absent on messages stored
+    /// before mentions existed.
+    mentions: [string]?
     /// Starts at 1 and increases on every edit.
     rev: int
     created_at: int
     edited_at: int?
 }
 
+/// How far one member has read one channel.
+type ReadState {
+    channel_id: string
+    /// Later messages are unread. Starts at the member's join time, so it
+    /// may name no message.
+    last_read_id: string
+    /// Messages after `last_read_id` that mention the member.
+    mention_count: int
+}
+
+enum NotifyLevel {
+    "all"
+    "mentions"
+    "none"
+}
+
+type ChannelNotify {
+    channel_id: string
+    level: NotifyLevel
+}
+
+/// What one member wants to be notified of in one guild. Channel entries
+/// override the guild's level; a thread follows its channel unless it has
+/// its own entry.
+type NotificationSettings {
+    guild_id: string
+    level: NotifyLevel
+    channels: [ChannelNotify]
+}
+
+type Ban {
+    user_id: string
+    name: string
+    banned_by: string
+    banned_at: int
+}
+
 type GuildSnapshot {
     guild: Guild
     channels: [Channel]
     members: [Member]
+    /// The requesting member's, one per channel.
+    read_states: [ReadState]
+    notifications: NotificationSettings
     /// Sequence number of the last event included in this snapshot.
     last_seq: int
 }
@@ -106,6 +155,7 @@ type NewMessage {
     /// language detection.
     author_locale: string?
     text: string
+    reply_to: string?
 }
 
 type MessageEdit {
@@ -144,6 +194,9 @@ type DeletedMessage {
 enum GuildEventKind {
     "guild_created"
     "member_joined"
+    "member_left"
+    /// Kicked or banned.
+    "member_removed"
     "channel_created"
     "message_created"
     "message_edited"
@@ -200,6 +253,27 @@ interface MessageCell {
 
     /// The invite's creator or a manager may revoke it.
     function revoke_invite(guild_id: string, secret: string, user_id: string) throws MessageCellError
+
+    /// Valid invites: all of them for managers, a member's own otherwise.
+    #[kind = "get"]
+    function get_invites(guild_id: string, user_id: string) -> [Invite] throws MessageCellError
+
+    /// The owner cannot leave (`invalid_request`).
+    function leave_guild(guild_id: string, user_id: string) throws MessageCellError
+
+    /// Managers only. With `ban`, invites no longer let the member back in.
+    function remove_member(guild_id: string, user_id: string, member_id: string, ban: bool) throws MessageCellError
+
+    function unban_member(guild_id: string, user_id: string, member_id: string) throws MessageCellError
+
+    #[kind = "get"]
+    function get_bans(guild_id: string, user_id: string) -> [Ban] throws MessageCellError
+
+    /// Marks the channel read up to `message_id` (never backwards) and
+    /// recounts the mentions after it.
+    function ack(guild_id: string, channel_id: string, user_id: string, message_id: string) -> ReadState throws MessageCellError
+
+    function put_notification_settings(user_id: string, @body: NotificationSettings) -> NotificationSettings throws MessageCellError
 
     #[kind = "get"]
     function check_permission(guild_id: string, user_id: string, permission: Permission) throws MessageCellError

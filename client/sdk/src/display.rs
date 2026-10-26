@@ -62,7 +62,7 @@ pub(crate) enum Plan {
     Device(DeviceJob),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DeviceJob {
     pub message_id: String,
     pub rev: i64,
@@ -183,6 +183,8 @@ mod tests {
             author_id: author.into(),
             author_name: author.into(),
             text: "こんにちは".into(),
+            reply_to: None,
+            mentions: Vec::new(),
             rev,
             created_at: 0,
             edited_at: None,

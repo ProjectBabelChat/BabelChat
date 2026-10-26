@@ -54,7 +54,23 @@ pub fn save(dir: &Path, profile: &str, value: &Profile) -> anyhow::Result<PathBu
     Ok(path)
 }
 
+/// `$XDG_CACHE_HOME/babelchat/models` or the platform's equivalent: on-device
+/// translation models, shared by every profile.
+pub fn models_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("babelchat")
+        .join("models")
+}
+
+/// What the profile's sessions keep between runs (messages, translations).
+pub fn cache_path(dir: &Path, profile: &str) -> PathBuf {
+    dir.join(format!("{profile}.cache.json"))
+}
+
+/// Forgets the sign-in and its cache.
 pub fn remove(dir: &Path, profile: &str) -> anyhow::Result<bool> {
+    let _ = fs::remove_file(cache_path(dir, profile));
     match fs::remove_file(path(dir, profile)) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),

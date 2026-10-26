@@ -69,6 +69,9 @@ type Channel {
     parent_id: string?
     starter_message_id: string?
     created_at: int
+    /// Newest message ever sent here. The channel is unread while it is
+    /// newer than the read state's `last_read_id`.
+    last_message_id: string?
 }
 
 type Member {
@@ -113,12 +116,52 @@ type LanguageView {
     client_translation: bool
 }
 
+/// How far the user has read one channel.
+type ReadState {
+    channel_id: string
+    /// Later messages are unread. Starts at the member's join time, so it
+    /// may name no message.
+    last_read_id: string
+    /// Messages after `last_read_id` that mention the user.
+    mention_count: int
+}
+
+enum NotifyLevel {
+    "all"
+    "mentions"
+    "none"
+}
+
+type ChannelNotify {
+    channel_id: string
+    level: NotifyLevel
+}
+
+/// What the user wants to be notified of in one guild. Channel entries
+/// override the guild's level; a thread follows its channel unless it has
+/// its own entry. Clients decide what to show; the server keeps the choice.
+type NotificationSettings {
+    guild_id: string
+    level: NotifyLevel
+    channels: [ChannelNotify]
+}
+
+type Ban {
+    user_id: string
+    name: string
+    banned_by: string
+    banned_at: int
+}
+
 type GuildView {
     guild: Guild
     channels: [Channel]
     members: [Member]
     policy: LanguagePolicy
     language: LanguageView
+    /// The user's, one per channel.
+    read_states: [ReadState]
+    notifications: NotificationSettings
 }
 
 type NewGuild {
@@ -139,6 +182,8 @@ type Invite {
     /// Share this: anyone holding it can join until it expires or runs out.
     code: string
     guild_id: string
+    created_by: string
+    created_at: int
     expires_at: int?
     max_uses: int?
     uses: int
@@ -169,6 +214,11 @@ type Message {
     author_id: string
     author_name: string
     text: string
+    /// A message in the same channel this one answers.
+    reply_to: string?
+    /// Users this message notifies: members named with `@name` in the text,
+    /// and the author of the message replied to. Set by the server.
+    mentions: [string]
     rev: int
     created_at: int
     edited_at: int?
@@ -202,7 +252,9 @@ type MessageView {
 type NewMessage {
     guild_id: string
     channel_id: string
+    /// `@name` notifies that member.
     text: string
+    reply_to: string?
 }
 
 type MessageEdit {
@@ -225,12 +277,19 @@ type Ready {
 enum EventKind {
     "guild_joined"
     "member_joined"
+    /// For the leaving user too: their last event from the guild.
+    "member_left"
+    /// Kicked or banned.
+    "member_removed"
     "channel_created"
     "message_created"
     "message_edited"
     "message_deleted"
     "message_translated"
     "policy_updated"
+    /// The user read a channel, here or on another device.
+    "read_state_updated"
+    "notifications_updated"
 }
 
 type DeletedMessage {
@@ -252,6 +311,8 @@ type Event {
     /// For policy_updated: the new policy and the user's resulting view.
     policy: LanguagePolicy?
     language: LanguageView?
+    read_state: ReadState?
+    notifications: NotificationSettings?
 }
 
 /// When `poll` fails with `not_found` the session is gone (the Edge
@@ -299,6 +360,10 @@ interface Guilds {
     /// The invite's creator or the owner may revoke it.
     authed function revoke_invite(@claim: Claim, code: string) throws ApiError
 
+    /// Valid invites: all of them for the owner, the user's own otherwise.
+    #[kind = "get"]
+    authed function get_invites(@claim: Claim, guild_id: string) -> [Invite] throws ApiError
+
     /// Joins with an invite code. Invalid, expired and used-up codes are all
     /// `not_found`.
     authed function join_guild(@claim: Claim, invite: string) -> GuildView throws ApiError
@@ -311,6 +376,20 @@ interface Guilds {
     /// Only the owner may change the policy. Languages are normalized and
     /// counted after normalization.
     authed function put_language_policy(@claim: Claim, @body: LanguagePolicyUpdate) -> LanguagePolicy throws ApiError
+
+    /// The owner cannot leave (`invalid_request`).
+    authed function leave_guild(@claim: Claim, guild_id: string) throws ApiError
+
+    /// Owner only. With `ban`, invites no longer let the user back in.
+    authed function remove_member(@claim: Claim, guild_id: string, user_id: string, ban: bool) throws ApiError
+
+    authed function unban_member(@claim: Claim, guild_id: string, user_id: string) throws ApiError
+
+    #[kind = "get"]
+    authed function get_bans(@claim: Claim, guild_id: string) -> [Ban] throws ApiError
+
+    /// Saved for the user's other devices; they hear `notifications_updated`.
+    authed function put_notification_settings(@claim: Claim, @body: NotificationSettings) -> NotificationSettings throws ApiError
 }
 
 interface Messages {
@@ -323,10 +402,18 @@ interface Messages {
     /// Newest first, with translations for the user's language and English.
     #[kind = "get"]
     authed function get_messages(@claim: Claim, guild_id: string, channel_id: string, before: string?, limit: int) -> [MessageView] throws ApiError
+
+    /// Marks the channel read up to `message_id`; never moves backwards.
+    /// Sending a message marks its channel read for the author.
+    authed function ack(@claim: Claim, guild_id: string, channel_id: string, message_id: string) -> ReadState throws ApiError
 }
 
-/// Events are delivered by long polling for now. A WebSocket transport will
-/// carry the same Event type.
+/// Events reach a session by long polling (`poll`) or over a WebSocket at
+/// `GET /gateway/ws?session_id=...&after=...`, authorized with the same
+/// bearer token. The server sends each `EventBatch` as one JSON text frame,
+/// as soon as events exist; the client sends nothing. Resume after a drop by
+/// opening the socket again with the last `next`. Close code 4404 means the
+/// session is gone, like `poll`'s `not_found`.
 interface Gateway {
     authed function connect(@claim: Claim) -> Ready throws ApiError
 

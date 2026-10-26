@@ -7,8 +7,9 @@ use babel_api_directory::types::{
     Directory, DirectoryError, GuildRequest, Placement, PlacementBatch,
 };
 use babel_api_message_cell::types::{
-    ChannelKind, GuildEventKind, MessageCell as _, MessageCellError, MessageEdit, NewChannel,
-    NewGuild, NewInvite, NewMessage, Permission,
+    ChannelKind, ChannelNotify, GuildEventKind, MessageCell as _, MessageCellError, MessageEdit,
+    NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings, NotifyLevel, Permission,
+    ReadState,
 };
 use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
 use babel_engine::mock::{MockBackend, MockConfig};
@@ -39,7 +40,11 @@ impl Directory for FakeDirectory {
     async fn add_membership(&self, user_id: String, guild_id: String) {
         self.memberships.lock().push((user_id, guild_id));
     }
-    async fn remove_membership(&self, _: String, _: String) {}
+    async fn remove_membership(&self, user_id: String, guild_id: String) {
+        self.memberships
+            .lock()
+            .retain(|known| *known != (user_id.clone(), guild_id.clone()));
+    }
     async fn list_memberships(&self, _: String) -> Vec<String> {
         Vec::new()
     }
@@ -130,6 +135,7 @@ async fn send(cell: &MessageCell, guild: &str, channel: &str, user: &str, text: 
         user_id: user.into(),
         author_locale: Some("en-US".into()),
         text: text.into(),
+        reply_to: None,
     })
     .await
     .unwrap()
@@ -391,4 +397,309 @@ async fn invites_admit_until_they_run_out() {
         join(&theirs, "second").await.unwrap_err(),
         MessageCellError::NotFound
     );
+}
+
+/// The read state of `user` in `channel`, as their snapshot shows it.
+async fn read_state(cell: &MessageCell, guild: &str, channel: &str, user: &str) -> ReadState {
+    cell.get_guild(guild.into(), user.into())
+        .await
+        .unwrap()
+        .read_states
+        .into_iter()
+        .find(|state| state.channel_id == channel)
+        .unwrap()
+}
+
+async fn mentions(cell: &MessageCell, guild: &str, channel: &str, user: &str) -> i64 {
+    read_state(cell, guild, channel, user).await.mention_count
+}
+
+/// A guild with a channel, its owner and members "alice" and "bob".
+async fn club(cell: &MessageCell) -> (String, String) {
+    let guild = guild(cell).await;
+    let channel = channel(cell, &guild).await;
+    let invite = invite(cell, &guild, None).await;
+    for user in ["alice", "bob"] {
+        cell.join_guild(guild.clone(), invite.clone(), user.into(), user.into())
+            .await
+            .unwrap();
+    }
+    (guild, channel)
+}
+
+#[tokio::test]
+async fn mentions_and_replies_count_until_read() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let cell = &f.cell;
+
+    // Joining reads nothing; everything after it is unread.
+    let joined = read_state(cell, &guild, &channel, "bob").await;
+    assert_eq!(joined.mention_count, 0);
+
+    let hello = cell
+        .send_message(NewMessage {
+            guild_id: guild.clone(),
+            channel_id: channel.clone(),
+            user_id: "alice".into(),
+            author_locale: None,
+            text: "hi @BOB, and @owner! mail@alice @bobby".into(),
+            reply_to: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(hello.mentions.unwrap(), ["bob", "owner"]);
+    assert!(hello.id.parse::<u64>().unwrap() > joined.last_read_id.parse::<u64>().unwrap());
+    assert_eq!(mentions(cell, &guild, &channel, "bob").await, 1);
+    assert_eq!(mentions(cell, &guild, &channel, "owner").await, 1);
+    assert_eq!(mentions(cell, &guild, &channel, "alice").await, 0);
+
+    // A reply notifies the author of the message it answers.
+    let reply = cell
+        .send_message(NewMessage {
+            guild_id: guild.clone(),
+            channel_id: channel.clone(),
+            user_id: "owner".into(),
+            author_locale: None,
+            text: "welcome!".into(),
+            reply_to: Some(hello.id.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(reply.mentions.unwrap(), ["alice"]);
+    // Writing reads the channel.
+    assert_eq!(mentions(cell, &guild, &channel, "owner").await, 0);
+    assert_eq!(
+        read_state(cell, &guild, &channel, "owner")
+            .await
+            .last_read_id,
+        reply.id
+    );
+
+    // Edits and deletions take mentions back from those who had not read.
+    let ping = send(cell, &guild, &channel, "alice", "@bob ping").await;
+    assert_eq!(mentions(cell, &guild, &channel, "bob").await, 2);
+    cell.edit_message(MessageEdit {
+        guild_id: guild.clone(),
+        channel_id: channel.clone(),
+        message_id: ping.clone(),
+        user_id: "alice".into(),
+        text: "ping".into(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(mentions(cell, &guild, &channel, "bob").await, 1);
+    let again = send(cell, &guild, &channel, "alice", "@bob ping again").await;
+    assert_eq!(mentions(cell, &guild, &channel, "bob").await, 2);
+    cell.delete_message(guild.clone(), channel.clone(), again, "alice".into())
+        .await
+        .unwrap();
+    assert_eq!(mentions(cell, &guild, &channel, "bob").await, 1);
+
+    // Reading up to a message recounts what comes after it; reading never
+    // goes backwards and never past the newest message.
+    let later = send(cell, &guild, &channel, "alice", "@bob later").await;
+    let state = cell
+        .ack(
+            guild.clone(),
+            channel.clone(),
+            "bob".into(),
+            hello.id.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (state.last_read_id.as_str(), state.mention_count),
+        (hello.id.as_str(), 1)
+    );
+    let state = cell
+        .ack(
+            guild.clone(),
+            channel.clone(),
+            "bob".into(),
+            joined.last_read_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(state.last_read_id, hello.id);
+    let state = cell
+        .ack(
+            guild.clone(),
+            channel.clone(),
+            "bob".into(),
+            u64::MAX.to_string(),
+        )
+        .await
+        .unwrap();
+    assert_eq!((state.last_read_id, state.mention_count), (later, 0));
+    assert_eq!(
+        cell.ack(guild.clone(), channel.clone(), "stranger".into(), ping)
+            .await
+            .unwrap_err(),
+        MessageCellError::Forbidden
+    );
+}
+
+#[tokio::test]
+async fn members_leave_and_get_removed() {
+    let f = fixture();
+    let (guild, _) = club(&f.cell).await;
+    let cell = &f.cell;
+    let invite = invite(cell, &guild, None).await;
+
+    // The owner cannot leave; members can, and lose access.
+    assert_eq!(
+        cell.leave_guild(guild.clone(), "owner".into())
+            .await
+            .unwrap_err(),
+        MessageCellError::InvalidRequest
+    );
+    cell.leave_guild(guild.clone(), "alice".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        cell.get_guild(guild.clone(), "alice".into())
+            .await
+            .unwrap_err(),
+        MessageCellError::Forbidden
+    );
+
+    // Only the owner removes members; a ban keeps them out until lifted.
+    assert_eq!(
+        cell.remove_member(guild.clone(), "bob".into(), "owner".into(), false)
+            .await
+            .unwrap_err(),
+        MessageCellError::Forbidden
+    );
+    cell.remove_member(guild.clone(), "owner".into(), "bob".into(), true)
+        .await
+        .unwrap();
+    let bans = cell.get_bans(guild.clone(), "owner".into()).await.unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(
+        (bans[0].name.as_str(), bans[0].banned_by.as_str()),
+        ("bob", "owner")
+    );
+    assert_eq!(
+        cell.join_guild(guild.clone(), invite.clone(), "bob".into(), "bob".into())
+            .await
+            .unwrap_err(),
+        MessageCellError::NotFound
+    );
+    cell.unban_member(guild.clone(), "owner".into(), "bob".into())
+        .await
+        .unwrap();
+    cell.join_guild(guild.clone(), invite.clone(), "bob".into(), "bob".into())
+        .await
+        .unwrap();
+    // Leaving and kicking are different events; both reach the Directory.
+    cell.join_guild(guild.clone(), invite, "alice".into(), "alice".into())
+        .await
+        .unwrap();
+    cell.remove_member(guild.clone(), "owner".into(), "alice".into(), false)
+        .await
+        .unwrap();
+
+    let kinds = cell
+        .poll_events(guild.clone(), 0, 0)
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .filter(|event| event.member.as_ref().is_some_and(|m| m.user_id != "owner"))
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    use GuildEventKind::*;
+    assert_eq!(
+        kinds,
+        [
+            MemberJoined,
+            MemberJoined,
+            MemberLeft,
+            MemberRemoved,
+            MemberJoined,
+            MemberJoined,
+            MemberRemoved
+        ]
+    );
+    for _ in 0..200 {
+        let memberships = f.directory.memberships.lock().clone();
+        if memberships.len() == 2 {
+            assert!(memberships.contains(&("bob".into(), guild.clone())));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the Directory never learned who left");
+}
+
+#[tokio::test]
+async fn invites_are_listed_to_their_creators() {
+    let f = fixture();
+    let (guild, _) = club(&f.cell).await;
+    let cell = &f.cell;
+    let new_invite = |user: &str, expires_at: Option<i64>| {
+        cell.create_invite(NewInvite {
+            guild_id: guild.clone(),
+            user_id: user.into(),
+            expires_at,
+            max_uses: None,
+        })
+    };
+    // `club` made one already.
+    new_invite("owner", None).await.unwrap();
+    new_invite("owner", Some(1)).await.unwrap();
+    let alices = new_invite("alice", None).await.unwrap();
+
+    let all = cell
+        .get_invites(guild.clone(), "owner".into())
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3);
+    let own = cell
+        .get_invites(guild.clone(), "alice".into())
+        .await
+        .unwrap();
+    assert_eq!(own, [alices]);
+    assert!(cell.get_invites(guild, "stranger".into()).await.is_err());
+}
+
+#[tokio::test]
+async fn notification_settings_belong_to_each_member() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let cell = &f.cell;
+    let snapshot = cell.get_guild(guild.clone(), "bob".into()).await.unwrap();
+    assert_eq!(snapshot.notifications.level, NotifyLevel::All);
+
+    let saved = cell
+        .put_notification_settings(
+            NotificationSettings {
+                guild_id: guild.clone(),
+                level: NotifyLevel::Mentions,
+                channels: vec![
+                    ChannelNotify {
+                        channel_id: channel.clone(),
+                        level: NotifyLevel::All,
+                    },
+                    ChannelNotify {
+                        channel_id: "unknown".into(),
+                        level: NotifyLevel::None,
+                    },
+                    ChannelNotify {
+                        channel_id: channel.clone(),
+                        level: NotifyLevel::None,
+                    },
+                ],
+            },
+            "bob".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(saved.channels.len(), 1);
+    assert_eq!(saved.channels[0].level, NotifyLevel::None);
+    let bobs = cell.get_guild(guild.clone(), "bob".into()).await.unwrap();
+    assert_eq!(bobs.notifications, saved);
+    let alices = cell.get_guild(guild.clone(), "alice".into()).await.unwrap();
+    assert_eq!(alices.notifications.level, NotifyLevel::All);
 }

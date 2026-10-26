@@ -1,9 +1,11 @@
 //! The chat loop: commands in, messages out, one line at a time.
 //!
-//! Messages print once their translation has settled, so each appears once
-//! in the reader's language. One still translating after
-//! [`SETTLE_WAIT`] prints as it is and its translation follows on a `↳`
-//! line. Messages get short numbers (`#3`) for `/edit`, `/delete` and
+//! The open channel prints its messages once their translation has
+//! settled, so each appears once in the reader's language. One still
+//! translating after [`SETTLE_WAIT`] prints as it is and its translation
+//! follows on a `↳` line. Other channels speak up only through
+//! notifications (`🔔`), as the guild's notification settings say.
+//! Messages get short numbers (`#3`) for `/reply`, `/edit`, `/delete` and
 //! `/thread`.
 
 use std::{
@@ -13,8 +15,9 @@ use std::{
 };
 
 use babel_sdk::{
-    ChannelKind, ChatMessage, GuildChange, GuildView, LanguagePolicyUpdate, MessageChange,
-    RegionMode, Session, Shown, Update,
+    ChannelKind, ChannelNotify, ChatMessage, GuildChange, GuildView, LanguagePolicyUpdate,
+    MessageChange, Notification, NotifyLevel, NotifyReason, RegionMode, Session, Shown, Unread,
+    Update,
 };
 
 /// How long a new message may wait for its translation before printing.
@@ -39,26 +42,34 @@ pub struct Repl {
     printed: HashMap<String, String>,
     /// New messages waiting for their translation.
     waiting: Vec<(String, String, Instant)>,
-    /// Language summary last shown per guild.
+    /// Language and notification summaries last shown per guild.
     languages: HashMap<String, String>,
+    notifications: HashMap<String, String>,
     /// Channels whose history has been loaded.
     opened: HashSet<String>,
+    /// Names of guilds and people seen, for when they are gone.
+    names: HashMap<String, String>,
 }
 
 pub const HELP: &str = "\
-Type to send to the current channel. Commands:
+Type to send to the current channel; @name notifies someone. Commands:
   /guilds                      list your guilds          /guild <n|name>   switch guild
   /channels                    list channels             /open <n|name>    switch channel
+  /unread                      unread channels           /read             mark this channel read
   /more                        older messages            /members          who is here
+  /reply <#n> <text>           answer a message          /thread <#n> <name>  thread from it
+  /edit <#n> <text>            /delete <#n>
   /create <name>               create a guild            /channel <name>   create a channel
-  /thread <#n> <name>          thread from a message
   /invite [days] [uses]        invite code (0 days = never expires)
-  /join <code>                 join with an invite code
+  /invites                     list invites              /revoke <code>    revoke one
+  /join <code>                 join with an invite code  /leave            leave this guild
+  /kick <name>  /ban <name>  /unban <name>  /bans        (owner)
+  /notify [all|mentions|none] [here]                     what notifies you (here: this channel)
   /languages                   show the guild's languages
   /languages <tags..> [llm <tags..>] [distinct]     set them (owner)
   /locale <tag>                your language             /original on|off  show originals too
   /outside on|off              translate languages the guild does not declare, on device
-  /edit <#n> <text>            /delete <#n>              /quit";
+  /status                      connection                /quit";
 
 impl Repl {
     pub fn new(session: Session, out: Box<dyn Write + Send>) -> Self {
@@ -73,6 +84,8 @@ impl Repl {
             waiting: Vec::new(),
             opened: HashSet::new(),
             languages: HashMap::new(),
+            notifications: HashMap::new(),
+            names: HashMap::new(),
         }
     }
 
@@ -88,8 +101,11 @@ impl Repl {
     /// Greets the user and opens their first guild.
     pub async fn start(&mut self) {
         let settings = self.session.settings();
+        for view in self.session.guilds() {
+            self.remember(&view);
+        }
         self.say(format!(
-            "Connected as {} (reading {}). /help for commands.",
+            "Signed in as {} (reading {}). /help for commands.",
             self.session.user_name(),
             settings.locale
         ));
@@ -151,6 +167,21 @@ impl Repl {
             },
             "edit" => self.edit(rest).await,
             "delete" => self.delete(rest).await,
+            "reply" | "r" => self.reply(rest).await,
+            "unread" => self.unread(),
+            "read" => self.mark_read().await,
+            "invites" => self.invites().await,
+            "revoke" if !rest.is_empty() => match self.session.revoke_invite(rest).await {
+                Ok(()) => self.say("Revoked."),
+                Err(error) => self.say(format!("! {error}")),
+            },
+            "leave" => self.leave().await,
+            "kick" if !rest.is_empty() => self.remove(rest, false).await,
+            "ban" if !rest.is_empty() => self.remove(rest, true).await,
+            "unban" if !rest.is_empty() => self.unban(rest).await,
+            "bans" => self.bans().await,
+            "notify" => self.notify(rest).await,
+            "status" => self.status(),
             _ => self.say("Unknown command or missing argument. /help lists commands."),
         }
         Flow::Continue
@@ -166,9 +197,12 @@ impl Repl {
                 ..
             } => self.message_update(&channel_id, &message_id, change),
             Update::Guild { guild_id, change } => self.guild_update(&guild_id, change),
+            Update::Notification(notification) => self.notification(&notification),
+            // Shown on request (/unread, /channels).
+            Update::Unread { .. } => {}
             Update::Offline { error } => self.say(format!("! offline ({error}); retrying")),
             Update::Online { reloaded } => self.say(if reloaded {
-                "! back online (reloaded)"
+                "! in sync with the server"
             } else {
                 "! back online"
             }),
@@ -199,6 +233,10 @@ impl Repl {
     // ---- Messages -----------------------------------------------------------
 
     fn message_update(&mut self, channel: &str, id: &str, change: MessageChange) {
+        // Other channels speak up through notifications.
+        if self.channel.as_deref() != Some(channel) && !self.printed.contains_key(id) {
+            return;
+        }
         if change == MessageChange::Deleted {
             self.waiting.retain(|(_, waiting, _)| waiting != id);
             if let Some(number) = self.number_of.get(id) {
@@ -256,8 +294,15 @@ impl Repl {
         let m = &message.message;
         let number = self.number(&m.channel_id, &m.id);
         let label = self.channel_label(&m.channel_id);
+        let replying = match &m.reply_to {
+            Some(id) => match self.number_of.get(id) {
+                Some(number) => format!(" ↪#{number}"),
+                None => " ↪".to_string(),
+            },
+            None => String::new(),
+        };
         let mut text = format!(
-            "{lead}{label} #{number} {}: {}{}",
+            "{lead}{label} #{number} {}{replying}: {}{}",
             m.author_name,
             message.display.text,
             marker(&message.display.shown)
@@ -270,12 +315,40 @@ impl Repl {
         self.say(text);
     }
 
+    fn notification(&mut self, notification: &Notification) {
+        let message = &notification.message;
+        if self.channel.as_deref() == Some(message.message.channel_id.as_str())
+            || self.printed.contains_key(&message.message.id)
+        {
+            return;
+        }
+        let why = match notification.reason {
+            NotifyReason::Mention => "mention",
+            NotifyReason::Reply => "reply",
+            NotifyReason::Message => "new",
+        };
+        self.print(message, &format!("🔔 {why} "));
+    }
+
     async fn send(&mut self, text: &str) {
         let Some(channel) = self.channel.clone() else {
             self.say("Open a channel first: /channels, then /open <name>.");
             return;
         };
         match self.session.send(&channel, text).await {
+            Ok(message) => self.print(&message, ""),
+            Err(error) => self.say(format!("! not sent: {error}")),
+        }
+    }
+
+    async fn reply(&mut self, rest: &str) {
+        let (number, text) = rest.split_once(' ').unwrap_or((rest, ""));
+        let (Some((channel, message)), false) = (self.numbered(number), text.trim().is_empty())
+        else {
+            self.say("/reply <#n> <text>");
+            return;
+        };
+        match self.session.reply(&channel, &message, text.trim()).await {
             Ok(message) => self.print(&message, ""),
             Err(error) => self.say(format!("! not sent: {error}")),
         }
@@ -310,27 +383,57 @@ impl Repl {
 
     // ---- Guilds and channels ---------------------------------------------
 
+    /// Keeps names around for when their guild or member is gone.
+    fn remember(&mut self, view: &GuildView) {
+        self.names
+            .insert(view.guild.id.clone(), view.guild.name.clone());
+        for member in &view.members {
+            self.names
+                .insert(member.user_id.clone(), member.name.clone());
+        }
+    }
+
+    fn name_of(&self, id: &str) -> String {
+        self.names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_string())
+    }
+
     fn guild_update(&mut self, guild_id: &str, change: GuildChange) {
         let Some(view) = self.session.guild(guild_id) else {
-            if change == GuildChange::Left {
-                self.say("! you are no longer in a guild");
-                if self.guild.as_deref() == Some(guild_id) {
-                    self.guild = None;
-                    self.channel = None;
-                }
+            let name = self.name_of(guild_id);
+            match change {
+                GuildChange::Left => self.say(format!("! you are no longer in {name}")),
+                GuildChange::Removed => self.say(format!("! you were removed from {name}")),
+                _ => return,
+            }
+            if self.guild.as_deref() == Some(guild_id) {
+                self.guild = None;
+                self.channel = None;
+                self.session.focus(None);
             }
             return;
         };
+        self.remember(&view);
         let name = view.guild.name.clone();
         match change {
             GuildChange::Joined if self.guild.as_deref() != Some(guild_id) => {
                 self.say(format!("★ you are in {name}"))
             }
             GuildChange::MemberJoined { user_id } => {
-                if let Some(member) = view.members.iter().find(|m| m.user_id == user_id) {
-                    self.say(format!("→ {} joined {name}", member.name));
-                }
+                let member = self.name_of(&user_id);
+                self.say(format!("→ {member} joined {name}"));
             }
+            GuildChange::MemberLeft { user_id } => {
+                let member = self.name_of(&user_id);
+                self.say(format!("← {member} left {name}"));
+            }
+            GuildChange::MemberRemoved { user_id } => {
+                let member = self.name_of(&user_id);
+                self.say(format!("← {member} was removed from {name}"));
+            }
+            GuildChange::Notifications => self.say_notifications(&view),
             // Not the one just created and opened here.
             GuildChange::ChannelCreated { channel_id }
                 if self.channel.as_deref() != Some(channel_id.as_str()) =>
@@ -343,6 +446,7 @@ impl Repl {
             GuildChange::Joined
             | GuildChange::ChannelCreated { .. }
             | GuildChange::Left
+            | GuildChange::Removed
             | GuildChange::Refreshed => {}
         }
     }
@@ -352,6 +456,16 @@ impl Repl {
         let summary = languages_summary(view);
         if self.languages.get(&view.guild.id) != Some(&summary) {
             self.languages
+                .insert(view.guild.id.clone(), summary.clone());
+            self.say(summary);
+        }
+    }
+
+    /// Shows what notifies the user in a guild, unless already shown.
+    fn say_notifications(&mut self, view: &GuildView) {
+        let summary = notify_summary(view, self.channel.as_deref());
+        if self.notifications.get(&view.guild.id) != Some(&summary) {
+            self.notifications
                 .insert(view.guild.id.clone(), summary.clone());
             self.say(summary);
         }
@@ -381,8 +495,9 @@ impl Repl {
             } else {
                 " "
             };
+            let unread = unread_mark(self.session.guild_unread(&view.guild.id));
             self.say(format!(
-                "{current}{}. {} ({} members)",
+                "{current}{}. {} ({} members){unread}",
                 i + 1,
                 view.guild.name,
                 view.members.len()
@@ -405,7 +520,10 @@ impl Repl {
             .map(|channel| channel.id.clone());
         match first {
             Some(channel) => self.open(&channel).await,
-            None => self.say("No channels yet: /channel <name>."),
+            None => {
+                self.session.focus(None);
+                self.say("No channels yet: /channel <name>.");
+            }
         }
     }
 
@@ -454,7 +572,8 @@ impl Repl {
             } else {
                 " "
             };
-            self.say(format!("{current}{}. {name}", i + 1));
+            let unread = unread_mark(self.session.unread(&id));
+            self.say(format!("{current}{}. {name}{unread}", i + 1));
         }
     }
 
@@ -490,12 +609,18 @@ impl Repl {
 
     async fn open(&mut self, channel_id: &str) {
         self.channel = Some(channel_id.to_string());
+        // Read as it grows, and quiet.
+        self.session.focus(Some(channel_id));
         let label = self.channel_label(channel_id);
         self.say(format!("-- {label} --"));
-        if self.opened.insert(channel_id.to_string())
-            && let Err(error) = self.session.load_history(channel_id, PAGE).await
-        {
-            self.say(format!("! could not load history: {error}"));
+        if self.opened.insert(channel_id.to_string()) {
+            match self.session.load_history(channel_id, PAGE).await {
+                // Offline: what the cache kept will do.
+                Err(babel_sdk::Error::Transport(_))
+                    if !self.session.messages(channel_id).is_empty() => {}
+                Err(error) => self.say(format!("! could not load history: {error}")),
+                Ok(_) => {}
+            }
         }
         let messages = self.session.messages(channel_id);
         let start = messages.len().saturating_sub(PAGE as usize);
@@ -656,6 +781,197 @@ impl Repl {
         }
     }
 
+    // ---- Reading and notifications ----------------------------------------
+
+    fn unread(&mut self) {
+        let mut any = false;
+        for view in self.session.guilds() {
+            for channel in &view.channels {
+                let unread = self.session.unread(&channel.id);
+                if unread.unread || unread.mentions > 0 {
+                    any = true;
+                    let label = self.channel_label(&channel.id);
+                    let label = if label.starts_with('#') {
+                        format!("{}{label}", view.guild.name)
+                    } else {
+                        label
+                    };
+                    self.say(format!("{label}{}", unread_mark(unread)));
+                }
+            }
+        }
+        if !any {
+            self.say("All read.");
+        }
+    }
+
+    async fn mark_read(&mut self) {
+        let Some(channel) = self.channel.clone() else {
+            return;
+        };
+        if let Err(error) = self.session.mark_read(&channel).await {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    async fn notify(&mut self, rest: &str) {
+        let Some(view) = self.current_view() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        let mut words = rest.split_whitespace();
+        let level = match words.next() {
+            None => {
+                let summary = notify_summary(&view, self.channel.as_deref());
+                self.say(summary);
+                return;
+            }
+            Some("all") => NotifyLevel::All,
+            Some("mentions") => NotifyLevel::Mentions,
+            Some("none") => NotifyLevel::None,
+            Some(_) => {
+                self.say("/notify [all|mentions|none] [here]");
+                return;
+            }
+        };
+        let mut settings = view.notifications.clone();
+        match (words.next(), &self.channel) {
+            (Some("here"), Some(channel)) => {
+                settings
+                    .channels
+                    .retain(|entry| entry.channel_id != *channel);
+                settings.channels.push(ChannelNotify {
+                    channel_id: channel.clone(),
+                    level,
+                });
+            }
+            (Some(_), _) => {
+                self.say("/notify [all|mentions|none] [here]");
+                return;
+            }
+            (None, _) => settings.level = level,
+        }
+        match self.session.set_notifications(settings).await {
+            Ok(_) => {
+                if let Some(view) = self.current_view() {
+                    self.say_notifications(&view);
+                }
+            }
+            Err(error) => self.say(format!("! {error}")),
+        }
+    }
+
+    fn status(&mut self) {
+        let state = if !self.session.is_online() {
+            "offline, retrying"
+        } else if self.session.uses_websocket() {
+            "events by WebSocket"
+        } else {
+            "events by long polling"
+        };
+        self.say(format!(
+            "{} on {}: {state}.",
+            self.session.user_name(),
+            self.session.client().server()
+        ));
+    }
+
+    // ---- Membership -------------------------------------------------------
+
+    async fn invites(&mut self) {
+        let Some(guild) = self.guild.clone() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        match self.session.invites(&guild).await {
+            Ok(invites) if invites.is_empty() => self.say("No invites. /invite makes one."),
+            Ok(invites) => {
+                for invite in invites {
+                    let uses = match invite.max_uses {
+                        Some(max) => format!("{}/{max} uses", invite.uses),
+                        None => format!("{} uses", invite.uses),
+                    };
+                    let by = self.name_of(&invite.created_by);
+                    self.say(format!("{}  by {by}, {uses}", invite.code));
+                }
+            }
+            Err(error) => self.say(format!("! {error}")),
+        }
+    }
+
+    async fn leave(&mut self) {
+        let Some(guild) = self.guild.clone() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        match self.session.leave(&guild).await {
+            // The session reports it (GuildChange::Left).
+            Ok(()) => {}
+            Err(babel_sdk::Error::Api(babel_sdk::ApiError::InvalidRequest)) => {
+                self.say("! owners cannot leave their guild")
+            }
+            Err(error) => self.say(format!("! {error}")),
+        }
+    }
+
+    fn member_named(&self, name: &str) -> Option<String> {
+        let name = name.trim_start_matches('@');
+        self.current_view()?
+            .members
+            .into_iter()
+            .find(|member| member.name.eq_ignore_ascii_case(name))
+            .map(|member| member.user_id)
+    }
+
+    async fn remove(&mut self, name: &str, ban: bool) {
+        let (Some(guild), Some(user)) = (self.guild.clone(), self.member_named(name)) else {
+            self.say("No such member here. /members lists them.");
+            return;
+        };
+        if let Err(error) = self.session.remove_member(&guild, &user, ban).await {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    async fn bans(&mut self) {
+        let Some(guild) = self.guild.clone() else {
+            return;
+        };
+        match self.session.bans(&guild).await {
+            Ok(bans) if bans.is_empty() => self.say("Nobody is banned."),
+            Ok(bans) => {
+                let names = bans.iter().map(|ban| ban.name.clone()).collect::<Vec<_>>();
+                self.say(format!("Banned: {}", names.join(", ")));
+            }
+            Err(error) => self.say(format!("! {error}")),
+        }
+    }
+
+    async fn unban(&mut self, name: &str) {
+        let Some(guild) = self.guild.clone() else {
+            return;
+        };
+        let name = name.trim_start_matches('@');
+        let user = match self.session.bans(&guild).await {
+            Ok(bans) => bans
+                .into_iter()
+                .find(|ban| ban.name.eq_ignore_ascii_case(name))
+                .map(|ban| ban.user_id),
+            Err(error) => {
+                self.say(format!("! {error}"));
+                return;
+            }
+        };
+        let Some(user) = user else {
+            self.say("Nobody by that name is banned.");
+            return;
+        };
+        match self.session.unban(&guild, &user).await {
+            Ok(()) => self.say(format!("{name} may join again.")),
+            Err(error) => self.say(format!("! {error}")),
+        }
+    }
+
     async fn settings(&mut self, change: impl FnOnce(&mut babel_sdk::UserSettings)) {
         let mut settings = self.session.settings();
         change(&mut settings);
@@ -725,4 +1041,49 @@ fn languages_summary(view: &GuildView) -> String {
         policy.plan,
         language.effective,
     )
+}
+
+/// ` • @2` for an unread channel with two mentions.
+fn unread_mark(unread: Unread) -> String {
+    let mut mark = String::new();
+    if unread.unread {
+        mark.push_str("  •");
+    }
+    if unread.mentions > 0 {
+        mark.push_str(&format!("  @{}", unread.mentions));
+    }
+    mark
+}
+
+fn level_name(level: NotifyLevel) -> &'static str {
+    match level {
+        NotifyLevel::All => "every message",
+        NotifyLevel::Mentions => "mentions and replies",
+        NotifyLevel::None => "nothing",
+    }
+}
+
+fn notify_summary(view: &GuildView, channel: Option<&str>) -> String {
+    let settings = &view.notifications;
+    let mut summary = format!(
+        "Notifications in {}: {}",
+        view.guild.name,
+        level_name(settings.level)
+    );
+    for entry in &settings.channels {
+        if let Some(known) = view.channels.iter().find(|c| c.id == entry.channel_id) {
+            let here = if channel == Some(known.id.as_str()) {
+                " (here)"
+            } else {
+                ""
+            };
+            summary.push_str(&format!(
+                "; #{}{here}: {}",
+                known.name,
+                level_name(entry.level)
+            ));
+        }
+    }
+    summary.push('.');
+    summary
 }

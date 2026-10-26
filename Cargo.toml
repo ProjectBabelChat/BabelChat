@@ -19,6 +19,7 @@ members = [
     "server/all-in-one",
     "client/sdk",
     "client/cli",
+    "client/bergamot",
 ]
 exclude = ["tools/apigen"]
 
@@ -38,6 +39,7 @@ babel-engine = { path = "server/engine" }
 babel-edge = { path = "server/edge" }
 babel-server = { path = "server/all-in-one" }
 babel-sdk = { path = "client/sdk" }
+babel-bergamot = { path = "client/bergamot" }
 babel-api-account = { path = "server/api/account" }
 babel-api-directory = { path = "server/api/directory" }
 babel-api-edge = { path = "server/api/edge" }

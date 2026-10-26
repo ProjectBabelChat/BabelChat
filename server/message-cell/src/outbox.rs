@@ -10,6 +10,8 @@
 //! guild_created    ─▶ Translation Cell put_space
 //! channel_created  ─▶ Translation Cell put_node
 //! member_joined    ─▶ Directory add_membership
+//! member_left,
+//! member_removed   ─▶ Directory remove_membership
 //! message_created  ─▶ Translation Cell ingest
 //! message_edited   ─▶ Translation Cell ingest (new revision)
 //! message_deleted  ─▶ Translation Cell delete_message
@@ -163,6 +165,13 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             directory.add_membership(member.user_id, guild_id).await;
             Delivery::Done
         }
+        GuildEventKind::MemberLeft | GuildEventKind::MemberRemoved => {
+            let (Some(member), Some(directory)) = (event.member, inner.directory.get()) else {
+                return Delivery::Retry;
+            };
+            directory.remove_membership(member.user_id, guild_id).await;
+            Delivery::Done
+        }
         GuildEventKind::MessageCreated | GuildEventKind::MessageEdited => {
             let Some(message) = event.message else {
                 return Delivery::Done;
@@ -170,6 +179,11 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             outcome(
                 translation_cell
                     .ingest(IngestMessage {
+                        reply_to: message.reply_to.map(|id| MessageRef {
+                            space: guild_id.clone(),
+                            conversation: message.channel_id.clone(),
+                            id,
+                        }),
                         message: MessageRef {
                             space: guild_id,
                             conversation: message.channel_id,
@@ -179,7 +193,6 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                         author: message.author_name,
                         author_locale: message.author_locale,
                         text: message.text,
-                        reply_to: None,
                         sent_at: message.created_at,
                     })
                     .await,

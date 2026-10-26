@@ -9,7 +9,7 @@ This repository holds the open-source parts of the project.
 |---|---|
 | [`docs/`](docs) | Architecture and development documentation |
 | [`server/`](server) | The servers: Edge, Directory, Message and Translation Cells, translation engine |
-| [`client/`](client) | The client SDK and `babel`, a terminal chat client |
+| [`client/`](client) | The client SDK, on-device translation models (`bergamot`) and `babel`, a terminal chat client |
 | [`types/`](types) | API definitions in [TYML](https://tyml-org.github.io/tyml-lang.org/), one file per boundary |
 | [`crates/babel-lang`](crates/babel-lang) | Language tag normalization, shared by clients and servers |
 | [`gpui-reloaded/`](gpui-reloaded) | Fork of Zed's GPUI UI framework |

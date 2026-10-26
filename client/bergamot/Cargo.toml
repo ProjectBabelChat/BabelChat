@@ -1,0 +1,21 @@
+[package]
+name = "babel-bergamot"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat on-device translation: the Firefox Translations (Bergamot) models, run by fxtranslate"
+
+[dependencies]
+async-trait.workspace = true
+babel-sdk.workspace = true
+fxtranslate = { version = "0.5", features = ["net", "icu-segmenter"] }
+parking_lot.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

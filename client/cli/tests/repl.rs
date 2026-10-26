@@ -164,3 +164,78 @@ async fn two_people_chat_in_their_own_languages() {
         .await;
     assert!(screen.contains("┆ またね"));
 }
+
+#[tokio::test]
+async fn other_channels_speak_up_through_notifications() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        message_cells: 1,
+        translation_cells: 1,
+        engine: EngineChoice::Mock {
+            latency: Duration::from_millis(20),
+        },
+        default_plan: Plan::Paid3,
+        daily_budget: None,
+    };
+    let (address, _server) = start(&config, "127.0.0.1:0").await.unwrap();
+    let url = format!("http://{address}");
+
+    let mut alice = Terminal::open(&url, "alice", "ja-JP").await;
+    let mut bob = Terminal::open(&url, "bob", "en-US").await;
+    alice.type_line("/create Rhythm Club").await;
+    alice.type_line("/languages ja en llm ja en").await;
+    alice.type_line("/channel general").await;
+    alice.type_line("/invite").await;
+    let code = alice
+        .recent()
+        .lines()
+        .find_map(|line| line.strip_prefix("Invite code: "))
+        .unwrap()
+        .to_string();
+    bob.type_line(&format!("/join {code}")).await;
+    assert!(bob.recent().contains("-- #general --"));
+
+    // Alice moves on to #random; Bob stays in #general and hears of it
+    // through notifications (of every message, by default).
+    alice.type_line("/channel random").await;
+    alice.type_line("誰かいる？").await;
+    alice.type_line("@bob 見て").await;
+    bob.wait_for("🔔 new #random #1 alice: [en-US] 誰かいる？  ‹ja-JP→en-US›")
+        .await;
+    bob.wait_for("🔔 mention #random #2 alice: [en-US] @bob 見て  ‹ja-JP→en-US›")
+        .await;
+    bob.type_line("/unread").await;
+    assert!(bob.recent().contains("Rhythm Club#random  •  @1"));
+
+    bob.type_line("/reply #2 On my way").await;
+    alice.wait_for("bob ↪#2: [ja-JP] On my way").await;
+
+    // Opening the channel reads it.
+    bob.type_line("/open random").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        bob.type_line("/unread").await;
+        if bob.recent().contains("All read.") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never read");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Mentions only: plain messages elsewhere stay quiet.
+    bob.type_line("/open general").await;
+    bob.type_line("/notify mentions").await;
+    assert!(
+        bob.recent()
+            .contains("Notifications in Rhythm Club: mentions and replies.")
+    );
+    alice.type_line("静かに").await;
+    alice.type_line("@bob 来て").await;
+    let screen = bob.wait_for("🔔 mention #random").await;
+    assert!(!screen.contains("静かに"));
+
+    alice.type_line("/kick bob").await;
+    bob.wait_for("! you were removed from Rhythm Club").await;
+    alice.wait_for("← bob was removed from Rhythm Club").await;
+}

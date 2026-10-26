@@ -39,7 +39,8 @@ state change + guild log entry (+ outbox entry)
 | `guild_created` | Translation Cell `put_space` |
 | `channel_created` | Translation Cell `put_node` (threads carry their starter message) |
 | `member_joined` | Directory `add_membership` |
-| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count) |
+| `member_left`, `member_removed` | Directory `remove_membership` |
+| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer) |
 | `message_deleted` | Translation Cell `delete_message` |
 
 Delivery is at least once; receivers are idempotent (`ingest` is keyed by
@@ -54,7 +55,9 @@ Roles are guild data, so permission checks live here. Phase 0 has two roles:
 | | owner | member |
 |---|---|---|
 | view, send messages, start threads, invite | ✓ | ✓ |
+| leave the guild | | ✓ |
 | create categories and channels, change the language policy | ✓ | |
+| remove (kick or ban) members, list bans, unban, see every invite | ✓ | |
 | edit a message | own | own |
 | delete a message | any | own |
 | revoke an invite | any | own |
@@ -78,19 +81,60 @@ to know them.
   limit; any member may invite.
 - `join_guild(guild, secret, …)` checks and counts the invite in the same
   write that adds the member. Unknown, expired and used-up invites are all
-  `not_found`. A member joining again needs no valid invite.
+  `not_found`, and so is an invite used by a banned user. A member joining
+  again needs no valid invite.
+- `get_invites` lists the valid invites (all for the owner, a member's own
+  otherwise) and deletes expired and used-up ones on the way.
 - The public code is `<guild id>-<secret>`, built by the Edge, so any Edge
   can route it to the right cell. The guild ID gives nothing away: without a
   valid secret it opens nothing.
+
+## Leaving and removal
+
+`leave_guild` and `remove_member` (owner only; the owner cannot leave or be
+removed) delete the member, their read markers and notification settings
+in one write with a `member_left` or `member_removed` log entry. Edges stop
+fanning the guild out to that user when the entry reaches them; the outbox
+removes the membership from the Directory. `remove_member` with `ban` also
+stores a `Ban`, and a banned user's invites fail like invalid ones until
+`unban_member`. Invites the member created stay valid.
+
+## Mentions, replies and reading
+
+- **Mentions.** `send_message` and `edit_message` resolve `@name` in the
+  text against the guild's members: names are unique, case-insensitive and
+  one word (the Account service refuses spaces and `@`), so the longest
+  member name that ends where the word ends wins, and `mail@example` names
+  no one. The message stores the member IDs (`mentions`, at most 20).
+- **Replies.** `reply_to` names a message in the same channel; its author is
+  mentioned too. The Translation Cell gets the reply relation as context.
+- **Read markers.** `reads` keeps, per member and channel, the last message
+  read and the number of later messages that mention them. A channel record
+  keeps its newest message ID; a channel is unread while that is newer.
+  Before a member has read anything, the marker is their join time (an ID
+  made from the timestamp), so history from before they joined is not
+  unread. The counts move in the same write as the message: `+1` for each
+  mentioned member who has not read it, `−1` when an edit drops a mention or
+  the message is deleted, and the author's marker jumps to their own
+  message (writing reads the channel). `ack` moves a marker forward only,
+  never past the newest message, and recounts the mentions after it from
+  the messages themselves (at most 1000).
+- **Notification settings** are stored per member (`notify`); the cell only
+  keeps them. Clients decide what to show, since only they know which
+  channel is on screen and what the message reads like in the reader's
+  language.
 
 ## Storage
 
 ```
 guilds    guild                       GuildRecord (guild, translation cell, last seq, last message id)
 members   guild / user                Member
-channels  guild / channel             Channel
+channels  guild / channel             Channel (with its newest message id)
 messages  guild / channel / id        Message
 invites   guild / secret              Invite (expiry, uses)
+bans      guild / user                Ban
+reads     guild / user / channel      ReadState (read marker, unread mentions)
+notify    guild / user                NotificationSettings
 log       guild / seq                 GuildEvent
 outbox    seq                         OutboxEntry
 ```

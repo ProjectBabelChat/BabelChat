@@ -19,13 +19,17 @@ use parking_lot::Mutex;
 
 /// Events kept per session for a client to catch up after a short gap.
 const QUEUE_LIMIT: usize = 1000;
+/// Subscribed, but the snapshot is not taken yet.
+const PENDING: i64 = i64::MAX;
 /// Sessions not polled for this long are dropped.
 pub const SESSION_IDLE: Duration = Duration::from_secs(10 * 60);
 
 pub struct Session {
     pub user_id: String,
     pub settings: UserSettings,
-    pub guilds: HashSet<String>,
+    /// Guild -> sequence number of the snapshot the session started from
+    /// (`PENDING` until it is taken).
+    pub guilds: HashMap<String, i64>,
     events: VecDeque<Event>,
     next_seq: i64,
     /// Newest event pushed out of the queue unread.
@@ -55,6 +59,8 @@ pub fn event(kind: EventKind, guild_id: &str) -> Event {
         translation: None,
         policy: None,
         language: None,
+        read_state: None,
+        notifications: None,
     }
 }
 
@@ -65,7 +71,7 @@ impl Sessions {
             Session {
                 user_id: user_id.to_string(),
                 settings,
-                guilds: HashSet::new(),
+                guilds: HashMap::new(),
                 events: VecDeque::new(),
                 next_seq: 1,
                 dropped: 0,
@@ -75,19 +81,68 @@ impl Sessions {
     }
 
     /// Adds a guild to every session of `user_id` (or one session), so they
-    /// start receiving its events.
+    /// start receiving its events. Follow with [`Self::confirm_guild`] once
+    /// the snapshot is taken, or [`Self::remove_guild`] if it failed.
     pub fn add_guild(&self, user_id: &str, only: Option<&str>, guild: &str) {
         let mut sessions = self.sessions.lock();
         let mut by_guild = self.by_guild.lock();
         for (id, session) in sessions.iter_mut() {
             if session.user_id == user_id && only.is_none_or(|only| only == id) {
-                session.guilds.insert(guild.to_string());
+                session.guilds.entry(guild.to_string()).or_insert(PENDING);
                 by_guild
                     .entry(guild.to_string())
                     .or_default()
                     .insert(id.clone());
             }
         }
+    }
+
+    /// Records the snapshot pending subscriptions started from.
+    pub fn confirm_guild(&self, user_id: &str, guild: &str, seq: i64) {
+        for session in self.sessions.lock().values_mut() {
+            if session.user_id == user_id
+                && let Some(from) = session.guilds.get_mut(guild)
+                && *from == PENDING
+            {
+                *from = seq;
+            }
+        }
+    }
+
+    /// Undoes [`Self::add_guild`] when the snapshot could not be taken:
+    /// the user may not see the guild (any more).
+    pub fn cancel_guild(&self, user_id: &str, guild: &str) {
+        self.remove_guild_where(user_id, guild, |from| from == PENDING);
+    }
+
+    /// Stops `user_id`'s sessions receiving `guild` after the guild event
+    /// `seq` removed them. Subscriptions from a later snapshot (they joined
+    /// again since) stay.
+    pub fn remove_guild(&self, user_id: &str, guild: &str, seq: i64) {
+        self.remove_guild_where(user_id, guild, |from| from < seq);
+    }
+
+    fn remove_guild_where(&self, user_id: &str, guild: &str, stale: impl Fn(i64) -> bool) {
+        let mut sessions = self.sessions.lock();
+        let mut by_guild = self.by_guild.lock();
+        for (id, session) in sessions.iter_mut() {
+            if session.user_id == user_id
+                && session.guilds.get(guild).is_some_and(|from| stale(*from))
+            {
+                session.guilds.remove(guild);
+                if let Some(ids) = by_guild.get_mut(guild) {
+                    ids.remove(id);
+                }
+            }
+        }
+    }
+
+    /// Whether `id` is a live session of `user_id`.
+    pub fn owns(&self, id: &str, user_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .get(id)
+            .is_some_and(|session| session.user_id == user_id)
     }
 
     pub fn update_settings(&self, user_id: &str, settings: &UserSettings) {
@@ -192,7 +247,7 @@ impl Sessions {
         let mut by_guild = self.by_guild.lock();
         for id in ids {
             if let Some(session) = sessions.remove(id) {
-                for guild in session.guilds {
+                for guild in session.guilds.into_keys() {
                     if let Some(ids) = by_guild.get_mut(&guild) {
                         ids.remove(id);
                     }
@@ -241,6 +296,44 @@ mod tests {
 
         // Behind it: the session is gone, so the client reloads.
         assert!(sessions.poll("s", "u", 0, Duration::ZERO).await.is_none());
-        assert!(sessions.poll("s", "u", next, Duration::ZERO).await.is_none());
+        assert!(
+            sessions
+                .poll("s", "u", next, Duration::ZERO)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn removals_spare_sessions_that_joined_again() {
+        let sessions = Sessions::default();
+        sessions.create("s", "u", settings());
+        let message = || Some(event(EventKind::MessageCreated, "g"));
+        let sessions = &sessions;
+        let received = |after| async move {
+            sessions
+                .poll("s", "u", after, Duration::ZERO)
+                .await
+                .unwrap()
+                .0
+                .len()
+        };
+
+        sessions.add_guild("u", None, "g");
+        sessions.confirm_guild("u", "g", 10);
+        // Removed at 7, then joined again: the snapshot at 10 is newer.
+        sessions.remove_guild("u", "g", 7);
+        sessions.broadcast("g", |_| message());
+        assert_eq!(received(0).await, 1);
+        // Removed after the snapshot: no more events.
+        sessions.remove_guild("u", "g", 11);
+        sessions.broadcast("g", |_| message());
+        assert_eq!(received(1).await, 0);
+
+        // A snapshot that failed undoes the subscription.
+        sessions.add_guild("u", None, "h");
+        sessions.cancel_guild("u", "h");
+        sessions.broadcast("h", |_| Some(event(EventKind::MessageCreated, "h")));
+        assert_eq!(received(1).await, 0);
     }
 }
