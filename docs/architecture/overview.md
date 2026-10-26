@@ -96,6 +96,7 @@ guild creation.
 | Wiring | `server/all-in-one` | — |
 | Client SDK: session, display, on-device translation | `client/sdk` | `types/edge.tyml` (generated client) |
 | Terminal client | `client/cli` | — |
+| Desktop app (GPUI + Material 3 Expressive) | `client/desktop` | — |
 
 ## What is open and what is closed
 

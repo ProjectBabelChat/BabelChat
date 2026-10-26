@@ -3,10 +3,10 @@
 `client/sdk` (`babel-sdk`) is everything a BabelChat app needs except the
 UI: signing in, a live session, local state, which text to show each
 message in, and on-device translation. The terminal client (`client/cli`)
-is built on it, and the desktop app (GPUI + MD3E) will be too.
+is built on it, and so is the [desktop app](desktop.md) (GPUI + MD3E).
 
 ```
- app (CLI today, GPUI later)
+ app (terminal, desktop)
    │  calls                         ▲ Update: what changed
    ▼                                │
  Session ── state      guilds, channels, members, messages, translations
@@ -142,6 +142,14 @@ Firefox's CDN, which are provisioned for Firefox. A released app must
 mirror the models it needs and serve them itself; fxtranslate takes another
 records URL from `FXTRANSLATE_RECORDS_URL`, and the files can be put in
 `models_dir` directly.
+
+## Saved sign-ins
+
+`babel_sdk::profile` keeps one sign-in per profile name in
+`~/.config/babelchat/<profile>.json` (mode 0600), with the session cache
+next to it (`<profile>.cache.json`). Every app on the machine shares them:
+a profile signed in from the terminal client opens in the desktop app, and
+the other way round.
 
 ## Unread channels and notifications
 

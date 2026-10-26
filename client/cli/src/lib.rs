@@ -5,5 +5,5 @@
 //! through `babel-bergamot`, fetched on first use; `--device mock` swaps in
 //! the SDK's mock, which shows device translations as `[device fr-FR] …`.
 
-pub mod profile;
+pub use babel_sdk::profile;
 pub mod repl;

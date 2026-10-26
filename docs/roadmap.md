@@ -54,7 +54,27 @@ client:
 - Real on-device translation: the Firefox Translations (Bergamot) models,
   run by fxtranslate behind `DeviceTranslator`, downloaded on first use.
 
-## Phase 3 — split it up
+## Phase 3 — the desktop app (done)
+
+A Discord-like desktop app on the SDK (`client/desktop`, `babelchat`),
+with GPUI and the Material 3 Expressive components of `gpui-md3e`:
+
+- Sign up and sign in; profiles shared with the terminal client (saved
+  sign-ins moved into the SDK).
+- Guild rail, channel list, messages, members. Create a guild with its
+  languages, invite, join with a code, create channels, leave; owners kick
+  and ban.
+- Messages in the reader's language with where the translation came from
+  and the original on request; replies, mentions, edits, deletions, older
+  history on scroll.
+- Unread dots and mention counts; notification settings; in-app and
+  desktop notifications.
+- The UI in English and Japanese, following the language the user reads.
+- Scripted runs with screenshots (`BABEL_SCRIPT`), from a driver moved into
+  `gpui-md3e`. `TextField` gained masking (passwords) and scrolling to the
+  caret.
+
+## Phase 4 — split it up
 
 - HTTP clients behind the internal traits; each service as its own binary.
 - Internal network: WireGuard plus mutual TLS; service credentials; tenant
@@ -65,7 +85,7 @@ client:
 - Per-user events (read markers, notification settings) across Edges.
 - Log trimming.
 
-## Phase 4 — real translation
+## Phase 5 — real translation
 
 - Validate the OpenAI-compatible backend against llama.cpp / vLLM with
   Hy-MT2 and Qwen3; tune window and summary sizes with real usage numbers.
@@ -74,12 +94,13 @@ client:
 - Translation Cell as a standalone, self-hostable product for other
   platforms; Server SDK documentation.
 
-## Phase 5 — the product
+## Phase 6 — the product
 
 - BabelChat Cloud engine; billing setting plans; Discord account linking.
 - Managed Translation Cells for platforms that do not want to host one.
-- Desktop client (GPUI + MD3E) on the SDK.
 - Mirrored hosting for the on-device models, and model updates.
+- The desktop app: multi-line messages, editing guilds and channels,
+  threads and categories from the UI, keyboard navigation, tray icon.
 - Chat features not built yet: roles beyond owner and member, attachments,
   reactions, typing indicators, renaming and deleting guilds and channels,
   push notifications to devices that are offline.

@@ -1,0 +1,26 @@
+[package]
+name = "babel-desktop"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat for the desktop: a GPUI + Material 3 Expressive app on the client SDK"
+
+[[bin]]
+name = "babelchat"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+babel-bergamot.workspace = true
+babel-lang.workspace = true
+babel-sdk.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+clap = { workspace = true, features = ["env"] }
+gpui.workspace = true
+gpui-md3e = { path = "../../gpui-md3e" }
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

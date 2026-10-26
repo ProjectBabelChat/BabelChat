@@ -29,6 +29,7 @@ mod api;
 mod cache;
 mod device;
 mod display;
+pub mod profile;
 mod session;
 mod state;
 mod websocket;

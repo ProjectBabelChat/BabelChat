@@ -15,7 +15,6 @@ anyhow.workspace = true
 gpui.workspace = true
 gpui-md3e = { path = ".." }
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
-smol.workspace = true
 
 [lints]
 workspace = true

@@ -15,6 +15,7 @@ icons=(
   palette pause person photo_camera play_arrow public refresh remove rocket_launch schedule
   search send settings share skip_next smart_toy sort star thumb_up translate tune upload
   videocam visibility volume_up warning waving_hand
+  block logout person_add person_remove reply tag
 )
 for name in "${icons[@]}"; do
   curl -fsSL -o "$name.svg" "$base/$name/materialsymbolsrounded/${name}_24px.svg"

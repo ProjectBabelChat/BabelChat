@@ -1,0 +1,434 @@
+//! The app's own words, in English and Japanese. Messages are translated by
+//! BabelChat; the buttons around them are translated here, in the language
+//! the user reads.
+
+/// Every string the UI shows. `{0}`, `{1}` are filled in with [`fill`].
+pub struct Strings {
+    pub app_name: &'static str,
+    pub tagline: &'static str,
+    pub sign_in: &'static str,
+    pub create_account: &'static str,
+    pub have_account: &'static str,
+    pub need_account: &'static str,
+    pub server: &'static str,
+    pub name: &'static str,
+    pub name_hint: &'static str,
+    pub password: &'static str,
+    pub locale: &'static str,
+    pub locale_hint: &'static str,
+    pub connecting: &'static str,
+    pub retry: &'static str,
+    pub session_expired: &'static str,
+    pub cannot_connect: &'static str,
+
+    pub add_guild: &'static str,
+    pub create_guild: &'static str,
+    pub join_guild: &'static str,
+    pub guild_name: &'static str,
+    pub invite_code: &'static str,
+    pub invite_code_hint: &'static str,
+    pub guild_languages: &'static str,
+    pub guild_languages_hint: &'static str,
+    pub create: &'static str,
+    pub join: &'static str,
+    pub cancel: &'static str,
+    pub close: &'static str,
+    pub save: &'static str,
+    pub no_guilds_title: &'static str,
+    pub no_guilds_body: &'static str,
+    pub channels: &'static str,
+    pub create_channel: &'static str,
+    pub channel_name: &'static str,
+    pub channel_topic: &'static str,
+    pub no_channels: &'static str,
+    pub invite_people: &'static str,
+    pub invite_body: &'static str,
+    pub copy: &'static str,
+    pub copied: &'static str,
+    pub leave_guild: &'static str,
+    pub leave_confirm: &'static str,
+    pub leave: &'static str,
+    pub notifications: &'static str,
+    pub notify_guild: &'static str,
+    pub notify_channel: &'static str,
+    pub notify_all: &'static str,
+    pub notify_mentions: &'static str,
+    pub notify_none: &'static str,
+    pub notify_inherit: &'static str,
+    pub members: &'static str,
+    pub owner: &'static str,
+    pub kick: &'static str,
+    pub ban: &'static str,
+    pub kick_confirm: &'static str,
+    pub ban_confirm: &'static str,
+
+    pub message_placeholder: &'static str,
+    pub replying_to: &'static str,
+    pub editing: &'static str,
+    pub esc_to_cancel: &'static str,
+    pub reply: &'static str,
+    pub edit: &'static str,
+    pub delete: &'static str,
+    pub delete_confirm: &'static str,
+    pub edited: &'static str,
+    pub translated_by_server: &'static str,
+    pub translated_on_device: &'static str,
+    pub translating: &'static str,
+    pub untranslated: &'static str,
+    pub show_original: &'static str,
+    pub show_translation: &'static str,
+    pub original_in: &'static str,
+    pub channel_start: &'static str,
+    pub loading: &'static str,
+    pub deleted_message: &'static str,
+    pub offline: &'static str,
+
+    pub settings: &'static str,
+    pub show_originals_setting: &'static str,
+    pub translate_outside_setting: &'static str,
+    pub sign_out: &'static str,
+    pub languages_summary: &'static str,
+    pub languages_free: &'static str,
+    pub you_read_server: &'static str,
+    pub you_read_device: &'static str,
+    pub you_read_original: &'static str,
+    pub ai_translation: &'static str,
+    pub languages_limit: &'static str,
+
+    pub removed_from: &'static str,
+    pub joined: &'static str,
+    pub mention_title: &'static str,
+    pub reply_title: &'static str,
+    pub message_title: &'static str,
+    pub open: &'static str,
+    pub today_at: &'static str,
+    pub yesterday_at: &'static str,
+
+    pub wrong_password: &'static str,
+    pub name_taken: &'static str,
+    pub invalid_request: &'static str,
+    pub invalid_language: &'static str,
+    pub limit_exceeded: &'static str,
+    pub rate_limited: &'static str,
+    pub unavailable: &'static str,
+    pub not_found: &'static str,
+    pub invite_invalid: &'static str,
+    pub not_allowed: &'static str,
+}
+
+pub static EN: Strings = Strings {
+    app_name: "BabelChat",
+    tagline: "Write in your language. Everyone reads in theirs.",
+    sign_in: "Sign in",
+    create_account: "Create account",
+    have_account: "I have an account",
+    need_account: "Create an account",
+    server: "Server",
+    name: "Name",
+    name_hint: "One word, without spaces or @",
+    password: "Password",
+    locale: "Language you read",
+    locale_hint: "A language tag, such as en-US or ja-JP",
+    connecting: "Connecting…",
+    retry: "Retry",
+    session_expired: "Your sign-in has expired. Please sign in again.",
+    cannot_connect: "Could not reach the server: {0}",
+
+    add_guild: "Add a guild",
+    create_guild: "Create a guild",
+    join_guild: "Join a guild",
+    guild_name: "Guild name",
+    invite_code: "Invite code",
+    invite_code_hint: "Ask a member for one",
+    guild_languages: "Languages",
+    guild_languages_hint: "Messages are translated between these languages.",
+    create: "Create",
+    join: "Join",
+    cancel: "Cancel",
+    close: "Close",
+    save: "Save",
+    no_guilds_title: "No guilds yet",
+    no_guilds_body: "Create a guild, or join one with an invite code.",
+    channels: "Channels",
+    create_channel: "Create a channel",
+    channel_name: "Channel name",
+    channel_topic: "Topic (optional)",
+    no_channels: "No channels yet.",
+    invite_people: "Invite people",
+    invite_body: "Share this code. It works for 7 days.",
+    copy: "Copy",
+    copied: "Copied",
+    leave_guild: "Leave guild",
+    leave_confirm: "Leave {0}? You will need a new invite to come back.",
+    leave: "Leave",
+    notifications: "Notifications",
+    notify_guild: "This guild",
+    notify_channel: "#{0}",
+    notify_all: "All messages",
+    notify_mentions: "Only @mentions and replies",
+    notify_none: "Nothing",
+    notify_inherit: "Same as the guild",
+    members: "Members",
+    owner: "Owner",
+    kick: "Kick",
+    ban: "Ban",
+    kick_confirm: "Remove {0} from the guild? They can come back with an invite.",
+    ban_confirm: "Ban {0}? They cannot come back until they are unbanned.",
+
+    message_placeholder: "Message #{0}",
+    replying_to: "Replying to {0}",
+    editing: "Editing a message",
+    esc_to_cancel: "Esc to cancel",
+    reply: "Reply",
+    edit: "Edit",
+    delete: "Delete",
+    delete_confirm: "Delete this message?",
+    edited: "(edited)",
+    translated_by_server: "Translated from {0}",
+    translated_on_device: "Translated on this device from {0}",
+    translating: "Translating…",
+    untranslated: "Not translated",
+    show_original: "Show original",
+    show_translation: "Show translation",
+    original_in: "Original ({0})",
+    channel_start: "This is the beginning of #{0}.",
+    loading: "Loading…",
+    deleted_message: "a deleted message",
+    offline: "Offline — reconnecting…",
+
+    settings: "Settings",
+    show_originals_setting: "Also show the original under translations",
+    translate_outside_setting: "Translate languages the guild does not use",
+    sign_out: "Sign out",
+    languages_summary: "Languages of this guild",
+    languages_free: "Translated on each member's device",
+    you_read_server: "You read {0}; the server translates for you.",
+    you_read_device: "You read {0}; this device translates for you.",
+    you_read_original: "You read {0}; messages are shown as written.",
+    ai_translation: "AI translation",
+    languages_limit: "Plan {0}: up to {1} languages, {2} of them with AI translation.",
+
+    removed_from: "You were removed from {0}.",
+    joined: "Joined {0}.",
+    mention_title: "{0} mentioned you in #{1}",
+    reply_title: "{0} replied to you in #{1}",
+    message_title: "{0} in #{1}",
+    open: "Open",
+    today_at: "Today at {0}",
+    yesterday_at: "Yesterday at {0}",
+
+    wrong_password: "Wrong name or password.",
+    name_taken: "That name is taken.",
+    invalid_request: "Please check what you entered.",
+    invalid_language: "That language tag is not valid.",
+    limit_exceeded: "That is more than the plan allows.",
+    rate_limited: "Too many attempts. Wait a moment and try again.",
+    unavailable: "The server is busy. Try again in a moment.",
+    not_found: "Not found.",
+    invite_invalid: "That invite is invalid, expired or used up.",
+    not_allowed: "You are not allowed to do that.",
+};
+
+pub static JA: Strings = Strings {
+    app_name: "BabelChat",
+    tagline: "自分の言葉で書けば、みんなが自分の言葉で読める。",
+    sign_in: "サインイン",
+    create_account: "アカウントを作成",
+    have_account: "アカウントを持っている",
+    need_account: "アカウントを作成する",
+    server: "サーバー",
+    name: "ユーザー名",
+    name_hint: "スペースや @ を含まない1語",
+    password: "パスワード",
+    locale: "読む言語",
+    locale_hint: "ja-JP や en-US のような言語タグ",
+    connecting: "接続中…",
+    retry: "再試行",
+    session_expired: "サインインの有効期限が切れました。もう一度サインインしてください。",
+    cannot_connect: "サーバーに接続できません: {0}",
+
+    add_guild: "ギルドを追加",
+    create_guild: "ギルドを作成",
+    join_guild: "ギルドに参加",
+    guild_name: "ギルド名",
+    invite_code: "招待コード",
+    invite_code_hint: "メンバーにもらってください",
+    guild_languages: "言語",
+    guild_languages_hint: "メッセージはこれらの言語の間で翻訳されます。",
+    create: "作成",
+    join: "参加",
+    cancel: "キャンセル",
+    close: "閉じる",
+    save: "保存",
+    no_guilds_title: "まだギルドがありません",
+    no_guilds_body: "ギルドを作成するか、招待コードで参加しましょう。",
+    channels: "チャンネル",
+    create_channel: "チャンネルを作成",
+    channel_name: "チャンネル名",
+    channel_topic: "トピック（任意）",
+    no_channels: "まだチャンネルがありません。",
+    invite_people: "招待する",
+    invite_body: "このコードを共有してください。7日間有効です。",
+    copy: "コピー",
+    copied: "コピーしました",
+    leave_guild: "ギルドから退出",
+    leave_confirm: "{0} から退出しますか？戻るには新しい招待が必要です。",
+    leave: "退出",
+    notifications: "通知",
+    notify_guild: "このギルド",
+    notify_channel: "#{0}",
+    notify_all: "すべてのメッセージ",
+    notify_mentions: "@メンションと返信のみ",
+    notify_none: "通知しない",
+    notify_inherit: "ギルドの設定に従う",
+    members: "メンバー",
+    owner: "オーナー",
+    kick: "キック",
+    ban: "BAN",
+    kick_confirm: "{0} をギルドから外しますか？招待があれば戻れます。",
+    ban_confirm: "{0} を BAN しますか？解除するまで戻れません。",
+
+    message_placeholder: "#{0} へメッセージを送信",
+    replying_to: "{0} に返信",
+    editing: "メッセージを編集中",
+    esc_to_cancel: "Esc でキャンセル",
+    reply: "返信",
+    edit: "編集",
+    delete: "削除",
+    delete_confirm: "このメッセージを削除しますか？",
+    edited: "（編集済み）",
+    translated_by_server: "{0}から翻訳",
+    translated_on_device: "{0}からこの端末で翻訳",
+    translating: "翻訳中…",
+    untranslated: "未翻訳",
+    show_original: "原文を表示",
+    show_translation: "翻訳を表示",
+    original_in: "原文（{0}）",
+    channel_start: "#{0} のはじまりです。",
+    loading: "読み込み中…",
+    deleted_message: "削除されたメッセージ",
+    offline: "オフライン — 再接続中…",
+
+    settings: "設定",
+    show_originals_setting: "翻訳の下に原文も表示する",
+    translate_outside_setting: "ギルドで使われていない言語も翻訳する",
+    sign_out: "サインアウト",
+    languages_summary: "このギルドの言語",
+    languages_free: "各メンバーの端末で翻訳されます",
+    you_read_server: "あなたは{0}で読みます。サーバーが翻訳します。",
+    you_read_device: "あなたは{0}で読みます。この端末が翻訳します。",
+    you_read_original: "あなたは{0}で読みます。メッセージは原文のまま表示されます。",
+    ai_translation: "AI 翻訳",
+    languages_limit: "プラン {0}: 言語は {1} つまで、うち {2} つを AI で翻訳します。",
+
+    removed_from: "{0} から外されました。",
+    joined: "{0} に参加しました。",
+    mention_title: "{0} が #{1} であなたをメンションしました",
+    reply_title: "{0} が #{1} であなたに返信しました",
+    message_title: "#{1} の {0}",
+    open: "開く",
+    today_at: "今日 {0}",
+    yesterday_at: "昨日 {0}",
+
+    wrong_password: "ユーザー名かパスワードが違います。",
+    name_taken: "その名前はすでに使われています。",
+    invalid_request: "入力内容を確認してください。",
+    invalid_language: "言語タグが正しくありません。",
+    limit_exceeded: "プランの上限を超えています。",
+    rate_limited: "試行回数が多すぎます。少し待ってからやり直してください。",
+    unavailable: "サーバーが混み合っています。少し待ってからやり直してください。",
+    not_found: "見つかりません。",
+    invite_invalid: "招待が無効か、期限切れか、使用回数の上限に達しています。",
+    not_allowed: "その操作は許可されていません。",
+};
+
+/// The strings for a reader of `locale` (a BCP 47 tag).
+pub fn strings(locale: &str) -> &'static Strings {
+    match base(locale) {
+        "ja" => &JA,
+        _ => &EN,
+    }
+}
+
+fn base(tag: &str) -> &str {
+    tag.split(['-', '_']).next().unwrap_or(tag)
+}
+
+/// Replaces `{0}`, `{1}`… in `template`.
+pub fn fill(template: &str, args: &[&str]) -> String {
+    let mut text = template.to_string();
+    for (ix, arg) in args.iter().enumerate() {
+        text = text.replace(&format!("{{{ix}}}"), arg);
+    }
+    text
+}
+
+/// Languages offered when creating a guild, by base tag.
+pub const COMMON_LANGUAGES: [&str; 12] = [
+    "ja", "en", "ko", "zh", "es", "fr", "de", "pt", "it", "ru", "id", "vi",
+];
+
+/// The name of a language tag in the UI language: "日本語", "Japanese".
+pub fn language_name(tag: &str, strings: &Strings) -> String {
+    const NAMES: &[(&str, &str, &str)] = &[
+        ("ar", "Arabic", "アラビア語"),
+        ("de", "German", "ドイツ語"),
+        ("en", "English", "英語"),
+        ("es", "Spanish", "スペイン語"),
+        ("fr", "French", "フランス語"),
+        ("hi", "Hindi", "ヒンディー語"),
+        ("id", "Indonesian", "インドネシア語"),
+        ("it", "Italian", "イタリア語"),
+        ("ja", "Japanese", "日本語"),
+        ("ko", "Korean", "韓国語"),
+        ("nl", "Dutch", "オランダ語"),
+        ("pl", "Polish", "ポーランド語"),
+        ("pt", "Portuguese", "ポルトガル語"),
+        ("ru", "Russian", "ロシア語"),
+        ("sv", "Swedish", "スウェーデン語"),
+        ("th", "Thai", "タイ語"),
+        ("tr", "Turkish", "トルコ語"),
+        ("uk", "Ukrainian", "ウクライナ語"),
+        ("vi", "Vietnamese", "ベトナム語"),
+        ("zh", "Chinese", "中国語"),
+    ];
+    let japanese = std::ptr::eq(strings, &JA);
+    match NAMES.iter().find(|(code, _, _)| *code == base(tag)) {
+        Some((_, english, ja)) => if japanese { ja } else { english }.to_string(),
+        None if japanese => tag.to_string(),
+        None => babel_lang::english_name(tag),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locales_pick_their_strings() {
+        assert!(std::ptr::eq(strings("ja-JP"), &JA));
+        assert!(std::ptr::eq(strings("ja"), &JA));
+        assert!(std::ptr::eq(strings("en-GB"), &EN));
+        assert!(std::ptr::eq(strings("fr-FR"), &EN));
+    }
+
+    #[test]
+    fn templates_are_filled() {
+        assert_eq!(
+            fill(EN.mention_title, &["alice", "general"]),
+            "alice mentioned you in #general"
+        );
+        assert_eq!(
+            fill(JA.message_title, &["alice", "general"]),
+            "#general の alice"
+        );
+    }
+
+    #[test]
+    fn languages_are_named_in_the_reader_language() {
+        assert_eq!(language_name("ja-JP", &EN), "Japanese");
+        assert_eq!(language_name("en-US", &JA), "英語");
+        assert_eq!(language_name("zh-Hant", &JA), "中国語");
+        assert_eq!(language_name("xx", &JA), "xx");
+    }
+}

@@ -42,6 +42,8 @@ actions!(
 
 const KEY_CONTEXT: &str = "Md3eTextField";
 const BLINK: Duration = Duration::from_millis(530);
+/// What a masked field shows for each character.
+const MASK: char = '\u{2022}';
 
 /// Installs the editing key bindings. Called by [`crate::init`].
 pub(crate) fn bind_keys(cx: &mut App) {
@@ -99,6 +101,10 @@ pub struct TextField {
     leading: Option<Icon>,
     trailing: Option<Icon>,
     style: TextFieldStyle,
+    /// Shows a bullet per character (passwords).
+    masked: bool,
+    /// How far the line is scrolled left to keep the caret in view.
+    scroll_x: Pixels,
     /// The color behind an outlined field, used to cut the label's notch.
     surface: Option<Hsla>,
     on_submit: Option<SubmitHandler>,
@@ -140,6 +146,8 @@ impl TextField {
             leading: None,
             trailing: None,
             style: TextFieldStyle::Filled,
+            masked: false,
+            scroll_x: px(0.0),
             surface: None,
             on_submit: None,
             selected_range: 0..0,
@@ -184,6 +192,12 @@ impl TextField {
         self
     }
 
+    /// Hides the text behind bullets, for passwords. Copying is disabled.
+    pub fn masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
+        self
+    }
+
     /// The background behind an outlined field.
     pub fn surface(mut self, color: Hsla) -> Self {
         self.surface = Some(color);
@@ -214,6 +228,16 @@ impl TextField {
         self.selected_range = self.content.len()..self.content.len();
         self.marked_range = None;
         window.notify_text_input_changed(&self.focus_handle);
+        cx.notify();
+    }
+
+    /// Changes the placeholder of a field already on screen.
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        self.placeholder = Some(placeholder.into());
         cx.notify();
     }
 
@@ -332,7 +356,7 @@ impl TextField {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -340,7 +364,7 @@ impl TextField {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.selected_range.is_empty() && !self.masked {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -378,7 +402,7 @@ impl TextField {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.content_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x))
     }
 
     fn select_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
@@ -394,6 +418,36 @@ impl TextField {
         self.cursor_visible = true;
         window.notify_text_selection_changed(&self.focus_handle);
         cx.notify()
+    }
+
+    /// The text as painted: the content, or a bullet per character.
+    fn display_text(&self) -> SharedString {
+        if self.masked {
+            MASK.to_string().repeat(self.content.chars().count()).into()
+        } else {
+            self.content.clone()
+        }
+    }
+
+    /// Where a content offset falls in the painted text.
+    fn display_offset(&self, offset: usize) -> usize {
+        if self.masked {
+            self.content[..offset].chars().count() * MASK.len_utf8()
+        } else {
+            offset
+        }
+    }
+
+    /// The content offset of an offset in the painted text.
+    fn content_offset(&self, display: usize) -> usize {
+        if self.masked {
+            self.content
+                .char_indices()
+                .nth(display / MASK.len_utf8())
+                .map_or(self.content.len(), |(ix, _)| ix)
+        } else {
+            display
+        }
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -563,17 +617,18 @@ impl EntityInputHandler for TextField {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
-        if last_layout.text != self.content {
+        if last_layout.text != self.display_text() {
             return None;
         }
         let range = self.range_from_utf16(&range_utf16);
+        let left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
+                left + last_layout.x_for_index(self.display_offset(range.start)),
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end),
+                left + last_layout.x_for_index(self.display_offset(range.end)),
                 bounds.bottom(),
             ),
         ))
@@ -599,10 +654,11 @@ impl EntityInputHandler for TextField {
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
-        if last_layout.text != self.content {
+        if last_layout.text != self.display_text() {
             return None;
         }
-        Some(self.offset_to_utf16(last_layout.closest_index_for_x(line_point.x)))
+        let index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
+        Some(self.offset_to_utf16(self.content_offset(index)))
     }
 }
 
@@ -836,6 +892,7 @@ struct LinePrepaint {
     line: Option<ShapedLine>,
     caret: Option<gpui::PaintQuad>,
     selection: Option<gpui::PaintQuad>,
+    scroll_x: Pixels,
 }
 
 impl IntoElement for TextLine {
@@ -881,9 +938,14 @@ impl Element for TextLine {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let field = self.field.read(cx);
-        let content = field.content.clone();
-        let selected_range = field.selected_range.clone();
-        let cursor = field.cursor_offset();
+        let content = field.display_text();
+        let selected_range = field.display_offset(field.selected_range.start)
+            ..field.display_offset(field.selected_range.end);
+        let cursor = field.display_offset(field.cursor_offset());
+        let marked_range = field
+            .marked_range
+            .as_ref()
+            .map(|marked| field.display_offset(marked.start)..field.display_offset(marked.end));
         let font = cx.md().typography.font(self.style.text);
 
         let (display, color) = match (&field.placeholder, content.is_empty()) {
@@ -898,7 +960,7 @@ impl Element for TextLine {
             color,
             ..Default::default()
         };
-        let runs = match field.marked_range.as_ref() {
+        let runs = match marked_range.as_ref() {
             Some(marked) => [
                 TextRun {
                     len: marked.start,
@@ -927,14 +989,29 @@ impl Element for TextLine {
             .text_system()
             .shape_line(display, self.style.text.size, &runs, None);
 
+        // Scroll just enough to keep the caret in view, and no further than
+        // the end of the text.
+        let caret_width = px(2.0);
+        let room = (bounds.size.width - caret_width).max(px(0.0));
+        let caret_x = line.x_for_index(cursor);
+        let mut scroll_x = field.scroll_x;
+        if caret_x < scroll_x {
+            scroll_x = caret_x;
+        } else if caret_x > scroll_x + room {
+            scroll_x = caret_x - room;
+        }
+        scroll_x = scroll_x
+            .min((line.width() - room).max(px(0.0)))
+            .max(px(0.0));
+        let left = bounds.left() - scroll_x;
+
         let (selection, caret) = if selected_range.is_empty() {
-            let x = line.x_for_index(cursor);
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + x, bounds.top()),
-                        size(px(2.0), bounds.size.height),
+                        point(left + caret_x, bounds.top()),
+                        size(caret_width, bounds.size.height),
                     ),
                     self.style.caret,
                 )),
@@ -943,14 +1020,8 @@ impl Element for TextLine {
             (
                 Some(fill(
                     Bounds::from_corners(
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.start),
-                            bounds.top(),
-                        ),
-                        point(
-                            bounds.left() + line.x_for_index(selected_range.end),
-                            bounds.bottom(),
-                        ),
+                        point(left + line.x_for_index(selected_range.start), bounds.top()),
+                        point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                     ),
                     self.style.selection,
                 )),
@@ -961,6 +1032,7 @@ impl Element for TextLine {
             line: Some(line),
             caret,
             selection,
+            scroll_x,
         }
     }
 
@@ -986,8 +1058,9 @@ impl Element for TextLine {
         let Some(line) = prepaint.line.take() else {
             return;
         };
+        let scroll_x = prepaint.scroll_x;
         let _ = line.paint(
-            bounds.origin,
+            point(bounds.left() - scroll_x, bounds.top()),
             self.style.text.line_height,
             gpui::TextAlign::Left,
             None,
@@ -1004,6 +1077,7 @@ impl Element for TextLine {
         self.field.update(cx, |field, _| {
             field.last_layout = Some(line);
             field.last_bounds = Some(bounds);
+            field.scroll_x = scroll_x;
         });
     }
 }

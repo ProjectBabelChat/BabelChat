@@ -7,7 +7,6 @@ use gpui_platform::application;
 
 mod chat;
 mod pages;
-mod script;
 
 actions!(gallery, [FocusNext, FocusPrev, Quit]);
 
@@ -235,7 +234,7 @@ fn main() {
                 },
             )
             .unwrap();
-        script::run_from_env(window.into(), cx);
+        gpui_md3e::script::run_from_env("MD3E_SCRIPT", window.into(), cx);
         cx.activate(true);
     });
 }

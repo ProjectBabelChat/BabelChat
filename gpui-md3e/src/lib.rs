@@ -9,6 +9,7 @@ mod icon;
 pub mod interaction;
 pub mod motion;
 pub mod paint;
+pub mod script;
 pub mod shapes;
 pub mod theme;
 

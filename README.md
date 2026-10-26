@@ -9,7 +9,7 @@ This repository holds the open-source parts of the project.
 |---|---|
 | [`docs/`](docs) | Architecture and development documentation |
 | [`server/`](server) | The servers: Edge, Directory, Message and Translation Cells, translation engine |
-| [`client/`](client) | The client SDK, on-device translation models (`bergamot`) and `babel`, a terminal chat client |
+| [`client/`](client) | The client SDK, on-device translation models (`bergamot`), `babelchat`, the desktop app, and `babel`, a terminal chat client |
 | [`types/`](types) | API definitions in [TYML](https://tyml-org.github.io/tyml-lang.org/), one file per boundary |
 | [`crates/babel-lang`](crates/babel-lang) | Language tag normalization, shared by clients and servers |
 | [`gpui-reloaded/`](gpui-reloaded) | Fork of Zed's GPUI UI framework |
@@ -28,6 +28,7 @@ libclang for RocksDB.
 nix develop
 cargo run -p md3e-gallery                        # the component gallery
 cargo run -p babel-server -- --plan paid3        # every server in one process
+cargo run -p babel-desktop                       # the desktop app (sign up in the window)
 cargo run -p babel-cli -- register alice         # then `cargo run -p babel-cli` to chat
 ```
 

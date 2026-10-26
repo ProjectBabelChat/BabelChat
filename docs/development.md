@@ -19,6 +19,53 @@ cargo run -p babel-server -- --data ./data --plan paid3
 
 Without Nix, install clang (libclang) and a C++ compiler for RocksDB.
 
+## Chatting in the desktop app
+
+`babelchat` (`client/desktop`) is the desktop app. Each user gets a
+profile; run one window per user. A Japanese and an English speaker on one
+machine, with real on-device translation (free plan):
+
+```sh
+cargo run -p babel-server -- --plan free                 # terminal 0
+
+cargo run -p babel-desktop -- --profile alice            # terminal 1
+cargo run -p babel-desktop -- --profile bob              # terminal 2
+```
+
+1. In each window, "Create account": a name, a password and the language
+   you read (`ja-JP` for alice, `en-US` for bob; it defaults to the
+   system's). The window's own words follow that language.
+2. Alice: **+** in the left rail → "Create a guild", a name and its
+   languages (hers and English are preselected). The guild starts with
+   `#general`.
+3. Alice: the guild's name (or the person icon in the channel header) →
+   "Invite people" → "Copy".
+4. Bob: **+** → "Join a guild", paste the code, Enter.
+5. Write. Alice writes Japanese and reads Bob in Japanese; Bob reads her
+   in English. The first message of each direction downloads its model
+   (35–55 MB) into `~/.cache/babelchat/models`.
+
+Hover a message to reply, edit or delete it; `@bob` mentions Bob. Other
+channels show unread dots and mention counts; while the window is in the
+background, new messages become desktop notifications.
+
+| Option | Environment | Default |
+|---|---|---|
+| `--profile` | `BABEL_PROFILE` | `default` |
+| `--server` | `BABEL_SERVER` | `http://127.0.0.1:7000` (prefilled on the sign-in screen) |
+| `--config-dir` | `BABEL_CONFIG_DIR` | `~/.config/babelchat` (shared with `babel`) |
+| `--device`, `--models-dir`, `--transport`, `--no-cache` | as for `babel` | |
+| `--theme` | `BABEL_THEME` | `system` (`light`, `dark`) |
+| `--size` | | `1280x800` |
+| `--no-system-notifications` | | desktop notifications on |
+
+Profiles are shared with the terminal client: `babel --profile alice`
+works with a sign-in made in the window, and the other way round.
+
+`BABEL_SCRIPT` makes the window drive itself (clicks, keys, text,
+screenshots with `grim`), which is how the app is checked without a person
+at the keyboard; see [the desktop app](architecture/desktop.md#checking-it-without-a-person).
+
 ## Chatting from a terminal
 
 `babel` (`client/cli`) is a line-mode chat client on the client SDK. Each
@@ -169,7 +216,7 @@ model yet.
 cargo test -p babel-lang -p babel-store -p babel-common -p babel-engine \
   -p babel-translation-cell -p babel-message-cell -p babel-directory \
   -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli \
-  -p babel-bergamot
+  -p babel-bergamot -p babel-desktop -p gpui-md3e
 cargo test -p babel-bergamot -- --ignored   # downloads three models
 ```
 
@@ -183,9 +230,10 @@ cargo test -p babel-bergamot -- --ignored   # downloads three models
 | `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings |
 | `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart |
-| `babel-sdk` | display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling |
+| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling |
 | `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
 | `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks |
+| `babel-desktop` | channel order, avatars, the UI's words in both languages; the screens themselves are checked by scripted runs (`BABEL_SCRIPT`) |
 
 ## Changing an API
 

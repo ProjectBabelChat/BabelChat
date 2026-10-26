@@ -14,14 +14,15 @@ client SDK as built so far, and where they are heading.
    [Message Cell](architecture/message-cell.md),
    [Translation Cell](architecture/translation-cell.md),
    [Translation Engine](architecture/translation-engine.md),
-   and on the other side of the Edge the [client SDK](architecture/client.md).
+   and on the other side of the Edge the [client SDK](architecture/client.md)
+   and the [desktop app](architecture/desktop.md).
 3. Cross-cutting topics:
    [languages](architecture/languages.md),
    [storage](architecture/storage.md),
    [security](architecture/security.md).
 4. [API definitions](api.md): the TYML files every boundary is generated from.
-5. [Development](development.md): running the server, chatting from a
-   terminal, a local LLM, the tests.
+5. [Development](development.md): running the server, chatting in the
+   desktop app or a terminal, a local LLM, the tests.
 6. [Roadmap](roadmap.md): what is done and what comes next.
 
 [TYML changes](tyml-changes.md) lists the changes made to the TYML generator
@@ -43,6 +44,7 @@ for BabelChat.
 | `server/common` | Small shared helpers |
 | `server/all-in-one` | `babel-server`: every service in one process |
 | `client/sdk` | Client SDK: sessions, display language, on-device translation |
+| `client/desktop` | `babelchat`: the desktop app (GPUI + Material 3 Expressive) |
 | `client/cli` | `babel`: a terminal chat client on the SDK |
 | `client/bergamot` | On-device translation with the Firefox Translations (Bergamot) models |
 | `crates/babel-lang` | Language tag normalization, shared with clients |

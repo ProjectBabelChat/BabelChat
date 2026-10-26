@@ -74,3 +74,8 @@ TYML's declared default values (`field: T = value`) would express the
 second more directly, but the Rust API generator ignores them today (no
 `#[serde(default)]`). Worth adding when a required stored field must be
 added again.
+
+## Phase 3 (the desktop app)
+
+No TYML changes. The desktop app uses only the SDK, which already covered
+everything it shows.

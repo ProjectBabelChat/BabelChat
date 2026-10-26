@@ -918,10 +918,7 @@ dependencies = [
  "babel-sdk",
  "babel-server",
  "clap",
- "dirs",
  "rpassword",
- "serde",
- "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -934,6 +931,22 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "babel-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "babel-bergamot",
+ "babel-lang",
+ "babel-sdk",
+ "chrono",
+ "clap",
+ "gpui",
+ "gpui-md3e",
+ "gpui_platform",
  "tokio",
 ]
 
@@ -1031,6 +1044,7 @@ dependencies = [
  "babel-api-translation-cell",
  "babel-lang",
  "babel-server",
+ "dirs",
  "futures",
  "parking_lot",
  "reqwest",
@@ -3174,6 +3188,7 @@ dependencies = [
  "material-colors",
  "polymorpher",
  "smallvec",
+ "smol",
  "unicode-segmentation",
 ]
 
@@ -4640,7 +4655,6 @@ dependencies = [
  "gpui",
  "gpui-md3e",
  "gpui_platform",
- "smol",
 ]
 
 [[package]]

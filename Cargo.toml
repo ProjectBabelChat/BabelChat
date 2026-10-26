@@ -20,6 +20,7 @@ members = [
     "client/sdk",
     "client/cli",
     "client/bergamot",
+    "client/desktop",
 ]
 exclude = ["tools/apigen"]
 
