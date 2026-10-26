@@ -132,15 +132,19 @@ impl RenderOnce for LinearProgress {
                         // One wavelength per second.
                         phase: elapsed * wavelength,
                     };
-                    let segments = match progress {
+                    let mut segments = match progress {
                         Some(p) => vec![(0.0, p * width)],
                         None => linear_indeterminate(elapsed)
                             .into_iter()
                             .map(|(a, b)| (a * width, b * width))
                             .collect(),
                     };
+                    // The second indeterminate line enters while the first is
+                    // still leaving, so it is the left one for part of a cycle.
+                    segments.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-                    // The track fills the gaps between indicator segments.
+                    // The track fills the gaps between indicator segments,
+                    // which are laid out left to right.
                     let mut cursor = 0.0;
                     for &(start, end) in &segments {
                         if end - start < 0.5 {
@@ -364,7 +368,9 @@ fn circular_indeterminate(elapsed: f32) -> (f32, f32, f32) {
     let head = fast_out_slow_in((t * 2.0).min(1.0));
     let tail = fast_out_slow_in((t * 2.0 - 1.0).max(0.0));
     let sweep = min + (max - min) * (head - tail);
-    let start = (max - min) * tail + cycle * (max - min + 0.25 * TAU);
+    // Each cycle starts where the previous one's tail stopped, so the loop is
+    // seamless. Wrapping keeps the angle small enough for f32 over long runs.
+    let start = ((max - min) * (tail + cycle)).rem_euclid(TAU);
     let rotation = elapsed * TAU / 6.0 * 3.0;
     (start, sweep, rotation)
 }
@@ -400,6 +406,60 @@ impl Arc {
         }
         if let Ok(path) = builder.build() {
             window.paint_path(path, color);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STEP: f32 = 0.001;
+
+    /// The smallest angle between two directions.
+    fn angle_between(a: f32, b: f32) -> f32 {
+        let d = (a - b).rem_euclid(TAU);
+        d.min(TAU - d)
+    }
+
+    #[test]
+    fn circular_indeterminate_loops_without_jumps() {
+        let ends = |t: f32| {
+            let (start, sweep, rotation) = circular_indeterminate(t);
+            (start + rotation, start + rotation + sweep)
+        };
+        let mut previous = ends(0.0);
+        for i in 1..=6000 {
+            let current = ends(i as f32 * STEP);
+            assert!(angle_between(current.0, previous.0) < 0.05, "tail jumps at {i} ms");
+            assert!(angle_between(current.1, previous.1) < 0.05, "head jumps at {i} ms");
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn linear_indeterminate_loops_without_jumps() {
+        let mut previous = linear_indeterminate(0.0);
+        for i in 1..=6000 {
+            let current = linear_indeterminate(i as f32 * STEP);
+            for (a, b) in previous.iter().zip(&current) {
+                // A segment may only move instantly while it is invisible.
+                let empty = a.1 - a.0 < 1e-3 && b.1 - b.0 < 1e-3;
+                let moved = (a.0 - b.0).abs().max((a.1 - b.1).abs());
+                assert!(empty || moved < 0.01, "segment jumps at {i} ms");
+            }
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn linear_indeterminate_segments_never_overlap() {
+        for i in 0..1750 {
+            let [first, second] = linear_indeterminate(i as f32 * STEP);
+            let visible = |s: (f32, f32)| s.1 - s.0 > 1e-3;
+            if visible(first) && visible(second) {
+                assert!(second.1 < first.0, "segments overlap at {i} ms");
+            }
         }
     }
 }
