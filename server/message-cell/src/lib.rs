@@ -27,8 +27,8 @@ use async_trait::async_trait;
 use babel_api_directory::types::Directory;
 use babel_api_message_cell::types::{
     Channel, ChannelKind, DeletedMessage, Guild, GuildEvent, GuildEventBatch, GuildEventKind,
-    GuildSnapshot, Member, Message, MessageCellError, MessageEdit, NewChannel, NewGuild,
-    NewMessage, Permission, Role,
+    GuildSnapshot, Invite, Member, Message, MessageCellError, MessageEdit, NewChannel, NewGuild,
+    NewInvite, NewMessage, Permission, Role,
 };
 use babel_api_translation_cell::types::TranslationCell;
 use babel_common::{LogSignals, TimeOrderedIds, now_ms, poll_timeout, random_id};
@@ -36,8 +36,9 @@ use babel_store::{Batch, KvStore, Scan, StoreError};
 use parking_lot::Mutex;
 pub use records::TABLES;
 use records::{
-    CHANNELS, GUILDS, GuildRecord, LOG, MEMBERS, MESSAGES, OUTBOX, OutboxEntry, channel_key,
-    guild_key, log_key, member_key, message_key, message_prefix, outbox_key,
+    CHANNELS, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES, OUTBOX, OutboxEntry,
+    channel_key, guild_key, invite_key, log_key, member_key, message_key, message_prefix,
+    outbox_key,
 };
 use tokio::sync::{Notify, OwnedMutexGuard};
 
@@ -169,6 +170,7 @@ impl Inner {
     fn authorize(&self, guild: &str, user: &str, permission: Permission) -> CellResult<Member> {
         self.guild(guild)?;
         let member = self.member(guild, user)?;
+        // Members may invite; until roles grow, only owners manage.
         match (permission, member.role) {
             (Permission::ManageGuild, Role::Member) => Err(MessageCellError::Forbidden),
             _ => Ok(member),
@@ -293,6 +295,7 @@ impl Inner {
     async fn join_guild(
         &self,
         guild: String,
+        invite: String,
         user: String,
         name: String,
     ) -> CellResult<GuildSnapshot> {
@@ -302,13 +305,25 @@ impl Inner {
             return self.snapshot(&record);
         }
 
+        // Unknown, expired and used-up invites look alike.
+        let now = now_ms();
+        let mut invite = self
+            .store
+            .get_value::<Invite>(INVITES, &invite_key(&guild, &invite))
+            .map_err(storage)?
+            .filter(|invite| invite.expires_at.is_none_or(|at| now < at))
+            .filter(|invite| invite.max_uses.is_none_or(|max| invite.uses < max))
+            .ok_or(MessageCellError::NotFound)?;
+        invite.uses += 1;
+
         let member = Member {
             user_id: user.clone(),
             name,
             role: Role::Member,
-            joined_at: now_ms(),
+            joined_at: now,
         };
         let mut batch = Batch::new();
+        batch.put_value(INVITES, invite_key(&guild, &invite.secret), &invite);
         batch.put_value(MEMBERS, member_key(&guild, &user), &member);
         self.append(
             &mut batch,
@@ -321,6 +336,47 @@ impl Inner {
         );
         self.commit(batch, &record)?;
         self.snapshot(&record)
+    }
+
+    async fn create_invite(&self, new: NewInvite) -> CellResult<Invite> {
+        self.authorize(&new.guild_id, &new.user_id, Permission::CreateInvite)?;
+        if new.max_uses.is_some_and(|max| max < 1) {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let invite = Invite {
+            secret: random_id(),
+            guild_id: new.guild_id,
+            created_by: new.user_id,
+            created_at: now_ms(),
+            expires_at: new.expires_at,
+            max_uses: new.max_uses,
+            uses: 0,
+        };
+        let mut batch = Batch::new();
+        batch.put_value(
+            INVITES,
+            invite_key(&invite.guild_id, &invite.secret),
+            &invite,
+        );
+        self.store.write(batch).map_err(storage)?;
+        Ok(invite)
+    }
+
+    async fn revoke_invite(&self, guild: String, secret: String, user: String) -> CellResult<()> {
+        let _guard = self.lock(&guild).await;
+        let member = self.authorize(&guild, &user, Permission::View)?;
+        let key = invite_key(&guild, &secret);
+        let invite = self
+            .store
+            .get_value::<Invite>(INVITES, &key)
+            .map_err(storage)?
+            .ok_or(MessageCellError::NotFound)?;
+        if invite.created_by != user && member.role != Role::Owner {
+            return Err(MessageCellError::Forbidden);
+        }
+        let mut batch = Batch::new();
+        batch.delete(INVITES, key);
+        self.store.write(batch).map_err(storage)
     }
 
     async fn create_channel(&self, new: NewChannel) -> CellResult<Channel> {
@@ -596,10 +652,26 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
     async fn join_guild(
         &self,
         guild_id: String,
+        invite: String,
         user_id: String,
         user_name: String,
     ) -> CellResult<GuildSnapshot> {
-        self.inner.join_guild(guild_id, user_id, user_name).await
+        self.inner
+            .join_guild(guild_id, invite, user_id, user_name)
+            .await
+    }
+
+    async fn create_invite(&self, body: NewInvite) -> CellResult<Invite> {
+        self.inner.create_invite(body).await
+    }
+
+    async fn revoke_invite(
+        &self,
+        guild_id: String,
+        secret: String,
+        user_id: String,
+    ) -> CellResult<()> {
+        self.inner.revoke_invite(guild_id, secret, user_id).await
     }
 
     async fn check_permission(

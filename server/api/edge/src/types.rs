@@ -10,6 +10,8 @@ pub struct Registration {
 pub struct Token {
     pub jwt: String,
     pub user_id: String,
+    /// As registered; sign-in ignores case.
+    pub name: String,
     pub expires_at: i64,
 }
 
@@ -156,6 +158,24 @@ pub struct LanguageView {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NewInvite {
+    pub guild_id: String,
+    /// Seconds until the invite expires: 7 days when absent, never when 0.
+    pub max_age_secs: Option<i64>,
+    pub max_uses: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Invite {
+    /// Share this: anyone holding it can join until it expires or runs out.
+    pub code: String,
+    pub guild_id: String,
+    pub expires_at: Option<i64>,
+    pub max_uses: Option<i64>,
+    pub uses: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewChannel {
     pub guild_id: String,
     pub kind: ChannelKind,
@@ -240,6 +260,9 @@ pub struct Ready {
     pub cursor: i64,
 }
 
+/// When `poll` fails with `not_found` the session is gone (the Edge
+/// restarted, or the client fell further behind than the Edge keeps):
+/// connect again and reload what is on screen.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct EventBatch {
     pub events: Vec<Event>,
@@ -340,7 +363,13 @@ pub trait Me: Send + Sync + 'static {
 #[async_trait]
 pub trait Guilds: Send + Sync + 'static {
     async fn create_guild(&self, claim: Claim, body: NewGuild) -> Result<GuildView, ApiError>;
-    async fn join_guild(&self, claim: Claim, guild_id: String) -> Result<GuildView, ApiError>;
+    /// Any member may invite.
+    async fn create_invite(&self, claim: Claim, body: NewInvite) -> Result<Invite, ApiError>;
+    /// The invite's creator or the owner may revoke it.
+    async fn revoke_invite(&self, claim: Claim, code: String) -> Result<(), ApiError>;
+    /// Joins with an invite code. Invalid, expired and used-up codes are all
+    /// `not_found`.
+    async fn join_guild(&self, claim: Claim, invite: String) -> Result<GuildView, ApiError>;
     async fn get_guild(&self, claim: Claim, guild_id: String) -> Result<GuildView, ApiError>;
     async fn create_channel(&self, claim: Claim, body: NewChannel) -> Result<Channel, ApiError>;
     /// Only the owner may change the policy. Languages are normalized and
@@ -357,8 +386,8 @@ pub trait Messages: Send + Sync + 'static {
     async fn get_messages(&self, claim: Claim, guild_id: String, channel_id: String, before: Option<String>, limit: i64) -> Result<Vec<MessageView>, ApiError>;
 }
 
-/// Phase 0 delivers events by long polling. A WebSocket transport will carry
-/// the same Event type.
+/// Events are delivered by long polling for now. A WebSocket transport will
+/// carry the same Event type.
 #[async_trait]
 pub trait Gateway: Send + Sync + 'static {
     async fn connect(&self, claim: Claim) -> Result<Ready, ApiError>;

@@ -6,6 +6,7 @@
 //! members   guild / user                     Member
 //! channels  guild / channel                  Channel
 //! messages  guild / channel / message id     Message      (ids are time-ordered)
+//! invites   guild / secret                   Invite
 //! log       guild / seq                      GuildEvent   (the guild's event log)
 //! outbox    seq                              OutboxEntry  (cell-wide, in commit order)
 //! ```
@@ -21,10 +22,11 @@ pub const GUILDS: Table = "guilds";
 pub const MEMBERS: Table = "members";
 pub const CHANNELS: Table = "channels";
 pub const MESSAGES: Table = "messages";
+pub const INVITES: Table = "invites";
 pub const LOG: Table = "log";
 pub const OUTBOX: Table = "outbox";
 
-pub const TABLES: &[Table] = &[GUILDS, MEMBERS, CHANNELS, MESSAGES, LOG, OUTBOX];
+pub const TABLES: &[Table] = &[GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, LOG, OUTBOX];
 
 pub fn guild_key(guild: &str) -> Vec<u8> {
     Key::new().str(guild).build()
@@ -32,6 +34,10 @@ pub fn guild_key(guild: &str) -> Vec<u8> {
 
 pub fn member_key(guild: &str, user: &str) -> Vec<u8> {
     Key::new().str(guild).str(user).build()
+}
+
+pub fn invite_key(guild: &str, secret: &str) -> Vec<u8> {
+    Key::new().str(guild).str(secret).build()
 }
 
 pub fn channel_key(guild: &str, channel: &str) -> Vec<u8> {

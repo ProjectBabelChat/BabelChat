@@ -8,7 +8,7 @@ use babel_api_directory::types::{
 };
 use babel_api_message_cell::types::{
     ChannelKind, GuildEventKind, MessageCell as _, MessageCellError, MessageEdit, NewChannel,
-    NewGuild, NewMessage, Permission,
+    NewGuild, NewInvite, NewMessage, Permission,
 };
 use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
 use babel_engine::mock::{MockBackend, MockConfig};
@@ -111,6 +111,18 @@ async fn channel(cell: &MessageCell, guild: &str) -> String {
     .id
 }
 
+async fn invite(cell: &MessageCell, guild: &str, max_uses: Option<i64>) -> String {
+    cell.create_invite(NewInvite {
+        guild_id: guild.into(),
+        user_id: "owner".into(),
+        expires_at: None,
+        max_uses,
+    })
+    .await
+    .unwrap()
+    .secret
+}
+
 async fn send(cell: &MessageCell, guild: &str, channel: &str, user: &str, text: &str) -> String {
     cell.send_message(NewMessage {
         guild_id: guild.into(),
@@ -189,8 +201,9 @@ async fn permissions_follow_roles() {
         MessageCellError::NotFound
     );
 
+    let invite = invite(&f.cell, &guild, None).await;
     f.cell
-        .join_guild(guild.clone(), "member".into(), "Member".into())
+        .join_guild(guild.clone(), invite, "member".into(), "Member".into())
         .await
         .unwrap();
     assert_eq!(
@@ -298,4 +311,84 @@ async fn history_pages_newest_first_and_events_stream() {
     .await;
     let late = waiter.await.unwrap();
     assert_eq!(late.events[0].kind, GuildEventKind::MessageCreated);
+}
+
+#[tokio::test]
+async fn invites_admit_until_they_run_out() {
+    let f = fixture();
+    let guild = guild(&f.cell).await;
+    let once = invite(&f.cell, &guild, Some(1)).await;
+
+    let join = |invite: &str, user: &str| {
+        f.cell
+            .join_guild(guild.clone(), invite.into(), user.into(), user.into())
+    };
+    join(&once, "first").await.unwrap();
+    // Used up, wrong and expired invites all look like a missing guild.
+    assert_eq!(
+        join(&once, "second").await.unwrap_err(),
+        MessageCellError::NotFound
+    );
+    assert_eq!(
+        join("0123", "second").await.unwrap_err(),
+        MessageCellError::NotFound
+    );
+    let expired = f
+        .cell
+        .create_invite(NewInvite {
+            guild_id: guild.clone(),
+            user_id: "owner".into(),
+            expires_at: Some(1),
+            max_uses: None,
+        })
+        .await
+        .unwrap()
+        .secret;
+    assert_eq!(
+        join(&expired, "second").await.unwrap_err(),
+        MessageCellError::NotFound
+    );
+    // Members joining again need no valid invite.
+    join("0123", "first").await.unwrap();
+
+    // Strangers cannot invite; members can, and may revoke their own.
+    assert_eq!(
+        f.cell
+            .create_invite(NewInvite {
+                guild_id: guild.clone(),
+                user_id: "stranger".into(),
+                expires_at: None,
+                max_uses: None,
+            })
+            .await
+            .unwrap_err(),
+        MessageCellError::Forbidden
+    );
+    let theirs = f
+        .cell
+        .create_invite(NewInvite {
+            guild_id: guild.clone(),
+            user_id: "first".into(),
+            expires_at: None,
+            max_uses: None,
+        })
+        .await
+        .unwrap()
+        .secret;
+    let mine = invite(&f.cell, &guild, None).await;
+    assert_eq!(
+        f.cell
+            .revoke_invite(guild.clone(), mine.clone(), "first".into())
+            .await
+            .unwrap_err(),
+        MessageCellError::Forbidden
+    );
+    f.cell
+        .revoke_invite(guild.clone(), theirs.clone(), "first".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        join(&theirs, "second").await.unwrap_err(),
+        MessageCellError::NotFound
+    );
 }

@@ -32,6 +32,8 @@ type Credentials {
 type Token {
     jwt: string
     user_id: string
+    /// As registered; sign-in ignores case.
+    name: string
     expires_at: int
 }
 
@@ -131,6 +133,22 @@ type NewChannel {
     topic: string?
     parent_id: string?
     starter_message_id: string?
+}
+
+type Invite {
+    /// Share this: anyone holding it can join until it expires or runs out.
+    code: string
+    guild_id: string
+    expires_at: int?
+    max_uses: int?
+    uses: int
+}
+
+type NewInvite {
+    guild_id: string
+    /// Seconds until the invite expires: 7 days when absent, never when 0.
+    max_age_secs: int?
+    max_uses: int?
 }
 
 type LanguagePolicyUpdate {
@@ -236,6 +254,9 @@ type Event {
     language: LanguageView?
 }
 
+/// When `poll` fails with `not_found` the session is gone (the Edge
+/// restarted, or the client fell further behind than the Edge keeps):
+/// connect again and reload what is on screen.
 type EventBatch {
     events: [Event]
     /// Pass as `after` to the next poll.
@@ -272,7 +293,15 @@ interface Me {
 interface Guilds {
     authed function create_guild(@claim: Claim, @body: NewGuild) -> GuildView throws ApiError
 
-    authed function join_guild(@claim: Claim, guild_id: string) -> GuildView throws ApiError
+    /// Any member may invite.
+    authed function create_invite(@claim: Claim, @body: NewInvite) -> Invite throws ApiError
+
+    /// The invite's creator or the owner may revoke it.
+    authed function revoke_invite(@claim: Claim, code: string) throws ApiError
+
+    /// Joins with an invite code. Invalid, expired and used-up codes are all
+    /// `not_found`.
+    authed function join_guild(@claim: Claim, invite: string) -> GuildView throws ApiError
 
     #[kind = "get"]
     authed function get_guild(@claim: Claim, guild_id: string) -> GuildView throws ApiError
@@ -296,8 +325,8 @@ interface Messages {
     authed function get_messages(@claim: Claim, guild_id: string, channel_id: string, before: string?, limit: int) -> [MessageView] throws ApiError
 }
 
-/// Phase 0 delivers events by long polling. A WebSocket transport will carry
-/// the same Event type.
+/// Events are delivered by long polling for now. A WebSocket transport will
+/// carry the same Event type.
 interface Gateway {
     authed function connect(@claim: Claim) -> Ready throws ApiError
 

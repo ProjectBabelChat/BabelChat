@@ -80,12 +80,36 @@ pub enum Role {
     Member,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NewInvite {
+    pub guild_id: String,
+    pub user_id: String,
+    pub expires_at: Option<i64>,
+    pub max_uses: Option<i64>,
+}
+
+/// Lets anyone holding it join the guild. Lives with the guild, so it moves
+/// with it and dies with it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Invite {
+    /// Random; the Edge builds the public code from it and the guild ID.
+    pub secret: String,
+    pub guild_id: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub max_uses: Option<i64>,
+    pub uses: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Permission {
     #[serde(rename = "view")]
     View,
     #[serde(rename = "send_messages")]
     SendMessages,
+    #[serde(rename = "create_invite")]
+    CreateInvite,
     #[serde(rename = "manage_guild")]
     ManageGuild,
 }
@@ -194,7 +218,12 @@ pub trait MessageCell: Send + Sync + 'static {
     async fn create_guild(&self, body: NewGuild) -> Result<Guild, MessageCellError>;
     /// Fails with `forbidden` unless the user is a member.
     async fn get_guild(&self, guild_id: String, user_id: String) -> Result<GuildSnapshot, MessageCellError>;
-    async fn join_guild(&self, guild_id: String, user_id: String, user_name: String) -> Result<GuildSnapshot, MessageCellError>;
+    /// Fails with `not_found` unless the invite is valid. Members joining
+    /// again succeed whatever the invite.
+    async fn join_guild(&self, guild_id: String, invite: String, user_id: String, user_name: String) -> Result<GuildSnapshot, MessageCellError>;
+    async fn create_invite(&self, body: NewInvite) -> Result<Invite, MessageCellError>;
+    /// The invite's creator or a manager may revoke it.
+    async fn revoke_invite(&self, guild_id: String, secret: String, user_id: String) -> Result<(), MessageCellError>;
     async fn check_permission(&self, guild_id: String, user_id: String, permission: Permission) -> Result<(), MessageCellError>;
     async fn create_channel(&self, body: NewChannel) -> Result<Channel, MessageCellError>;
     async fn send_message(&self, body: NewMessage) -> Result<Message, MessageCellError>;

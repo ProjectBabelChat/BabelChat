@@ -1,0 +1,25 @@
+[package]
+name = "babel-sdk"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "BabelChat client SDK: sessions, live state, display language and on-device translation, without UI"
+
+[dependencies]
+async-trait.workspace = true
+babel-api-edge-client.workspace = true
+babel-lang.workspace = true
+parking_lot.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+babel-api-translation-cell.workspace = true
+babel-server.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

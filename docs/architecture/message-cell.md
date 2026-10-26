@@ -53,10 +53,11 @@ Roles are guild data, so permission checks live here. Phase 0 has two roles:
 
 | | owner | member |
 |---|---|---|
-| view, send messages, start threads | ✓ | ✓ |
+| view, send messages, start threads, invite | ✓ | ✓ |
 | create categories and channels, change the language policy | ✓ | |
 | edit a message | own | own |
 | delete a message | any | own |
+| revoke an invite | any | own |
 
 Other services ask through `check_permission` (the Edge does before changing
 a guild's language policy on the Translation Cell).
@@ -67,6 +68,21 @@ a guild's language policy on the Translation Cell).
 optionally, a starter message in it; the Translation Cell uses both to give
 the thread context from its first message.
 
+## Invites
+
+Joining a guild takes an invite. Invites are guild data: they live in the
+guild's cell, move with the guild and die with it, and no other service has
+to know them.
+
+- `create_invite` stores a random secret with an optional expiry and use
+  limit; any member may invite.
+- `join_guild(guild, secret, …)` checks and counts the invite in the same
+  write that adds the member. Unknown, expired and used-up invites are all
+  `not_found`. A member joining again needs no valid invite.
+- The public code is `<guild id>-<secret>`, built by the Edge, so any Edge
+  can route it to the right cell. The guild ID gives nothing away: without a
+  valid secret it opens nothing.
+
 ## Storage
 
 ```
@@ -74,6 +90,7 @@ guilds    guild                       GuildRecord (guild, translation cell, last
 members   guild / user                Member
 channels  guild / channel             Channel
 messages  guild / channel / id        Message
+invites   guild / secret              Invite (expiry, uses)
 log       guild / seq                 GuildEvent
 outbox    seq                         OutboxEntry
 ```

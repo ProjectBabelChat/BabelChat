@@ -19,7 +19,24 @@ Every service exists with its real boundaries, in one process:
   layered, cache-friendly prompts; a simulated prompt cache.
 - RocksDB storage, one data directory per service; crash recovery.
 
-## Phase 1 — split it up
+## Phase 1 — chat without a UI (done)
+
+People can chat, translated, from a terminal:
+
+- Client SDK (`client/sdk`): sign-in, a live session that reconnects and
+  reloads by itself, local state, a display decision per message (original,
+  LLM, on device, untranslated), on-device translation through English
+  behind a `DeviceTranslator` trait (mocked for now).
+- Terminal client (`client/cli`, `babel`): saved sign-ins per profile,
+  guilds, channels, threads, invites, language policy, edits and deletions,
+  settings.
+- Invites: joining a guild needs an invite code, checked by the guild's
+  cell, with expiry and use limits.
+- Gateway: sessions that fell behind their queue are dropped and answer
+  `not_found`, so clients know to reload instead of silently missing events.
+- Tokens carry the user's name.
+
+## Phase 2 — split it up
 
 - HTTP clients behind the internal traits; each service as its own binary.
 - Internal network: WireGuard plus mutual TLS; service credentials; tenant
@@ -30,7 +47,7 @@ Every service exists with its real boundaries, in one process:
 - WebSocket gateway.
 - Log trimming.
 
-## Phase 2 — real translation
+## Phase 3 — real translation
 
 - Validate the OpenAI-compatible backend against llama.cpp / vLLM with
   Hy-MT2 and Qwen3; tune window and summary sizes with real usage numbers.
@@ -39,11 +56,15 @@ Every service exists with its real boundaries, in one process:
 - Translation Cell as a standalone, self-hostable product for other
   platforms; Server SDK documentation.
 
-## Phase 3 — the product
+## Phase 4 — the product
 
 - BabelChat Cloud engine; billing setting plans; Discord account linking.
 - Managed Translation Cells for platforms that do not want to host one.
-- Desktop client (GPUI + MD3E) with on-device Bergamot translation.
+- Desktop client (GPUI + MD3E) on the SDK, with on-device Bergamot
+  translation behind `DeviceTranslator`.
+- Chat basics not built yet: leaving guilds and removing members, listing
+  invites, roles beyond owner and member, attachments, typing and read
+  state, client-side caching between runs.
 
 ## Open questions
 

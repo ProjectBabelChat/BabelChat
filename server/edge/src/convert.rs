@@ -99,6 +99,28 @@ pub fn member(member: &cell::Member) -> public::Member {
     }
 }
 
+/// Invite codes carry the guild ID so any Edge can route them, and a secret
+/// only the guild's cell can check. The guild ID gives nothing away: knowing
+/// it does not let anyone see or join the guild.
+pub fn invite(invite: &cell::Invite) -> public::Invite {
+    public::Invite {
+        code: format!("{}-{}", invite.guild_id, invite.secret),
+        guild_id: invite.guild_id.clone(),
+        expires_at: invite.expires_at,
+        max_uses: invite.max_uses,
+        uses: invite.uses,
+    }
+}
+
+/// Splits an invite code into guild ID and secret.
+pub fn parse_invite(code: &str) -> Option<(&str, &str)> {
+    let (guild, secret) = code.trim().split_once('-')?;
+    let hex = |part: &str| {
+        !part.is_empty() && part.len() <= 64 && part.bytes().all(|b| b.is_ascii_hexdigit())
+    };
+    (hex(guild) && hex(secret)).then_some((guild, secret))
+}
+
 pub fn message(message: &cell::Message) -> public::Message {
     // `author_locale` stays inside.
     public::Message {

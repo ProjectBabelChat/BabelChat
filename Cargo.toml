@@ -17,6 +17,8 @@ members = [
     "server/account",
     "server/edge",
     "server/all-in-one",
+    "client/sdk",
+    "client/cli",
 ]
 exclude = ["tools/apigen"]
 
@@ -35,6 +37,7 @@ babel-translation-cell = { path = "server/translation-cell" }
 babel-engine = { path = "server/engine" }
 babel-edge = { path = "server/edge" }
 babel-server = { path = "server/all-in-one" }
+babel-sdk = { path = "client/sdk" }
 babel-api-account = { path = "server/api/account" }
 babel-api-directory = { path = "server/api/directory" }
 babel-api-edge = { path = "server/api/edge" }

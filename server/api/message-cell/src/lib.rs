@@ -49,11 +49,13 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
         let api = api3;
         let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let invite = __query.get("invite").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(invite) = invite else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let user_id = __query.get("user_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(user_id) = user_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let user_name = __query.get("user_name").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(user_name) = user_name else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
-        let __raw = <T as crate::types::MessageCell>::join_guild(&api, guild_id, user_id, user_name, ).await;
+        let __raw = <T as crate::types::MessageCell>::join_guild(&api, guild_id, invite, user_id, user_name, ).await;
         let result = __raw;
         match result {
             Ok(value) => (StatusCode::OK, Json(value)).into_response(),
@@ -61,8 +63,35 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
         }
     }));
     let api4 = api.clone();
-    router = router.route("/message_cell/check_permission", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
+    router = router.route("/message_cell/create_invite", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
+       Json(__body): Json<_>| {
         let api = api4;
+        let __raw = <T as crate::types::MessageCell>::create_invite(&api, __body, ).await;
+        let result = __raw;
+        match result {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api5 = api.clone();
+    router = router.route("/message_cell/revoke_invite", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api5;
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let secret = __query.get("secret").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(secret) = secret else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let user_id = __query.get("user_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(user_id) = user_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::MessageCell>::revoke_invite(&api, guild_id, secret, user_id, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api6 = api.clone();
+    router = router.route("/message_cell/check_permission", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api6;
         let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let user_id = __query.get("user_id").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -76,10 +105,10 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api5 = api.clone();
+    let api7 = api.clone();
     router = router.route("/message_cell/create_channel", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api5;
+        let api = api7;
         let __raw = <T as crate::types::MessageCell>::create_channel(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -87,10 +116,10 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api6 = api.clone();
+    let api8 = api.clone();
     router = router.route("/message_cell/send_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api6;
+        let api = api8;
         let __raw = <T as crate::types::MessageCell>::send_message(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -98,10 +127,10 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api7 = api.clone();
+    let api9 = api.clone();
     router = router.route("/message_cell/edit_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api7;
+        let api = api9;
         let __raw = <T as crate::types::MessageCell>::edit_message(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -109,9 +138,9 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api8 = api.clone();
+    let api10 = api.clone();
     router = router.route("/message_cell/delete_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api8;
+        let api = api10;
         let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let channel_id = __query.get("channel_id").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -127,9 +156,9 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api9 = api.clone();
+    let api11 = api.clone();
     router = router.route("/message_cell/get_messages", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api9;
+        let api = api11;
         let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let channel_id = __query.get("channel_id").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -147,9 +176,9 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api10 = api.clone();
+    let api12 = api.clone();
     router = router.route("/message_cell/poll_events", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api10;
+        let api = api12;
         let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let after = __query.get("after").map(|str| serde_json::from_str(str).ok()).flatten();

@@ -100,4 +100,5 @@ models pair languages with English, so translation is N → English → N:
   instead of the original: one hop, and context-aware. Edges always send the
   English translation along for this reason.
 
-Client-side translation is not part of Phase 0.
+The client SDK implements this chaining; see [client SDK](client.md). Real
+models are not wired in yet: a mock stands in for them.

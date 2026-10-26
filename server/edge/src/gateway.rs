@@ -28,6 +28,8 @@ pub struct Session {
     pub guilds: HashSet<String>,
     events: VecDeque<Event>,
     next_seq: i64,
+    /// Newest event pushed out of the queue unread.
+    dropped: i64,
     last_seen: Instant,
 }
 
@@ -66,6 +68,7 @@ impl Sessions {
                 guilds: HashSet::new(),
                 events: VecDeque::new(),
                 next_seq: 1,
+                dropped: 0,
                 last_seen: Instant::now(),
             },
         );
@@ -133,7 +136,9 @@ impl Sessions {
     }
 
     /// Events after `after`, waiting up to `timeout` for the first one.
-    /// `None` if the session does not exist or belongs to someone else.
+    /// `None` if the session does not exist, belongs to someone else, or
+    /// has dropped events the client has not read; the client must then
+    /// connect again and reload.
     pub async fn poll(
         &self,
         id: &str,
@@ -144,6 +149,11 @@ impl Sessions {
         let read = || -> Option<(Vec<Event>, i64)> {
             let mut sessions = self.sessions.lock();
             let session = sessions.get_mut(id).filter(|s| s.user_id == user_id)?;
+            if after < session.dropped {
+                drop(sessions);
+                self.remove(&[id.to_string()]);
+                return None;
+            }
             session.last_seen = Instant::now();
             let events = session
                 .events
@@ -167,18 +177,24 @@ impl Sessions {
 
     /// Drops sessions that stopped polling.
     pub fn sweep(&self) {
-        let mut sessions = self.sessions.lock();
-        let idle = sessions
+        let idle = self
+            .sessions
+            .lock()
             .iter()
             .filter(|(_, session)| session.last_seen.elapsed() > SESSION_IDLE)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
+        self.remove(&idle);
+    }
+
+    fn remove(&self, ids: &[String]) {
+        let mut sessions = self.sessions.lock();
         let mut by_guild = self.by_guild.lock();
-        for id in idle {
-            if let Some(session) = sessions.remove(&id) {
+        for id in ids {
+            if let Some(session) = sessions.remove(id) {
                 for guild in session.guilds {
                     if let Some(ids) = by_guild.get_mut(&guild) {
-                        ids.remove(&id);
+                        ids.remove(id);
                     }
                 }
             }
@@ -191,7 +207,40 @@ fn push(session: &mut Session, mut event: Event) -> i64 {
     session.next_seq += 1;
     session.events.push_back(event);
     while session.events.len() > QUEUE_LIMIT {
-        session.events.pop_front();
+        if let Some(dropped) = session.events.pop_front() {
+            session.dropped = dropped.seq;
+        }
     }
     session.next_seq - 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> UserSettings {
+        UserSettings {
+            locale: "en-US".into(),
+            translate_outside_set: false,
+            show_original: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn sessions_that_fall_behind_must_reconnect() {
+        let sessions = Sessions::default();
+        sessions.create("s", "u", settings());
+        for _ in 0..QUEUE_LIMIT + 1 {
+            sessions.send_to_user("u", event(EventKind::GuildJoined, "g"));
+        }
+
+        // Read past the dropped event: fine.
+        let (events, next) = sessions.poll("s", "u", 1, Duration::ZERO).await.unwrap();
+        assert_eq!(events.len(), QUEUE_LIMIT);
+        assert_eq!(next, QUEUE_LIMIT as i64 + 1);
+
+        // Behind it: the session is gone, so the client reloads.
+        assert!(sessions.poll("s", "u", 0, Duration::ZERO).await.is_none());
+        assert!(sessions.poll("s", "u", next, Duration::ZERO).await.is_none());
+    }
 }

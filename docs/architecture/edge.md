@@ -15,6 +15,7 @@ removed or replaced while traffic flows.
 | Placement | Resolves guild → cells from its copy of the Directory's table ([placement](#placement)) |
 | Joining answers | e.g. `get_messages` = Message Cell history + Translation Cell translations for the reader |
 | Permissions handoff | Asks the Message Cell (`check_permission`) before calling the Translation Cell on a user's behalf |
+| Invites | Builds public invite codes (`<guild id>-<secret>`) and routes them back to the guild's cell, which checks them ([Message Cell](message-cell.md#invites)) |
 | Fan-out | Follows each guild once and copies events into every interested session ([gateway](#gateway)) |
 | The public boundary | Converts internal types to public ones (`convert.rs`) |
 
@@ -61,9 +62,14 @@ Translation log ───┘   (one per guild)└─▶ session C queue (carol, 
 - A session's guilds are registered **before** its snapshot is taken, so no
   event falls between the snapshot and the stream. The cost is an occasional
   duplicate, which clients drop by message ID.
-- Phase 0 delivers queues by long polling (`Gateway.poll`). A WebSocket
+- Queues are delivered by long polling (`Gateway.poll`). A WebSocket
   transport will drain the same queues with the same `Event` type.
-- Sessions not polled for ten minutes are dropped.
+- A queue keeps the last 1000 events, so a client that briefly lost its
+  connection polls on from where it was. Sessions not polled for ten
+  minutes are dropped, and so is a session asked for events it has already
+  pushed out of its queue. Either way the poll answers `not_found` and the
+  client connects again and reloads (the SDK does this on its own; see
+  [client SDK](client.md)).
 
 ## Language views
 

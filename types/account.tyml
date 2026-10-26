@@ -24,6 +24,8 @@ type Credentials {
 type Token {
     jwt: string
     user_id: string
+    /// As registered; sign-in ignores case.
+    name: string
     expires_at: int
 }
 

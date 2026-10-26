@@ -1,11 +1,11 @@
 //! The whole system over HTTP, through the generated public client: what a
 //! BabelChat app sees.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use babel_api_edge_client::types::{
     ApiError, Auth, ChannelKind, EventKind, Gateway, Guilds, LanguagePolicyUpdate, Me, Messages,
-    NewChannel, NewGuild, NewMessage, RegionMode, Registration, ThrowsOrOtherError,
+    NewChannel, NewGuild, NewInvite, NewMessage, RegionMode, Registration, ThrowsOrOtherError,
 };
 use babel_api_translation_cell::types::Plan;
 use babel_server::{EngineChoice, ServerConfig, start};
@@ -121,9 +121,29 @@ async fn messages_reach_every_reader_in_their_language() {
         .await
         .unwrap();
 
+    // Others join with an invite; the guild ID alone is not enough.
+    let invite = alice
+        .guilds()
+        .create_invite(
+            alice.token.clone(),
+            NewInvite {
+                guild_id: guild_id.clone(),
+                max_age_secs: None,
+                max_uses: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        bob.guilds()
+            .join_guild(bob.token.clone(), guild_id.clone())
+            .await,
+        Err(ThrowsOrOtherError::Throws(ApiError::NotFound))
+    ));
+
     // Only the owner may change the policy.
     bob.guilds()
-        .join_guild(bob.token.clone(), guild_id.clone())
+        .join_guild(bob.token.clone(), invite.code.clone())
         .await
         .unwrap();
     let denied = bob
@@ -147,7 +167,7 @@ async fn messages_reach_every_reader_in_their_language() {
 
     carol
         .guilds()
-        .join_guild(carol.token.clone(), guild_id.clone())
+        .join_guild(carol.token.clone(), invite.code.clone())
         .await
         .unwrap();
 
@@ -287,7 +307,7 @@ async fn guild_ids_cannot_be_probed() {
 async fn data_survives_a_crash() {
     let dir = tempfile::tempdir().unwrap();
 
-    let (mut server, url) = spawn_server(dir.path()).await;
+    let (mut server, url) = spawn_server(dir.path(), "127.0.0.1:0").await;
     let alice = Client::register(&url, "alice", "ja-JP").await;
     let guild_id = alice
         .guilds()
@@ -305,19 +325,97 @@ async fn data_survives_a_crash() {
 
     // Kill it like a crash, then start again on the same data.
     server.kill().await.unwrap();
-    let (_server, url) = spawn_server(dir.path()).await;
+    let (_server, url) = spawn_server(dir.path(), "127.0.0.1:0").await;
 
     let ready = Gateway::new(&url).connect(alice.token).await.unwrap();
     assert_eq!(ready.guilds[0].guild.id, guild_id);
 }
 
-/// Starts the real `babel-server` binary on a free port and returns it with
-/// its URL once it accepts connections.
-async fn spawn_server(data: &std::path::Path) -> (tokio::process::Child, String) {
+#[tokio::test]
+async fn sdk_sessions_survive_a_server_restart() {
+    use babel_sdk::{Client, MockDeviceTranslator, SessionConfig, Shown, Update};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (server, url) = spawn_server(dir.path(), "127.0.0.1:0").await;
+
+    let config = SessionConfig {
+        retry_min: Duration::from_millis(100),
+        retry_max: Duration::from_millis(300),
+        ..SessionConfig::default()
+    };
+    let connect = async |name: &str, locale: &str| {
+        Client::register(&url, name, "correct horse battery", locale)
+            .await
+            .unwrap()
+            .connect_with(Arc::new(MockDeviceTranslator::default()), config.clone())
+            .await
+            .unwrap()
+    };
+    let alice = connect("alice", "ja-JP").await;
+    let bob = connect("bob", "en-US").await;
+    let mut updates = bob.updates();
+
+    let guild = alice.create_guild("Restart Club", None).await.unwrap();
+    alice
+        .set_languages(babel_sdk::LanguagePolicyUpdate {
+            guild_id: guild.guild.id.clone(),
+            languages: vec!["ja".into(), "en".into()],
+            llm_languages: vec!["ja".into(), "en".into()],
+            region_mode: babel_sdk::RegionMode::Merged,
+            aliases: Vec::new(),
+            translate_regional_variants: false,
+        })
+        .await
+        .unwrap();
+    let channel = alice
+        .create_channel(&guild.guild.id, "general", None)
+        .await
+        .unwrap();
+    let invite = alice
+        .create_invite(&guild.guild.id, None, None)
+        .await
+        .unwrap();
+    bob.join(&invite.code).await.unwrap();
+    bob.load_history(&channel.id, 50).await.unwrap();
+
+    // The Edge restarts and forgets every session. Bob notices, waits, and
+    // starts over on his own.
+    drop(server);
+    assert!(matches!(
+        connection_change(&mut updates).await,
+        Update::Offline { .. }
+    ));
+    let address = url.trim_start_matches("http://");
+    let (_server, _) = spawn_server(dir.path(), address).await;
+    assert_eq!(
+        connection_change(&mut updates).await,
+        Update::Online { reloaded: true }
+    );
+
+    // And chat goes on, translated.
+    let sent = alice.send(&channel.id, "ただいま").await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(message) = bob.message(&channel.id, &sent.message.id)
+            && matches!(message.display.shown, Shown::Server { .. })
+        {
+            assert_eq!(message.display.text, "[en-US] ただいま");
+            break;
+        }
+        tokio::time::timeout_at(deadline, updates.recv())
+            .await
+            .expect("the message never reached Bob")
+            .unwrap();
+    }
+}
+
+/// Starts the real `babel-server` binary and returns it with its URL once it
+/// accepts connections. Listen on port 0 for a free port.
+async fn spawn_server(data: &std::path::Path, listen: &str) -> (tokio::process::Child, String) {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_babel-server"))
-        .args(["--listen", "127.0.0.1:0", "--plan", "paid3", "--data"])
+        .args(["--listen", listen, "--plan", "paid3", "--data"])
         .arg(data)
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -339,4 +437,19 @@ async fn spawn_server(data: &std::path::Path) -> (tokio::process::Child, String)
     // Keep draining its output so it never blocks on a full pipe.
     tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
     (child, url)
+}
+
+async fn connection_change(
+    updates: &mut tokio::sync::broadcast::Receiver<babel_sdk::Update>,
+) -> babel_sdk::Update {
+    use babel_sdk::Update;
+    loop {
+        let update = tokio::time::timeout(Duration::from_secs(20), updates.recv())
+            .await
+            .expect("no update")
+            .unwrap();
+        if matches!(update, Update::Offline { .. } | Update::Online { .. }) {
+            return update;
+        }
+    }
 }

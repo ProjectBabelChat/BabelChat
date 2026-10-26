@@ -116,6 +116,26 @@ type MessageEdit {
     text: string
 }
 
+/// Lets anyone holding it join the guild. Lives with the guild, so it moves
+/// with it and dies with it.
+type Invite {
+    /// Random; the Edge builds the public code from it and the guild ID.
+    secret: string
+    guild_id: string
+    created_by: string
+    created_at: int
+    expires_at: int?
+    max_uses: int?
+    uses: int
+}
+
+type NewInvite {
+    guild_id: string
+    user_id: string
+    expires_at: int?
+    max_uses: int?
+}
+
 type DeletedMessage {
     channel_id: string
     message_id: string
@@ -154,6 +174,7 @@ type GuildEventBatch {
 enum Permission {
     "view"
     "send_messages"
+    "create_invite"
     "manage_guild"
 }
 
@@ -171,7 +192,14 @@ interface MessageCell {
     #[kind = "get"]
     function get_guild(guild_id: string, user_id: string) -> GuildSnapshot throws MessageCellError
 
-    function join_guild(guild_id: string, user_id: string, user_name: string) -> GuildSnapshot throws MessageCellError
+    /// Fails with `not_found` unless the invite is valid. Members joining
+    /// again succeed whatever the invite.
+    function join_guild(guild_id: string, invite: string, user_id: string, user_name: string) -> GuildSnapshot throws MessageCellError
+
+    function create_invite(@body: NewInvite) -> Invite throws MessageCellError
+
+    /// The invite's creator or a manager may revoke it.
+    function revoke_invite(guild_id: string, secret: string, user_id: string) throws MessageCellError
 
     #[kind = "get"]
     function check_permission(guild_id: string, user_id: string, permission: Permission) throws MessageCellError

@@ -102,6 +102,7 @@ impl Account {
         Ok(Token {
             jwt,
             user_id: user.id.clone(),
+            name: user.name.clone(),
             expires_at: exp * 1000,
         })
     }

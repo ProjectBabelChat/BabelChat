@@ -33,7 +33,7 @@ use babel_api_translation_cell::types::{
     self as translation, MessageRef, PolicyUpdate, RegionMode, SpacePolicy, TranslationCell,
     TranslationEventKind, TranslationQuery,
 };
-use babel_common::{poll_timeout, random_id};
+use babel_common::{now_ms, poll_timeout, random_id};
 use babel_lang::Normalizer;
 use gateway::{Sessions, event};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -80,6 +80,7 @@ const SETTINGS_TTL: Duration = Duration::from_secs(60);
 const FOLLOW_WAIT_MS: i64 = 25_000;
 const RETRY: Duration = Duration::from_secs(1);
 const MAX_PAGE: i64 = 100;
+const DEFAULT_INVITE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 type ApiResult<T> = Result<T, ApiError>;
 
@@ -540,6 +541,7 @@ impl public::Auth for Edge {
         Ok(public::Token {
             jwt: token.jwt,
             user_id: token.user_id,
+            name: token.name,
             expires_at: token.expires_at,
         })
     }
@@ -558,6 +560,7 @@ impl public::Auth for Edge {
         Ok(public::Token {
             jwt: token.jwt,
             user_id: token.user_id,
+            name: token.name,
             expires_at: token.expires_at,
         })
     }
@@ -654,14 +657,59 @@ impl public::Guilds for Edge {
         Ok(view)
     }
 
-    async fn join_guild(&self, claim: Claim, guild_id: String) -> ApiResult<public::GuildView> {
+    async fn create_invite(
+        &self,
+        claim: Claim,
+        body: public::NewInvite,
+    ) -> ApiResult<public::Invite> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let expires_at = match body.max_age_secs {
+            None => Some(now_ms() + DEFAULT_INVITE_AGE.as_millis() as i64),
+            Some(0) => None,
+            Some(secs) if secs > 0 => Some(now_ms().saturating_add(secs.saturating_mul(1000))),
+            Some(_) => return Err(ApiError::InvalidRequest),
+        };
+        let route = inner.route(&body.guild_id).await?;
+        let invite = route
+            .cell
+            .create_invite(cell::NewInvite {
+                guild_id: body.guild_id,
+                user_id: claim.sub,
+                expires_at,
+                max_uses: body.max_uses,
+            })
+            .await
+            .map_err(convert::cell_error)?;
+        Ok(convert::invite(&invite))
+    }
+
+    async fn revoke_invite(&self, claim: Claim, code: String) -> ApiResult<()> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let (guild_id, secret) = convert::parse_invite(&code).ok_or(ApiError::NotFound)?;
+        let route = inner.route(guild_id).await?;
+        route
+            .cell
+            .revoke_invite(guild_id.to_string(), secret.to_string(), claim.sub)
+            .await
+            .map_err(convert::cell_error)
+    }
+
+    async fn join_guild(&self, claim: Claim, invite: String) -> ApiResult<public::GuildView> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
         let settings = inner.settings(&claim.sub).await?;
-        let route = inner.route(&guild_id).await?;
+        let (guild_id, secret) = convert::parse_invite(&invite).ok_or(ApiError::NotFound)?;
+        let route = inner.route(guild_id).await?;
         route
             .cell
-            .join_guild(guild_id, claim.sub.clone(), claim.name.clone())
+            .join_guild(
+                guild_id.to_string(),
+                secret.to_string(),
+                claim.sub.clone(),
+                claim.name.clone(),
+            )
             .await
             .map_err(convert::cell_error)?;
 

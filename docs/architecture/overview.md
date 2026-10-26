@@ -18,6 +18,7 @@
 ```
                       internet
   clients ── HTTPS ──▶ Edge × N            the only public servers
+  (client SDK)
 ═════════════════════════│═══════════════════════════════════ internal network
                          ├─▶ Account           login, tokens, settings (closed in production)
                          ├─▶ Directory         guild -> cells, user -> guilds
@@ -36,9 +37,12 @@
 | [Translation Cell](translation-cell.md) | translations of a set of spaces | adding cells |
 | [Translation Engine](translation-engine.md) | nothing | adding replicas |
 
+On the other side of the Edge, the [client SDK](client.md) keeps a session
+live, decides which text each reader sees and translates on device.
+
 Every boundary is an API defined in TYML (see [API definitions](../api.md)).
 Services only see each other through the generated traits, so a service can
-run in-process (Phase 0) or behind an HTTP client without the caller
+run in-process (as in `babel-server` today) or behind an HTTP client without the caller
 noticing.
 
 ## A message, end to end
@@ -90,6 +94,8 @@ guild creation.
 | Language normalization | `crates/babel-lang` | — |
 | Storage | `server/store` | — |
 | Wiring | `server/all-in-one` | — |
+| Client SDK: session, display, on-device translation | `client/sdk` | `types/edge.tyml` (generated client) |
+| Terminal client | `client/cli` | — |
 
 ## What is open and what is closed
 

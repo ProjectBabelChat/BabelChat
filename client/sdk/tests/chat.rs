@@ -1,0 +1,386 @@
+//! Chatting through the SDK against a whole in-process server: what an app
+//! built on the SDK gets.
+
+use std::{sync::Arc, time::Duration};
+
+use babel_api_translation_cell::types::Plan;
+use babel_sdk::{
+    ChatMessage, Client, LanguagePolicyUpdate, MessageChange, MockDeviceTranslator, RegionMode,
+    Session, Shown, Update,
+};
+use babel_server::{EngineChoice, ServerConfig, start};
+use tokio::sync::broadcast;
+
+struct Server {
+    url: String,
+    _dir: tempfile::TempDir,
+}
+
+async fn server(plan: Plan) -> Server {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        message_cells: 2,
+        translation_cells: 2,
+        engine: EngineChoice::Mock {
+            latency: Duration::from_millis(20),
+        },
+        default_plan: plan,
+        daily_budget: None,
+    };
+    let (address, _) = start(&config, "127.0.0.1:0").await.unwrap();
+    Server {
+        url: format!("http://{address}"),
+        _dir: dir,
+    }
+}
+
+struct User {
+    session: Session,
+    updates: broadcast::Receiver<Update>,
+}
+
+async fn user(server: &Server, name: &str, locale: &str) -> User {
+    let client = Client::register(&server.url, name, "correct horse battery", locale)
+        .await
+        .unwrap();
+    let session = client
+        .connect(Arc::new(MockDeviceTranslator::default()))
+        .await
+        .unwrap();
+    let updates = session.updates();
+    User { session, updates }
+}
+
+impl User {
+    /// Waits until `check` finds what it looks for in the session.
+    async fn until<T>(&mut self, mut check: impl FnMut(&Session) -> Option<T>) -> T {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(found) = check(&self.session) {
+                return found;
+            }
+            match tokio::time::timeout_at(deadline, self.updates.recv()).await {
+                Ok(Ok(_) | Err(broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Err(error)) => panic!("updates ended: {error}"),
+                Err(_) => panic!("timed out"),
+            }
+        }
+    }
+
+    /// The message once its display has settled.
+    async fn settled(&mut self, channel: &str, id: &str) -> ChatMessage {
+        self.until(|session| {
+            session
+                .message(channel, id)
+                .filter(|message| message.display.is_settled())
+        })
+        .await
+    }
+}
+
+/// Alice's guild with one channel, joined by everyone else through an
+/// invite. Returns the channel ID.
+async fn guild(
+    owner: &mut User,
+    others: &mut [&mut User],
+    languages: &[&str],
+    llm: &[&str],
+) -> String {
+    let guild = owner
+        .session
+        .create_guild("Rhythm Club", Some("We play rhythm games together."))
+        .await
+        .unwrap();
+    let guild_id = guild.guild.id.clone();
+    owner
+        .session
+        .set_languages(LanguagePolicyUpdate {
+            guild_id: guild_id.clone(),
+            languages: languages.iter().map(|tag| tag.to_string()).collect(),
+            llm_languages: llm.iter().map(|tag| tag.to_string()).collect(),
+            region_mode: RegionMode::Merged,
+            aliases: Vec::new(),
+            translate_regional_variants: false,
+        })
+        .await
+        .unwrap();
+    let channel = owner
+        .session
+        .create_channel(&guild_id, "general", None)
+        .await
+        .unwrap();
+    let invite = owner
+        .session
+        .create_invite(&guild_id, None, None)
+        .await
+        .unwrap();
+    for other in others {
+        let joined = other.session.join(&invite.code).await.unwrap();
+        assert_eq!(joined.guild.id, guild_id);
+    }
+    channel.id
+}
+
+const JAPANESE: &str = "明日の夜に駅の近くでみんなと集まって一緒に遊びませんか";
+
+#[tokio::test]
+async fn paid_guilds_reach_every_reader_in_their_language() {
+    let server = server(Plan::Paid3).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let mut bob = user(&server, "bob", "en-GB").await;
+    let mut carol = user(&server, "carol", "fr-FR").await;
+    let channel = guild(
+        &mut alice,
+        &mut [&mut bob, &mut carol],
+        &["ja", "en", "ko"],
+        &["ja", "en"],
+    )
+    .await;
+
+    let sent = alice.session.send(&channel, JAPANESE).await.unwrap();
+    assert_eq!(sent.display.shown, Shown::Original);
+
+    // Bob reads the LLM's English.
+    let read = bob.settled(&channel, &sent.message.id).await;
+    assert_eq!(
+        read.display.shown,
+        Shown::Server {
+            from: "ja-JP".into(),
+            to: "en-US".into()
+        }
+    );
+    assert_eq!(read.display.text, format!("[en-US] {JAPANESE}"));
+
+    // Carol is outside the guild's languages: her device goes on from the
+    // LLM's English, one step.
+    let read = carol.settled(&channel, &sent.message.id).await;
+    assert_eq!(
+        read.display.shown,
+        Shown::Device {
+            from: "ja-JP".into(),
+            to: "fr-FR".into(),
+            via_english: true
+        }
+    );
+    assert_eq!(
+        read.display.text,
+        format!("[device fr-FR] [en-US] {JAPANESE}")
+    );
+
+    // Replies flow back the same way.
+    let reply = bob
+        .session
+        .send(&channel, "Sounds great, count me in!")
+        .await
+        .unwrap();
+    let read = alice.settled(&channel, &reply.message.id).await;
+    assert_eq!(read.display.text, "[ja-JP] Sounds great, count me in!");
+}
+
+#[tokio::test]
+async fn free_guilds_translate_on_device_through_english() {
+    let server = server(Plan::Free).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let mut bob = user(&server, "bob", "en-US").await;
+    let mut carol = user(&server, "carol", "fr-FR").await;
+    let channel = guild(
+        &mut alice,
+        &mut [&mut bob, &mut carol],
+        &["ja", "en", "fr"],
+        &[],
+    )
+    .await;
+
+    let sent = alice.session.send(&channel, JAPANESE).await.unwrap();
+
+    let read = bob.settled(&channel, &sent.message.id).await;
+    assert_eq!(
+        read.display.shown,
+        Shown::Device {
+            from: "ja-JP".into(),
+            to: "en-US".into(),
+            via_english: false
+        }
+    );
+    assert_eq!(read.display.text, format!("[device en-US] {JAPANESE}"));
+
+    // N → English → N, both steps on the device.
+    let read = carol.settled(&channel, &sent.message.id).await;
+    assert_eq!(
+        read.display.text,
+        format!("[device fr-FR] [device en] {JAPANESE}")
+    );
+}
+
+#[tokio::test]
+async fn edits_and_deletions_reach_readers() {
+    let server = server(Plan::Paid3).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let mut bob = user(&server, "bob", "en-US").await;
+    let channel = guild(&mut alice, &mut [&mut bob], &["ja", "en"], &["ja", "en"]).await;
+
+    let sent = alice.session.send(&channel, JAPANESE).await.unwrap();
+    let id = sent.message.id.clone();
+    bob.settled(&channel, &id).await;
+
+    alice
+        .session
+        .edit(&channel, &id, "やっぱり明後日にしませんか")
+        .await
+        .unwrap();
+    let read = bob
+        .until(|session| {
+            session
+                .message(&channel, &id)
+                .filter(|message| message.message.rev == 2 && message.display.is_translated())
+        })
+        .await;
+    assert_eq!(read.display.text, "[en-US] やっぱり明後日にしませんか");
+
+    alice.session.delete(&channel, &id).await.unwrap();
+    bob.until(|session| session.message(&channel, &id).is_none().then_some(()))
+        .await;
+}
+
+#[tokio::test]
+async fn history_pages_back_with_translations() {
+    let server = server(Plan::Paid3).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let bob = user(&server, "bob", "en-US").await;
+    let channel = guild(&mut alice, &mut [], &["ja", "en"], &["ja", "en"]).await;
+
+    let mut ids = Vec::new();
+    for text in ["一つ目", "二つ目", "三つ目"] {
+        ids.push(alice.session.send(&channel, text).await.unwrap().message.id);
+    }
+    // Let the translations land before Bob arrives.
+    alice
+        .until(|session| {
+            let messages = session.messages(&channel);
+            messages
+                .iter()
+                .all(|m| m.translation.as_ref().is_some_and(|t| t.status == "done"))
+                .then_some(())
+        })
+        .await;
+
+    let guild_id = alice.session.channel(&channel).unwrap().guild_id;
+    let invite = alice
+        .session
+        .create_invite(&guild_id, Some(0), Some(1))
+        .await
+        .unwrap();
+    bob.session.join(&invite.code).await.unwrap();
+
+    assert_eq!(bob.session.load_history(&channel, 2).await.unwrap(), 2);
+    assert!(!bob.session.history_complete(&channel));
+    assert_eq!(bob.session.load_history(&channel, 2).await.unwrap(), 1);
+    assert!(bob.session.history_complete(&channel));
+
+    let messages = bob.session.messages(&channel);
+    let shown = messages
+        .iter()
+        .map(|message| message.message.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(shown, ids, "oldest first");
+    assert_eq!(messages[0].display.text, "[en-US] 一つ目");
+}
+
+#[tokio::test]
+async fn changing_locale_changes_what_is_shown() {
+    let server = server(Plan::Paid3).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let mut bob = user(&server, "bob", "en-US").await;
+    let channel = guild(
+        &mut alice,
+        &mut [&mut bob],
+        &["ja", "en", "ko"],
+        &["ja", "en"],
+    )
+    .await;
+
+    let sent = alice.session.send(&channel, JAPANESE).await.unwrap();
+    bob.session.load_history(&channel, 10).await.unwrap();
+    bob.settled(&channel, &sent.message.id).await;
+
+    // Korean is declared but not translated by the LLM: the device takes
+    // over from English.
+    let mut settings = bob.session.settings();
+    settings.locale = "ko-KR".into();
+    bob.session.set_settings(settings).await.unwrap();
+
+    let view = bob.session.guilds()[0].language.clone();
+    assert_eq!(view.effective, "ko-KR");
+    assert!(view.in_set && !view.llm && view.client_translation);
+    let read = bob.settled(&channel, &sent.message.id).await;
+    assert_eq!(
+        read.display.text,
+        format!("[device ko-KR] [en-US] {JAPANESE}")
+    );
+}
+
+#[tokio::test]
+async fn invites_are_needed_and_updates_announce_members() {
+    let server = server(Plan::Paid3).await;
+    let mut alice = user(&server, "alice", "ja-JP").await;
+    let mut bob = user(&server, "bob", "en-US").await;
+    let guild = alice.session.create_guild("Private", None).await.unwrap();
+
+    assert!(bob.session.join(&guild.guild.id).await.is_err());
+    assert!(bob.session.join("not-an-invite").await.is_err());
+
+    let invite = alice
+        .session
+        .create_invite(&guild.guild.id, None, Some(1))
+        .await
+        .unwrap();
+    bob.session.join(&invite.code).await.unwrap();
+
+    let bob_id = bob.session.user_id().to_string();
+    alice
+        .until(|session| {
+            session
+                .guild(&guild.guild.id)
+                .filter(|view| view.members.iter().any(|m| m.user_id == bob_id))
+        })
+        .await;
+
+    // Bob sees new channels appear.
+    alice
+        .session
+        .create_channel(&guild.guild.id, "random", None)
+        .await
+        .unwrap();
+    bob.until(|session| {
+        session
+            .guild(&guild.guild.id)
+            .filter(|view| view.channels.iter().any(|c| c.name == "random"))
+    })
+    .await;
+
+    // Updates name what changed.
+    let mut created = None;
+    let message = alice
+        .session
+        .create_channel(&guild.guild.id, "general", None)
+        .await
+        .unwrap();
+    let sent = alice.session.send(&message.id, "やあ").await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while created.is_none() {
+        let update = tokio::time::timeout_at(deadline, bob.updates.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let Update::Message {
+            message_id,
+            change: MessageChange::Created,
+            ..
+        } = update
+        {
+            created = Some(message_id);
+        }
+    }
+    assert_eq!(created.unwrap(), sent.message.id);
+}

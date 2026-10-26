@@ -10,6 +10,8 @@ pub struct Registration {
 pub struct Token {
     pub jwt: String,
     pub user_id: String,
+    /// As registered; sign-in ignores case.
+    pub name: String,
     pub expires_at: i64,
 }
 

@@ -54,3 +54,9 @@ The `JwtValidator` change breaks existing implementations: they need a
   rate limiting on login will need.
 - The enum, map and keyword fixes are in the Rust generator only; the
   TypeScript and Kotlin generators only got the field-order fix.
+
+## Phase 1 (chat without a UI)
+
+No TYML changes. The SDK needed one shared connection pool for all
+interfaces; the generated clients already expose `url` and `client` as
+public fields, so it builds them directly instead of calling `new`.
