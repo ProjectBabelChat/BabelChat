@@ -1,8 +1,8 @@
 //! Regenerates the API crates under `server/api` from `types/*.tyml`.
 //!
 //! Each TYML file is one protocol boundary and becomes one crate: its types,
-//! one trait per interface, and an Axum router. The public Edge API also gets
-//! a Rust client for apps and tests.
+//! one trait per interface, and an Axum router. Boundaries that are called
+//! over the network also get a Rust client crate.
 
 use std::{fs, path::PathBuf, process::ExitCode};
 
@@ -32,16 +32,34 @@ const TARGETS: &[(&str, &str, &str, Kind)] = &[
     ),
     ("account.tyml", "account", "babel-api-account", Kind::Server),
     (
+        "account.tyml",
+        "account-client",
+        "babel-api-account-client",
+        Kind::Client,
+    ),
+    (
         "directory.tyml",
         "directory",
         "babel-api-directory",
         Kind::Server,
     ),
     (
+        "directory.tyml",
+        "directory-client",
+        "babel-api-directory-client",
+        Kind::Client,
+    ),
+    (
         "message_cell.tyml",
         "message-cell",
         "babel-api-message-cell",
         Kind::Server,
+    ),
+    (
+        "message_cell.tyml",
+        "message-cell-client",
+        "babel-api-message-cell-client",
+        Kind::Client,
     ),
     (
         "translation_cell.tyml",

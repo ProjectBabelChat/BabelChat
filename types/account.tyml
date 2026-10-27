@@ -49,6 +49,8 @@ enum AccountError {
     "invalid_credentials"
     "invalid_request"
     "not_found"
+    /// The Account service could not be reached.
+    "unavailable"
 }
 
 interface Account {

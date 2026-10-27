@@ -4,9 +4,10 @@
 //! implements the same API (types/account.tyml) well enough to run BabelChat
 //! locally: registration, login, JWTs and personal settings.
 //!
-//! Tokens are signed with HS256 and a per-installation secret that the
-//! all-in-one server hands to its Edge. Production signs with a private key
-//! and Edges verify with the public key, so no Edge can mint tokens.
+//! Tokens are signed with Ed25519 (EdDSA). Only this service holds the
+//! private key; Edges verify with the public key, so no Edge can mint
+//! tokens. A split deployment hands the key in (`pki/token.key`); otherwise
+//! the service makes one and keeps it in its store.
 
 use std::sync::Arc;
 
@@ -17,8 +18,9 @@ use babel_api_account::types::{
 };
 use babel_common::{now_ms, random_id};
 use babel_store::{Batch, Key, KvStore, StoreError, Table};
-use jsonwebtoken::{EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use rand::Rng;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 
 const USERS: Table = "users";
@@ -28,6 +30,7 @@ const META: Table = "meta";
 pub const TABLES: &[Table] = &[USERS, NAMES, META];
 
 const TOKEN_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const TOKEN_KEY: &[u8] = b"token_key";
 
 /// The claims of a BabelChat token. Edge APIs decode the same shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,33 +51,54 @@ struct UserRecord {
 
 fn storage(error: StoreError) -> AccountError {
     tracing::error!(%error, "account storage failed");
-    AccountError::InvalidRequest
+    AccountError::Unavailable
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OpenError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error("the token key is not an Ed25519 key in PKCS#8")]
+    BadKey,
 }
 
 pub struct Account {
     store: Arc<dyn KvStore>,
-    secret: Vec<u8>,
+    signing_key: EncodingKey,
+    public_key: Vec<u8>,
 }
 
 impl Account {
-    pub fn open(store: Arc<dyn KvStore>) -> Result<Self, StoreError> {
-        let key = b"jwt_secret".to_vec();
-        let secret = match store.get(META, &key)? {
-            Some(secret) => secret,
-            None => {
-                let secret: [u8; 32] = rand::rng().random();
-                let mut batch = Batch::new();
-                batch.put(META, key, secret.to_vec());
-                store.write(batch)?;
-                secret.to_vec()
-            }
+    /// Opens the service. `token_key` is the Ed25519 private key tokens are
+    /// signed with (PKCS#8, DER); without one the service uses the key in
+    /// its store, made on first open.
+    pub fn open(store: Arc<dyn KvStore>, token_key: Option<Vec<u8>>) -> Result<Self, OpenError> {
+        let pkcs8 = match token_key {
+            Some(key) => key,
+            None => match store.get(META, TOKEN_KEY)? {
+                Some(key) => key,
+                None => {
+                    let key = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                        .map_err(|_| OpenError::BadKey)?;
+                    let mut batch = Batch::new();
+                    batch.put(META, TOKEN_KEY.to_vec(), key.as_ref().to_vec());
+                    store.write(batch)?;
+                    key.as_ref().to_vec()
+                }
+            },
         };
-        Ok(Self { store, secret })
+        let pair = Ed25519KeyPair::from_pkcs8(&pkcs8).map_err(|_| OpenError::BadKey)?;
+        Ok(Self {
+            store,
+            signing_key: EncodingKey::from_ed_der(&pkcs8),
+            public_key: pair.public_key().as_ref().to_vec(),
+        })
     }
 
-    /// The HS256 secret Edges verify tokens with (development only).
-    pub fn jwt_secret(&self) -> &[u8] {
-        &self.secret
+    /// The raw Ed25519 public key Edges verify tokens with
+    /// (`jsonwebtoken::DecodingKey::from_ed_der`).
+    pub fn token_public_key(&self) -> &[u8] {
+        &self.public_key
     }
 
     fn user(&self, user_id: &str) -> Result<UserRecord, AccountError> {
@@ -93,12 +117,8 @@ impl Account {
             iat,
             exp,
         };
-        let jwt = jsonwebtoken::encode(
-            &Header::default(),
-            &claims,
-            &EncodingKey::from_secret(&self.secret),
-        )
-        .map_err(|_| AccountError::InvalidRequest)?;
+        let jwt = jsonwebtoken::encode(&Header::new(Algorithm::EdDSA), &claims, &self.signing_key)
+            .map_err(|_| AccountError::InvalidRequest)?;
         Ok(Token {
             jwt,
             user_id: user.id.clone(),
@@ -215,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_and_login() {
-        let account = Account::open(Arc::new(MemStore::new())).unwrap();
+        let account = Account::open(Arc::new(MemStore::new()), None).unwrap();
         let token = account
             .register(Registration {
                 name: "Alice".into(),
@@ -257,7 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn names_are_one_mentionable_word() {
-        let account = Account::open(Arc::new(MemStore::new())).unwrap();
+        let account = Account::open(Arc::new(MemStore::new()), None).unwrap();
         let register = |name: &str| {
             account.register(Registration {
                 name: name.into(),
@@ -273,5 +293,38 @@ mod tests {
                 AccountError::InvalidRequest
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tokens_verify_with_the_public_key_only() {
+        let store: Arc<dyn KvStore> = Arc::new(MemStore::new());
+        let account = Account::open(store.clone(), None).unwrap();
+        let token = account
+            .register(Registration {
+                name: "alice".into(),
+                password: "correct horse".into(),
+                locale: "ja-JP".into(),
+            })
+            .await
+            .unwrap();
+
+        let validation = jsonwebtoken::Validation::new(Algorithm::EdDSA);
+        let verify = |public_key: &[u8]| {
+            jsonwebtoken::decode::<Claims>(
+                &token.jwt,
+                &jsonwebtoken::DecodingKey::from_ed_der(public_key),
+                &validation,
+            )
+        };
+        assert_eq!(
+            verify(account.token_public_key()).unwrap().claims.sub,
+            token.user_id
+        );
+
+        // The key stays across restarts; another key does not verify.
+        let reopened = Account::open(store, None).unwrap();
+        assert_eq!(reopened.token_public_key(), account.token_public_key());
+        let stranger = Account::open(Arc::new(MemStore::new()), None).unwrap();
+        assert!(verify(stranger.token_public_key()).is_err());
     }
 }

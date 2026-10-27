@@ -27,12 +27,16 @@ babel-message-cell.workspace = true
 babel-store.workspace = true
 babel-translation-cell.workspace = true
 clap.workspace = true
+jsonwebtoken.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 babel-api-edge-client.workspace = true
+babel-common.workspace = true
+babel-net.workspace = true
+reqwest.workspace = true
 babel-sdk.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

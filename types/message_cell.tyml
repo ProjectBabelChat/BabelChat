@@ -201,10 +201,16 @@ enum GuildEventKind {
     "message_created"
     "message_edited"
     "message_deleted"
+    /// One member's read marker moved (`user_id`, `read_state`). Edges pass
+    /// it to that member's sessions only, on whichever Edge they are.
+    "read_state_updated"
+    /// One member's notification settings changed (`user_id`,
+    /// `notifications`); for that member's sessions only.
+    "notifications_updated"
 }
 
 /// One entry of a guild's event log. Exactly one payload is set, chosen by
-/// `kind`.
+/// `kind`; events about one member also name them in `user_id`.
 type GuildEvent {
     seq: int
     kind: GuildEventKind
@@ -213,6 +219,9 @@ type GuildEvent {
     channel: Channel?
     message: Message?
     deleted: DeletedMessage?
+    user_id: string?
+    read_state: ReadState?
+    notifications: NotificationSettings?
 }
 
 type GuildEventBatch {
@@ -222,6 +231,9 @@ type GuildEventBatch {
     /// Sequence number of the newest event of the guild. Polling with an
     /// `after` beyond it returns at once, so followers can start at the head.
     head: int
+    /// Events up to this sequence number were trimmed from the log. A
+    /// follower whose `after` is below it has missed some.
+    trimmed: int
 }
 
 enum Permission {
@@ -231,11 +243,32 @@ enum Permission {
     "manage_guild"
 }
 
+/// One stored entry of a guild, on its way to another cell. Keys and values
+/// are hex: they are the cell's own storage format.
+type GuildEntry {
+    table: string
+    key: string
+    value: string
+}
+
+type GuildExport {
+    entries: [GuildEntry]
+    /// Pass to the next export; null once everything is exported.
+    cursor: string?
+}
+
+type GuildImport {
+    guild_id: string
+    entries: [GuildEntry]
+}
+
 enum MessageCellError {
     "not_found"
     "forbidden"
     "invalid_request"
     "unavailable"
+    /// The guild lives on another cell now: ask the Directory again.
+    "moved"
 }
 
 interface MessageCell {
@@ -293,4 +326,26 @@ interface MessageCell {
     /// Long poll on the guild's event log, for Edges.
     #[kind = "get"]
     function poll_events(guild_id: string, after: int, wait_ms: int) -> GuildEventBatch throws MessageCellError
+
+    // ---- Moving a guild (called by the Directory) -------------------------
+
+    /// Holds the guild's writes (they wait) and returns once its outbox has
+    /// delivered everything, so the guild can be copied as it is.
+    function freeze_guild(guild_id: string) throws MessageCellError
+
+    /// A page of the frozen guild's entries, from `cursor` on.
+    #[kind = "get"]
+    function export_guild(guild_id: string, cursor: string?, limit: int) -> GuildExport throws MessageCellError
+
+    /// Stores exported entries. The guild becomes whole here with its last
+    /// page, but is only reached once the Directory points at it.
+    function import_guild(@body: GuildImport) throws MessageCellError
+
+    /// Ends a move at the old cell: `moved` drops the guild here (calls
+    /// about it answer `moved` from now on); otherwise writes resume.
+    function finish_move(guild_id: string, moved: bool) throws MessageCellError
+
+    /// Drops whatever this cell holds of a guild: an import that did not
+    /// finish.
+    function discard_guild(guild_id: string) throws MessageCellError
 }

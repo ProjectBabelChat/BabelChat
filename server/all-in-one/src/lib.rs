@@ -33,6 +33,7 @@ use babel_engine::{
 use babel_message_cell::MessageCell;
 use babel_store::{KvStore, RocksStore, Table};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
+use jsonwebtoken::DecodingKey;
 
 #[derive(Debug, Clone)]
 pub enum EngineChoice {
@@ -117,8 +118,8 @@ impl Server {
             cell.connect_directory(directory.clone());
         }
 
-        let account = Account::open(open_store(config, "account", babel_account::TABLES)?)?;
-        let jwt_secret = account.jwt_secret().to_vec();
+        let account = Account::open(open_store(config, "account", babel_account::TABLES)?, None)?;
+        let token_key = DecodingKey::from_ed_der(account.token_public_key());
 
         let edge = Edge::start(
             Cluster {
@@ -128,7 +129,7 @@ impl Server {
                 translation_cells,
             },
             EdgeConfig {
-                jwt_secret,
+                token_key,
                 writes_per_second: 5.0,
                 write_burst: 20.0,
             },

@@ -191,6 +191,9 @@ type TranslationEventBatch {
     /// Sequence number of the newest event of the space. Polling with an
     /// `after` beyond it returns at once, so followers can start at the head.
     head: int
+    /// Events up to this sequence number were trimmed from the log. A
+    /// follower whose `after` is below it has missed some.
+    trimmed: int
 }
 
 type SpaceUsage {

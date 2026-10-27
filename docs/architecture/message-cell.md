@@ -8,7 +8,7 @@ authenticating the user and resolving the guild's placement.
 
 ## Guilds have a single writer
 
-All writes to a guild go through one writer (Phase 0: a per-guild lock; later
+All writes to a guild go through one writer (a per-guild lock; later perhaps
 a per-guild actor task). Message order, IDs and permission checks need no
 coordination beyond that.
 
@@ -29,7 +29,13 @@ state change + guild log entry (+ outbox entry)
 
 - **The guild log** (`log` table) is the guild's event history. Edges long-poll
   it (`poll_events`); `head` in each batch lets a follower start at the end.
-  Later it will also drive migration catch-up and replication.
+  Some entries concern one member: their read marker moved
+  (`read_state_updated`) or their notification settings changed
+  (`notifications_updated`). Edges pass those to that member's sessions
+  only, so a user's devices stay in step on whichever Edge they are.
+  Entries older than an hour are trimmed, except those the outbox has not
+  delivered; `trimmed` in each batch tells a follower that fell further
+  behind (its Edge then drops the sessions concerned, which reload).
 - **The outbox** (`outbox` table) holds pointers to log entries other services
   must mirror. A single worker delivers them in commit order, deleting each
   once delivered:
@@ -42,6 +48,7 @@ state change + guild log entry (+ outbox entry)
 | `member_left`, `member_removed` | Directory `remove_membership` |
 | `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer) |
 | `message_deleted` | Translation Cell `delete_message` |
+| `read_state_updated`, `notifications_updated` | nothing: only Edges read them |
 
 Delivery is at least once; receivers are idempotent (`ingest` is keyed by
 message and revision). An unavailable receiver stops the worker at that entry
@@ -120,14 +127,15 @@ stores a `Ban`, and a banned user's invites fail like invalid ones until
   never past the newest message, and recounts the mentions after it from
   the messages themselves (at most 1000).
 - **Notification settings** are stored per member (`notify`); the cell only
-  keeps them. Clients decide what to show, since only they know which
+  keeps them, and logs changes for the member's other sessions. Clients decide what to show, since only they know which
   channel is on screen and what the message reads like in the reader's
   language.
 
 ## Storage
 
 ```
-guilds    guild                       GuildRecord (guild, translation cell, last seq, last message id)
+guilds    guild                       GuildRecord (guild, translation cell, last seq, last message id,
+                                      trimmed up to, frozen, moved)
 members   guild / user                Member
 channels  guild / channel             Channel (with its newest message id)
 messages  guild / channel / id        Message
@@ -141,3 +149,33 @@ outbox    seq                         OutboxEntry
 
 Every key of a guild starts with its ID: moving a guild is a range export per
 table. See [storage](storage.md).
+
+## Moving a guild
+
+The Directory moves a guild between cells (`babel-admin move-guild`;
+`moving.rs` on the cells' side):
+
+```
+Directory          old cell                        new cell
+   │ discard ──────────────────────────────────────▶ leftovers of a failed move go
+   │ freeze ────────▶ writes wait; the outbox drains
+   │ export ────────▶ pages of entries ──▶ import ──▶ stored, still frozen
+   │ placement switches (epoch + 1); Edges follow
+   │ finish(moved: false) ─────────────────────────▶ writes go on here
+   │ finish(moved: true) ─▶ data dropped; waiting
+   │                        writers hear `moved`
+```
+
+- **Writes wait, reads go on.** A frozen guild holds writers (up to 30
+  seconds) instead of failing them; reads and the log stay available on the
+  old cell until the move ends.
+- **Entries move as stored**, guild record last, so the log keeps its
+  sequence numbers and message IDs keep increasing: Edges carry on
+  following the log from where they were.
+- **The outbox drains first**: entries left for the Translation Cell or the
+  Directory leave from the old cell, in order, before the copy starts.
+- **`moved`.** Afterwards the old cell keeps only the guild's record, and
+  every call about the guild answers `moved`. Edges then look the guild up
+  again and repeat the call on the new cell, so clients notice nothing.
+- A move that fails before the placement switches is undone: the copy is
+  discarded and writes resume on the old cell.

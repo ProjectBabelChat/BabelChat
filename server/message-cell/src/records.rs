@@ -36,6 +36,13 @@ pub const TABLES: &[Table] = &[
     GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, LOG, OUTBOX,
 ];
 
+/// The tables holding a guild's entries (every key starts with the guild),
+/// in the order a move copies them: the guild record last, so the guild is
+/// whole on the new cell before it exists there.
+pub const GUILD_TABLES: &[Table] = &[
+    MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, LOG, GUILDS,
+];
+
 pub fn guild_key(guild: &str) -> Vec<u8> {
     Key::new().str(guild).build()
 }
@@ -87,6 +94,16 @@ pub struct GuildRecord {
     pub last_seq: i64,
     /// Last message ID handed out, to keep IDs increasing across restarts.
     pub last_message_id: u64,
+    /// Log entries up to this sequence number were trimmed.
+    #[serde(default)]
+    pub trimmed: i64,
+    /// Being copied to another cell: writes wait.
+    #[serde(default)]
+    pub frozen: bool,
+    /// Lives on another cell now; only this record is left, so that calls
+    /// about the guild answer `moved`.
+    #[serde(default)]
+    pub moved: bool,
 }
 
 /// A pointer to a log entry that other services have not seen yet.

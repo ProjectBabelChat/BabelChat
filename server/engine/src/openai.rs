@@ -30,6 +30,9 @@ pub struct OpenAiCompatConfig {
     /// Ask for `response_format: json_object`. Most servers support it.
     pub json_mode: bool,
     pub timeout: Duration,
+    /// Send requests through this proxy (the egress proxy,
+    /// `http://host:port`) instead of directly.
+    pub proxy: Option<String>,
 }
 
 pub struct OpenAiCompatBackend {
@@ -92,12 +95,18 @@ struct PromptTokensDetails {
 }
 
 impl OpenAiCompatBackend {
-    pub fn new(config: OpenAiCompatConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .expect("reqwest client builds");
-        Self { client, config }
+    /// Fails if the proxy URL is not one.
+    pub fn new(config: OpenAiCompatConfig) -> Result<Self, reqwest::Error> {
+        let mut client = reqwest::Client::builder().timeout(config.timeout);
+        client = match &config.proxy {
+            Some(proxy) => client.proxy(reqwest::Proxy::all(proxy)?),
+            // Never a proxy from the environment by accident.
+            None => client.no_proxy(),
+        };
+        Ok(Self {
+            client: client.build()?,
+            config,
+        })
     }
 
     async fn complete(
@@ -261,7 +270,9 @@ mod tests {
             model: "test-model".into(),
             json_mode: true,
             timeout: Duration::from_secs(5),
-        });
+            proxy: None,
+        })
+        .unwrap();
 
         let response = backend
             .translate(&TranslateRequest {

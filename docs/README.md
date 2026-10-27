@@ -23,7 +23,10 @@ client SDK as built so far, and where they are heading.
 4. [API definitions](api.md): the TYML files every boundary is generated from.
 5. [Development](development.md): running the server, chatting in the
    desktop app or a terminal, a local LLM, the tests.
-6. [Roadmap](roadmap.md): what is done and what comes next.
+6. [Deployment](deployment.md): every service in its own process: the
+   cluster file, certificates, the private network, backups, standbys,
+   moving guilds.
+7. [Roadmap](roadmap.md): what is done and what comes next.
 
 [TYML changes](tyml-changes.md) lists the changes made to the TYML generator
 for BabelChat.
@@ -42,7 +45,9 @@ for BabelChat.
 | `server/account` | Development stand-in for the closed Account service |
 | `server/store` | RocksDB storage shared by the services |
 | `server/common` | Small shared helpers |
+| `server/net` | Running apart: cluster file, mutual TLS, remote clients, standbys, egress proxy, `babel-pki`, `babel-admin` |
 | `server/all-in-one` | `babel-server`: every service in one process |
+| `deploy/local` | A whole cluster on one machine, one process per service |
 | `client/sdk` | Client SDK: sessions, display language, on-device translation |
 | `client/desktop` | `babelchat`: the desktop app (GPUI + Material 3 Expressive) |
 | `client/cli` | `babel`: a terminal chat client on the SDK |

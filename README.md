@@ -28,10 +28,12 @@ libclang for RocksDB.
 nix develop
 cargo run -p md3e-gallery                        # the component gallery
 cargo run -p babel-server -- --plan paid3        # every server in one process
+deploy/local/run.sh --plan paid3                 # or one process per service, over mutual TLS
 cargo run -p babel-desktop                       # the desktop app (sign up in the window)
 cargo run -p babel-cli -- register alice         # then `cargo run -p babel-cli` to chat
 ```
 
 On other Linux distributions install the development packages for
 `libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig`, `freetype` and
-`libxcb`, and clang for the servers. See [development](docs/development.md).
+`libxcb`, and clang for the servers. See [development](docs/development.md)
+and [deployment](docs/deployment.md).

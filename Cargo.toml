@@ -10,6 +10,7 @@ members = [
     "server/api/*",
     "server/store",
     "server/common",
+    "server/net",
     "server/engine",
     "server/translation-cell",
     "server/message-cell",
@@ -49,6 +50,10 @@ babel-api-engine = { path = "server/api/engine" }
 babel-api-engine-client = { path = "server/api/engine-client" }
 babel-api-translation-cell-client = { path = "server/api/translation-cell-client" }
 babel-common = { path = "server/common" }
+babel-net = { path = "server/net" }
+babel-api-account-client = { path = "server/api/account-client" }
+babel-api-directory-client = { path = "server/api/directory-client" }
+babel-api-message-cell-client = { path = "server/api/message-cell-client" }
 babel-api-message-cell = { path = "server/api/message-cell" }
 babel-api-translation-cell = { path = "server/api/translation-cell" }
 argon2 = "0.5"

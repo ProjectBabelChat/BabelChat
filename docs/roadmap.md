@@ -73,19 +73,40 @@ with GPUI and the Material 3 Expressive components of `gpui-md3e`:
 - Scripted runs with screenshots (`BABEL_SCRIPT`), from a driver moved into
   `gpui-md3e`. `TextField` gained masking (passwords) and scrolling to the
   caret.
+- Text: the IME placed at the caret; message text selectable, copied and
+  dragged; text dragged within and between text fields, and to and from
+  other applications (Wayland).
 
-## Phase 4 — split it up
+## Phase 4 — split it up (done)
 
-- HTTP clients behind the internal traits; each service as its own binary.
-- Internal network: WireGuard plus mutual TLS; service credentials; tenant
-  from credentials in the Translation Cell.
-- Egress proxy for all outbound traffic.
-- Backups (`BackupEngine` + log shipping) and a standby per cell.
-- Guild migration (export, catch-up, fenced switch-over).
-- Per-user events (read markers, notification settings) across Edges.
-- Log trimming.
+BabelChat runs as it would in production: each service its own process,
+on as many machines as needed (`docs/deployment.md`).
+
+- Each service its own binary (`babel-edge`, `babel-account`,
+  `babel-directory`, `babel-message-cell`, `babel-translation-cell`,
+  `babel-engine`), reaching the others through HTTP clients behind the same
+  traits (`babel-net`). One cluster file for all of them; a script that
+  runs a whole cluster on one machine (`deploy/local`).
+- Mutual TLS between services, with certificates from the cluster's own CA
+  that name each service (`babel-pki`); one table of who may call what.
+  WireGuard for the network, documented.
+- User tokens signed with Ed25519: Edges verify, only the Account service
+  signs.
+- The Translation Cell takes the tenant from the caller's certificate.
+- An egress proxy for outbound traffic that refuses internal addresses
+  (`babel-egress`).
+- Backups (`BackupEngine`), standbys that replay a service's write-ahead
+  log (`babel-standby`), restores (`babel-admin restore`).
+- Moving guilds between Message Cells while people write
+  (`babel-admin move-guild`); Edges follow a moved guild by themselves.
+- Read markers, notification settings and joined guilds reach a user's
+  sessions on every Edge.
+- Logs trimmed after an hour.
 
 ## Phase 5 — real translation
+
+- Moving a guild's Translation Cell space; automatic failover and fencing;
+  a replicated Directory; certificate rotation.
 
 - Validate the OpenAI-compatible backend against llama.cpp / vLLM with
   Hy-MT2 and Qwen3; tune window and summary sizes with real usage numbers.

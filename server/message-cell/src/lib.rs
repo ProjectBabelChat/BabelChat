@@ -12,8 +12,10 @@
 //!
 //! See docs/architecture/message-cell.md.
 
+mod moving;
 mod outbox;
 mod records;
+mod trim;
 
 use std::{
     collections::HashMap,
@@ -27,11 +29,14 @@ use async_trait::async_trait;
 use babel_api_directory::types::Directory;
 use babel_api_message_cell::types::{
     Ban, Channel, ChannelKind, DeletedMessage, Guild, GuildEvent, GuildEventBatch, GuildEventKind,
-    GuildSnapshot, Invite, Member, Message, MessageCellError, MessageEdit, NewChannel, NewGuild,
-    NewInvite, NewMessage, NotificationSettings, NotifyLevel, Permission, ReadState, Role,
+    GuildExport, GuildImport, GuildSnapshot, Invite, Member, Message, MessageCellError,
+    MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings, NotifyLevel,
+    Permission, ReadState, Role,
 };
 use babel_api_translation_cell::types::TranslationCell;
-use babel_common::{LogSignals, TimeOrderedIds, id_floor, now_ms, poll_timeout, random_id};
+use babel_common::{
+    LogMarks, LogSignals, TimeOrderedIds, id_floor, now_ms, poll_timeout, random_id,
+};
 use babel_store::{Batch, KvStore, Scan, StoreError};
 use parking_lot::Mutex;
 pub use records::TABLES;
@@ -41,6 +46,7 @@ use records::{
     message_prefix, outbox_key, read_key, read_prefix,
 };
 use tokio::sync::{Notify, OwnedMutexGuard};
+pub use trim::LOG_RETENTION;
 
 const MAX_NAME_CHARS: usize = 100;
 const MAX_TOPIC_CHARS: usize = 1000;
@@ -68,6 +74,9 @@ fn event(kind: GuildEventKind) -> GuildEvent {
         channel: None,
         message: None,
         deleted: None,
+        user_id: None,
+        read_state: None,
+        notifications: None,
     }
 }
 
@@ -144,6 +153,11 @@ pub(crate) struct Inner {
     pub(crate) outbox_signal: Notify,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     signals: LogSignals<String>,
+    /// How far each guild's log had grown at each trimming pass.
+    marks: LogMarks<String>,
+    /// Bumped whenever a move freezes or releases a guild; frozen writers
+    /// wait for it.
+    moves: tokio::sync::watch::Sender<u64>,
     next_outbox: AtomicI64,
 }
 
@@ -168,9 +182,12 @@ impl MessageCell {
             outbox_signal: Notify::new(),
             locks: Mutex::default(),
             signals: LogSignals::new(),
+            marks: LogMarks::default(),
+            moves: tokio::sync::watch::channel(0).0,
             next_outbox: AtomicI64::new(next_outbox),
         });
         tokio::spawn(outbox::run(inner.clone()));
+        tokio::spawn(trim::run(inner.clone()));
         Ok(Self { inner })
     }
 
@@ -178,6 +195,12 @@ impl MessageCell {
     pub fn connect_directory(&self, directory: Arc<dyn Directory>) {
         let _ = self.inner.directory.set(directory);
         self.inner.outbox_signal.notify_one();
+    }
+
+    /// Trims every guild's log to `retention` now (it also happens every
+    /// few minutes, to [`LOG_RETENTION`]). Returns how many entries went.
+    pub async fn trim_logs(&self, retention: std::time::Duration) -> Result<usize, StoreError> {
+        self.inner.trim_logs(retention).await
     }
 }
 
@@ -192,11 +215,37 @@ impl Inner {
         lock.lock_owned().await
     }
 
+    /// The guild's record; `moved` once it lives on another cell.
     fn guild(&self, guild: &str) -> CellResult<GuildRecord> {
-        self.store
-            .get_value(GUILDS, &guild_key(guild))
+        let record = self
+            .store
+            .get_value::<GuildRecord>(GUILDS, &guild_key(guild))
             .map_err(storage)?
-            .ok_or(MessageCellError::NotFound)
+            .ok_or(MessageCellError::NotFound)?;
+        if record.moved {
+            return Err(MessageCellError::Moved);
+        }
+        Ok(record)
+    }
+
+    /// Takes the guild's write lock once it accepts writes. While the guild
+    /// is being moved, writers wait here; once it has moved, they learn so.
+    async fn lock_writable(&self, guild: &str) -> CellResult<OwnedMutexGuard<()>> {
+        let deadline = tokio::time::Instant::now() + moving::WRITE_WAIT;
+        loop {
+            let mut moves = self.moves.subscribe();
+            let guard = self.lock(guild).await;
+            if !self.guild(guild)?.frozen {
+                return Ok(guard);
+            }
+            drop(guard);
+            if tokio::time::timeout_at(deadline, moves.changed())
+                .await
+                .is_err()
+            {
+                return Err(MessageCellError::Unavailable);
+            }
+        }
     }
 
     fn member(&self, guild: &str, user: &str) -> CellResult<Member> {
@@ -462,6 +511,9 @@ impl Inner {
             translation_cell: new.translation_cell,
             last_seq: 0,
             last_message_id: 0,
+            trimmed: 0,
+            frozen: false,
+            moved: false,
         };
 
         let mut batch = Batch::new();
@@ -495,7 +547,7 @@ impl Inner {
         user: String,
         name: String,
     ) -> CellResult<GuildSnapshot> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let mut record = self.guild(&guild)?;
         if self.member(&guild, &user).is_ok() {
             return self.snapshot(&record, &user);
@@ -541,6 +593,7 @@ impl Inner {
     }
 
     async fn create_invite(&self, new: NewInvite) -> CellResult<Invite> {
+        let _guard = self.lock_writable(&new.guild_id).await?;
         self.authorize(&new.guild_id, &new.user_id, Permission::CreateInvite)?;
         if new.max_uses.is_some_and(|max| max < 1) {
             return Err(MessageCellError::InvalidRequest);
@@ -565,7 +618,7 @@ impl Inner {
     }
 
     async fn revoke_invite(&self, guild: String, secret: String, user: String) -> CellResult<()> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &user, Permission::View)?;
         let key = invite_key(&guild, &secret);
         let invite = self
@@ -609,7 +662,7 @@ impl Inner {
     }
 
     async fn leave_guild(&self, guild: String, user: String) -> CellResult<()> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &user, Permission::View)?;
         if member.role == Role::Owner {
             return Err(MessageCellError::InvalidRequest);
@@ -627,7 +680,7 @@ impl Inner {
         target: String,
         ban: bool,
     ) -> CellResult<()> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         self.authorize(&guild, &user, Permission::ManageGuild)?;
         let member = self
             .member(&guild, &target)
@@ -659,7 +712,7 @@ impl Inner {
     }
 
     async fn unban_member(&self, guild: String, user: String, target: String) -> CellResult<()> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         self.authorize(&guild, &user, Permission::ManageGuild)?;
         let key = member_key(&guild, &target);
         if self.store.get(BANS, &key).map_err(storage)?.is_none() {
@@ -690,7 +743,7 @@ impl Inner {
     ) -> CellResult<ReadState> {
         let target = parse_id(&message_id)?;
         // Serialized with sends, which count mentions into the same state.
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &user, Permission::View)?;
         let newest = self
             .channel(&guild, &channel)?
@@ -717,18 +770,31 @@ impl Inner {
             .count() as i64;
         state.last_read_id = read.to_string();
 
+        // The log carries it to the member's other sessions, on any Edge.
+        let mut record = self.guild(&guild)?;
         let mut batch = Batch::new();
         batch.put_value(READS, read_key(&guild, &user, &channel), &state);
-        self.store.write(batch).map_err(storage)?;
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                user_id: Some(user),
+                read_state: Some(state.clone()),
+                ..event(GuildEventKind::ReadStateUpdated)
+            },
+            false,
+        );
+        self.commit(batch, &record)?;
         Ok(state)
     }
 
-    fn put_notification_settings(
+    async fn put_notification_settings(
         &self,
         user: String,
         mut settings: NotificationSettings,
     ) -> CellResult<NotificationSettings> {
         let guild = settings.guild_id.clone();
+        let _guard = self.lock_writable(&guild).await?;
         self.authorize(&guild, &user, Permission::View)?;
         // The last entry for a channel wins; unknown channels are dropped.
         let mut seen = std::collections::HashSet::new();
@@ -740,9 +806,20 @@ impl Inner {
         if settings.channels.len() > MAX_CHANNEL_SETTINGS {
             return Err(MessageCellError::InvalidRequest);
         }
+        let mut record = self.guild(&guild)?;
         let mut batch = Batch::new();
         batch.put_value(NOTIFY, member_key(&guild, &user), &settings);
-        self.store.write(batch).map_err(storage)?;
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                user_id: Some(user),
+                notifications: Some(settings.clone()),
+                ..event(GuildEventKind::NotificationsUpdated)
+            },
+            false,
+        );
+        self.commit(batch, &record)?;
         Ok(settings)
     }
 
@@ -756,7 +833,7 @@ impl Inner {
             ChannelKind::Thread => Permission::SendMessages,
             _ => Permission::ManageGuild,
         };
-        let _guard = self.lock(&new.guild_id).await;
+        let _guard = self.lock_writable(&new.guild_id).await?;
         self.authorize(&new.guild_id, &new.user_id, permission)?;
         let mut record = self.guild(&new.guild_id)?;
 
@@ -811,7 +888,7 @@ impl Inner {
     async fn send_message(&self, new: NewMessage) -> CellResult<Message> {
         check_text(&new.text, MAX_TEXT_CHARS)?;
         let guild = new.guild_id.clone();
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &new.user_id, Permission::SendMessages)?;
         let mut channel = self.channel(&guild, &new.channel_id)?;
         if channel.kind == ChannelKind::Category {
@@ -880,7 +957,7 @@ impl Inner {
     async fn edit_message(&self, edit: MessageEdit) -> CellResult<Message> {
         check_text(&edit.text, MAX_TEXT_CHARS)?;
         let guild = edit.guild_id.clone();
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         self.authorize(&guild, &edit.user_id, Permission::SendMessages)?;
         let mut message = self.message(&guild, &edit.channel_id, &edit.message_id)?;
         if message.author_id != edit.user_id {
@@ -951,7 +1028,7 @@ impl Inner {
         message_id: String,
         user: String,
     ) -> CellResult<()> {
-        let _guard = self.lock(&guild).await;
+        let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &user, Permission::View)?;
         let message = self.message(&guild, &channel, &message_id)?;
         if message.author_id != user && member.role != Role::Owner {
@@ -1020,7 +1097,8 @@ impl Inner {
         after: i64,
         wait_ms: i64,
     ) -> CellResult<GuildEventBatch> {
-        let head = self.guild(&guild)?.last_seq;
+        let record = self.guild(&guild)?;
+        let head = record.last_seq;
         let prefix = guild_key(&guild);
         let after_key = log_key(&guild, after.max(0));
         let read = || {
@@ -1040,6 +1118,8 @@ impl Inner {
                 .wait_past(&guild, after, poll_timeout(wait_ms))
                 .await
         {
+            // It may have moved away meanwhile.
+            self.guild(&guild)?;
             events = read()?;
         }
 
@@ -1053,6 +1133,7 @@ impl Inner {
                 .map(|event| event.seq)
                 .unwrap_or(after.min(head)),
             head: head.max(events.last().map(|event| event.seq).unwrap_or(0)),
+            trimmed: record.trimmed,
             events,
         })
     }
@@ -1145,7 +1226,7 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
         body: NotificationSettings,
         user_id: String,
     ) -> CellResult<NotificationSettings> {
-        self.inner.put_notification_settings(user_id, body)
+        self.inner.put_notification_settings(user_id, body).await
     }
 
     async fn check_permission(
@@ -1202,5 +1283,30 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
         wait_ms: i64,
     ) -> CellResult<GuildEventBatch> {
         self.inner.poll_events(guild_id, after, wait_ms).await
+    }
+
+    async fn freeze_guild(&self, guild_id: String) -> CellResult<()> {
+        self.inner.freeze_guild(&guild_id).await
+    }
+
+    async fn export_guild(
+        &self,
+        guild_id: String,
+        cursor: Option<String>,
+        limit: i64,
+    ) -> CellResult<GuildExport> {
+        self.inner.export_guild(&guild_id, cursor, limit)
+    }
+
+    async fn import_guild(&self, body: GuildImport) -> CellResult<()> {
+        self.inner.import_guild(body)
+    }
+
+    async fn finish_move(&self, guild_id: String, moved: bool) -> CellResult<()> {
+        self.inner.finish_move(&guild_id, moved).await
+    }
+
+    async fn discard_guild(&self, guild_id: String) -> CellResult<()> {
+        self.inner.discard_guild(&guild_id).await
     }
 }

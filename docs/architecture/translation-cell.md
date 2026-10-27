@@ -26,8 +26,11 @@ MessageRef { space, conversation, id }    + rev (opaque, changes on edit)
   are guessable from their hash.
 - `rev` plays the role a hash would: translations record the revision they
   were made from; a different revision means stale.
-- The tenant comes from the caller's credentials, never from the request.
-  Phase 0 serves one tenant (`local`), and every key already starts with it.
+- The tenant comes from the caller's credentials, never from the request:
+  a platform calls with a tenant certificate (`babel://tenant/<name>`) and
+  only ever sees its own spaces; BabelChat's Edges and Message Cells, and
+  every call within one process, are the tenant `local`. Every key starts
+  with the tenant.
 
 ## Ingest: translation starts at once
 
@@ -112,7 +115,10 @@ nodes         tenant / space / node                NodeRecord (node, version, fo
 windows       tenant / space / conversation        WindowRecord (entries, summary)
 translations  tenant / space / conversation / id   TranslationRecord (rev, source, status, translations)
 events        tenant / space / seq                 TranslationEvent
-jobs          seq                                  Job (message, rev, request snapshot)
+jobs          seq                                  Job (tenant, message, rev, request snapshot)
 ```
+
+Space logs (`events`) keep an hour of events; `trimmed` in each poll tells
+a follower that fell further behind.
 
 Original text lives only in windows and in queued jobs.

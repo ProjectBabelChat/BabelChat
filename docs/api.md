@@ -7,9 +7,9 @@ under `types/`, one file per boundary. Rust code is generated from them into
 | File | Boundary | Server crate | Client crate |
 |---|---|---|---|
 | `edge.tyml` | clients → Edge (public) | `babel-api-edge` | `babel-api-edge-client` |
-| `account.tyml` | Edge → Account | `babel-api-account` | |
-| `directory.tyml` | Edge, Message Cells → Directory | `babel-api-directory` | |
-| `message_cell.tyml` | Edge, Directory → Message Cell | `babel-api-message-cell` | |
+| `account.tyml` | Edge → Account | `babel-api-account` | `babel-api-account-client` |
+| `directory.tyml` | Edge, Message Cells, operators → Directory | `babel-api-directory` | `babel-api-directory-client` |
+| `message_cell.tyml` | Edge, Directory → Message Cell | `babel-api-message-cell` | `babel-api-message-cell-client` |
 | `translation_cell.tyml` | platforms → Translation Cell | `babel-api-translation-cell` | `babel-api-translation-cell-client` |
 | `engine.tyml` | Translation Cell → Engine | `babel-api-engine` | `babel-api-engine-client` |
 
@@ -18,7 +18,10 @@ Axum router (`router(api)`, `serve(api, address)`). A service implements the
 traits of its file; callers hold `Arc<dyn Trait>`. Client crates contain the
 same types and an HTTP client per interface; `babel_common::convert` moves a
 value between a server crate's type and a client crate's type, whose JSON is
-identical by construction.
+identical by construction. `babel-net` puts the clients behind the server
+crates' traits (`RemoteAccount`, `RemoteDirectory`, `RemoteMessageCell`,
+`RemoteTranslationCell`; `RemoteEngine` lives in `babel-engine`), so a
+service calls a peer in another process exactly like one in its own.
 
 ## Regenerating
 

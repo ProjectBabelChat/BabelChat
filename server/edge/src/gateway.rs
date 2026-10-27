@@ -190,6 +190,34 @@ impl Sessions {
         }
     }
 
+    /// Sessions of `user_id` that do not read `guild`.
+    pub fn without_guild(&self, user_id: &str, guild: &str) -> Vec<String> {
+        self.sessions
+            .lock()
+            .iter()
+            .filter(|(_, session)| {
+                session.user_id == user_id && !session.guilds.contains_key(guild)
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Pushes an event to the sessions `ids`.
+    pub fn send_to_sessions(&self, ids: &[String], event: Event) {
+        let mut woken = Vec::new();
+        {
+            let mut sessions = self.sessions.lock();
+            for id in ids {
+                if let Some(session) = sessions.get_mut(id) {
+                    woken.push((id.clone(), push(session, event.clone())));
+                }
+            }
+        }
+        for (id, seq) in woken {
+            self.signals.publish(&id, seq);
+        }
+    }
+
     /// Events after `after`, waiting up to `timeout` for the first one.
     /// `None` if the session does not exist, belongs to someone else, or
     /// has dropped events the client has not read; the client must then
@@ -230,6 +258,26 @@ impl Sessions {
         read()
     }
 
+    /// Drops every session reading `guild`: they missed some of its events
+    /// and must connect again and reload. Returns how many there were.
+    pub fn drop_guild(&self, guild: &str) -> usize {
+        let ids = self
+            .by_guild
+            .lock()
+            .get(guild)
+            .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        self.remove(&ids);
+        ids.len()
+    }
+
+    /// Drops every session, for the same reason.
+    pub fn drop_all(&self) -> usize {
+        let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
+        self.remove(&ids);
+        ids.len()
+    }
+
     /// Drops sessions that stopped polling.
     pub fn sweep(&self) {
         let idle = self
@@ -242,7 +290,7 @@ impl Sessions {
         self.remove(&idle);
     }
 
-    fn remove(&self, ids: &[String]) {
+    pub fn remove(&self, ids: &[String]) {
         let mut sessions = self.sessions.lock();
         let mut by_guild = self.by_guild.lock();
         for id in ids {

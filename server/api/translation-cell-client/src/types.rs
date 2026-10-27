@@ -211,6 +211,9 @@ pub struct TranslationEventBatch {
     /// Sequence number of the newest event of the space. Polling with an
     /// `after` beyond it returns at once, so followers can start at the head.
     pub head: i64,
+    /// Events up to this sequence number were trimmed from the log. A
+    /// follower whose `after` is below it has missed some.
+    pub trimmed: i64,
 }
 
 /// One event of a space. Exactly one payload is set, chosen by `kind`.

@@ -19,6 +19,7 @@
 
 use std::{sync::Arc, time::Duration};
 
+use babel_api_directory::types::DirectoryError;
 use babel_api_message_cell::types::{ChannelKind, GuildEvent, GuildEventKind};
 use babel_api_translation_cell::types::{
     ContextNode, IngestMessage, MessageRef, NodeKind, SpaceContext, TranslationCellError,
@@ -83,6 +84,17 @@ fn outcome(result: Result<(), TranslationCellError>, entry: &OutboxEntry) -> Del
         Err(TranslationCellError::Unavailable) => Delivery::Retry,
         Err(error) => {
             // A permanent rejection would block the outbox forever.
+            tracing::warn!(?error, ?entry, "dropping an outbox entry");
+            Delivery::Done
+        }
+    }
+}
+
+fn directory_outcome(result: Result<(), DirectoryError>, entry: &OutboxEntry) -> Delivery {
+    match result {
+        Ok(()) => Delivery::Done,
+        Err(DirectoryError::Unavailable) => Delivery::Retry,
+        Err(error) => {
             tracing::warn!(?error, ?entry, "dropping an outbox entry");
             Delivery::Done
         }
@@ -162,15 +174,19 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             let (Some(member), Some(directory)) = (event.member, inner.directory.get()) else {
                 return Delivery::Retry;
             };
-            directory.add_membership(member.user_id, guild_id).await;
-            Delivery::Done
+            directory_outcome(
+                directory.add_membership(member.user_id, guild_id).await,
+                entry,
+            )
         }
         GuildEventKind::MemberLeft | GuildEventKind::MemberRemoved => {
             let (Some(member), Some(directory)) = (event.member, inner.directory.get()) else {
                 return Delivery::Retry;
             };
-            directory.remove_membership(member.user_id, guild_id).await;
-            Delivery::Done
+            directory_outcome(
+                directory.remove_membership(member.user_id, guild_id).await,
+                entry,
+            )
         }
         GuildEventKind::MessageCreated | GuildEventKind::MessageEdited => {
             let Some(message) = event.message else {
@@ -214,5 +230,7 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                 entry,
             )
         }
+        // Only Edges care about one member's markers and settings.
+        GuildEventKind::ReadStateUpdated | GuildEventKind::NotificationsUpdated => Delivery::Done,
     }
 }

@@ -371,3 +371,81 @@ async fn queued_jobs_resume_after_a_restart() {
         TranslationStatus::Done
     );
 }
+
+#[tokio::test]
+async fn tenants_cannot_see_each_others_spaces() {
+    let (cell, _) = open(TranslationCellConfig::default());
+    let acme = babel_common::Identity {
+        role: babel_common::Role::Tenant,
+        name: "acme".into(),
+    };
+    // BabelChat's own guild, and a platform's space with the same ID.
+    paid_space(&cell).await;
+    babel_common::with_caller(acme.clone(), async {
+        cell.ingest(message("general", "1", "1", JAPANESE, "ja-JP"))
+            .await
+            .unwrap();
+    })
+    .await;
+
+    let policy = cell.get_policy("guild".into()).await.unwrap();
+    assert_eq!(policy.plan, Plan::Paid3);
+    let theirs = babel_common::with_caller(acme.clone(), cell.get_policy("guild".into()))
+        .await
+        .unwrap();
+    assert_eq!(theirs.plan, Plan::Free);
+
+    // Their message is theirs alone, and so are its events.
+    let query = || TranslationQuery {
+        messages: vec![MessageRef {
+            space: "guild".into(),
+            conversation: "general".into(),
+            id: "1".into(),
+        }],
+        langs: Vec::new(),
+    };
+    assert!(cell.get_translations(query()).await.unwrap().is_empty());
+    let found = babel_common::with_caller(acme.clone(), cell.get_translations(query()))
+        .await
+        .unwrap();
+    assert_eq!(found[0].source_lang, "ja-JP");
+    let ours = cell.poll_events("guild".into(), 0, 0).await.unwrap();
+    assert!(
+        ours.events
+            .iter()
+            .all(|event| event.kind == TranslationEventKind::Policy)
+    );
+
+    // Edges and Message Cells are BabelChat itself.
+    let edge = babel_common::Identity {
+        role: babel_common::Role::Edge,
+        name: "edge-0".into(),
+    };
+    let via_edge = babel_common::with_caller(edge, cell.get_policy("guild".into()))
+        .await
+        .unwrap();
+    assert_eq!(via_edge.plan, Plan::Paid3);
+}
+
+#[tokio::test]
+async fn space_logs_are_trimmed() {
+    let (cell, _) = open(TranslationCellConfig::default());
+    for id in ["1", "2", "3"] {
+        cell.ingest(message("general", id, "1", JAPANESE, "ja-JP"))
+            .await
+            .unwrap();
+    }
+    let head = cell.poll_events("guild".into(), 0, 0).await.unwrap().head;
+    assert_eq!(head, 3);
+    assert_eq!(cell.trim_logs(Duration::from_secs(3600)).await.unwrap(), 0);
+    assert_eq!(cell.trim_logs(Duration::ZERO).await.unwrap(), 3);
+
+    let behind = cell.poll_events("guild".into(), 0, 0).await.unwrap();
+    assert!(behind.events.is_empty());
+    assert_eq!((behind.trimmed, behind.head), (3, 3));
+    cell.ingest(message("general", "4", "1", JAPANESE, "ja-JP"))
+        .await
+        .unwrap();
+    let batch = cell.poll_events("guild".into(), 3, 0).await.unwrap();
+    assert_eq!(batch.events.len(), 1);
+}

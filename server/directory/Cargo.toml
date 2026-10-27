@@ -6,12 +6,19 @@ publish.workspace = true
 license = "Apache-2.0"
 description = "BabelChat Directory: guild placement and membership index"
 
+[[bin]]
+name = "babel-directory"
+path = "src/bin/babel-directory.rs"
+
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 babel-api-directory.workspace = true
 babel-api-message-cell.workspace = true
 babel-common.workspace = true
+babel-net.workspace = true
 babel-store.workspace = true
+clap.workspace = true
 parking_lot.workspace = true
 tokio.workspace = true
 tracing.workspace = true

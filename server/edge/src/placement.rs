@@ -20,6 +20,7 @@ use parking_lot::{Mutex, RwLock};
 
 const NEGATIVE_TTL: Duration = Duration::from_secs(5);
 const WATCH_WAIT_MS: i64 = 25_000;
+const RETRY: Duration = Duration::from_secs(1);
 
 pub struct Placements {
     directory: Arc<dyn Directory>,
@@ -46,7 +47,14 @@ impl Placements {
     async fn watch(self: Arc<Self>) {
         loop {
             let after = *self.version.lock();
-            let batch = self.directory.watch_placements(after, WATCH_WAIT_MS).await;
+            let batch = match self.directory.watch_placements(after, WATCH_WAIT_MS).await {
+                Ok(batch) => batch,
+                Err(_) => {
+                    // Lookups on a miss still work while the watch is down.
+                    tokio::time::sleep(RETRY).await;
+                    continue;
+                }
+            };
             for placement in batch.placements {
                 self.insert(placement);
             }
@@ -63,6 +71,15 @@ impl Placements {
             .is_none_or(|known| known.version <= placement.version);
         if newer {
             table.insert(placement.guild_id.clone(), placement);
+        }
+    }
+
+    /// Looks a guild up again, after its cell said it moved. The watch
+    /// would bring the news too, a moment later.
+    pub async fn refresh(&self, guild: &str) {
+        match self.directory.get_placement(guild.to_string()).await {
+            Ok(placement) => self.insert(placement),
+            Err(_) => tokio::time::sleep(RETRY).await,
         }
     }
 

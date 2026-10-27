@@ -4,7 +4,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use babel_api_directory::types::{
-    Directory, DirectoryError, GuildRequest, Placement, PlacementBatch,
+    Directory, DirectoryError, GuildRequest, MembershipBatch, Placement, PlacementBatch,
 };
 use babel_api_message_cell::types::{
     ChannelKind, ChannelNotify, GuildEventKind, MessageCell as _, MessageCellError, MessageEdit,
@@ -31,22 +31,46 @@ impl Directory for FakeDirectory {
     async fn get_placement(&self, _: String) -> Result<Placement, DirectoryError> {
         Err(DirectoryError::NotFound)
     }
-    async fn watch_placements(&self, after: i64, _: i64) -> PlacementBatch {
-        PlacementBatch {
+    async fn watch_placements(&self, after: i64, _: i64) -> Result<PlacementBatch, DirectoryError> {
+        Ok(PlacementBatch {
             placements: Vec::new(),
             version: after,
-        }
+        })
     }
-    async fn add_membership(&self, user_id: String, guild_id: String) {
+    async fn add_membership(
+        &self,
+        user_id: String,
+        guild_id: String,
+    ) -> Result<(), DirectoryError> {
         self.memberships.lock().push((user_id, guild_id));
+        Ok(())
     }
-    async fn remove_membership(&self, user_id: String, guild_id: String) {
+    async fn remove_membership(
+        &self,
+        user_id: String,
+        guild_id: String,
+    ) -> Result<(), DirectoryError> {
         self.memberships
             .lock()
             .retain(|known| *known != (user_id.clone(), guild_id.clone()));
+        Ok(())
     }
-    async fn list_memberships(&self, _: String) -> Vec<String> {
-        Vec::new()
+    async fn list_memberships(&self, _: String) -> Result<Vec<String>, DirectoryError> {
+        Ok(Vec::new())
+    }
+    async fn watch_memberships(
+        &self,
+        after: i64,
+        _: i64,
+    ) -> Result<MembershipBatch, DirectoryError> {
+        Ok(MembershipBatch {
+            changes: Vec::new(),
+            version: after,
+            trimmed: 0,
+        })
+    }
+    async fn move_guild(&self, _: String, _: String) -> Result<Placement, DirectoryError> {
+        Err(DirectoryError::Unavailable)
     }
 }
 
@@ -702,4 +726,99 @@ async fn notification_settings_belong_to_each_member() {
     assert_eq!(bobs.notifications, saved);
     let alices = cell.get_guild(guild.clone(), "alice".into()).await.unwrap();
     assert_eq!(alices.notifications.level, NotifyLevel::All);
+}
+
+/// Waits until the Translation Cell has message `id`: the outbox delivered
+/// everything before it.
+async fn delivered(f: &Fixture, guild: &str, channel: &str, id: &str) {
+    let reference = MessageRef {
+        space: guild.into(),
+        conversation: channel.into(),
+        id: id.into(),
+    };
+    for _ in 0..200 {
+        let found = f
+            .translation
+            .get_translations(TranslationQuery {
+                messages: vec![reference.clone()],
+                langs: Vec::new(),
+            })
+            .await
+            .unwrap();
+        if !found.is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the outbox never delivered {id}");
+}
+
+#[tokio::test]
+async fn logs_are_trimmed_once_delivered() {
+    let f = fixture();
+    let guild = guild(&f.cell).await;
+    let channel = channel(&f.cell, &guild).await;
+    let mut last = String::new();
+    for n in 0..5 {
+        last = send(&f.cell, &guild, &channel, "owner", &format!("message {n}")).await;
+    }
+    delivered(&f, &guild, &channel, &last).await;
+    // The outbox deletes an entry right after delivering it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Nothing is old enough yet with an hour's retention...
+    assert_eq!(
+        f.cell.trim_logs(Duration::from_secs(3600)).await.unwrap(),
+        0
+    );
+    // ...and everything is without one.
+    let head = f.cell.poll_events(guild.clone(), 0, 0).await.unwrap().head;
+    assert_eq!(
+        f.cell.trim_logs(Duration::ZERO).await.unwrap(),
+        head as usize
+    );
+
+    // A follower from the start learns it missed events; one at the head
+    // carries on.
+    let behind = f.cell.poll_events(guild.clone(), 0, 0).await.unwrap();
+    assert!(behind.events.is_empty());
+    assert_eq!(behind.trimmed, head);
+    send(&f.cell, &guild, &channel, "owner", "still here").await;
+    let batch = f.cell.poll_events(guild.clone(), head, 0).await.unwrap();
+    assert_eq!(batch.events.len(), 1);
+    assert_eq!(batch.events[0].kind, GuildEventKind::MessageCreated);
+}
+
+#[tokio::test]
+async fn undelivered_entries_are_kept() {
+    // The Translation Cell is gone: the outbox holds every entry.
+    let mut translation_cells: HashMap<
+        String,
+        Arc<dyn babel_api_translation_cell::types::TranslationCell>,
+    > = HashMap::new();
+    let (peer, url) = (
+        babel_common::Identity {
+            role: babel_common::Role::TranslationCell,
+            name: "tc-0".into(),
+        },
+        "https://127.0.0.1:9",
+    );
+    translation_cells.insert(
+        "tc-0".into(),
+        Arc::new(babel_net::remote::RemoteTranslationCell::new(
+            peer,
+            url,
+            reqwest::Client::new(),
+        )),
+    );
+    let cell = MessageCell::open(Arc::new(MemStore::new()), translation_cells).unwrap();
+    cell.connect_directory(Arc::new(FakeDirectory::default()));
+    let guild = guild(&cell).await;
+    let channel = channel(&cell, &guild).await;
+    send(&cell, &guild, &channel, "owner", "hello?").await;
+
+    assert_eq!(cell.trim_logs(Duration::ZERO).await.unwrap(), 0);
+    let batch = cell.poll_events(guild, 0, 0).await.unwrap();
+    assert_eq!(batch.trimmed, 0);
+    assert_eq!(batch.events[0].kind, GuildEventKind::GuildCreated);
 }

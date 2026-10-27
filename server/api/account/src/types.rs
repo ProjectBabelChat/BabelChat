@@ -25,6 +25,9 @@ pub enum AccountError {
     InvalidRequest,
     #[serde(rename = "not_found")]
     NotFound,
+    /// The Account service could not be reached.
+    #[serde(rename = "unavailable")]
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

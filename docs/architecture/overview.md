@@ -42,8 +42,8 @@ live, decides which text each reader sees and translates on device.
 
 Every boundary is an API defined in TYML (see [API definitions](../api.md)).
 Services only see each other through the generated traits, so a service can
-run in-process (as in `babel-server` today) or behind an HTTP client without the caller
-noticing.
+run in-process (as in `babel-server`) or in its own process behind an HTTP
+client (as in a [deployment](../deployment.md)) without the caller noticing.
 
 ## A message, end to end
 
@@ -93,7 +93,9 @@ guild creation.
 | Accounts (stub) | `server/account` | `types/account.tyml` |
 | Language normalization | `crates/babel-lang` | — |
 | Storage | `server/store` | — |
-| Wiring | `server/all-in-one` | — |
+| Wiring, all in one process | `server/all-in-one` | — |
+| Running apart: cluster file, mutual TLS, remote clients, standbys, egress proxy | `server/net` | — |
+| A cluster on one machine | `deploy/local` | — |
 | Client SDK: session, display, on-device translation | `client/sdk` | `types/edge.tyml` (generated client) |
 | Terminal client | `client/cli` | — |
 | Desktop app (GPUI + Material 3 Expressive) | `client/desktop` | — |

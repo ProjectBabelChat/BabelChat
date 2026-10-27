@@ -18,6 +18,7 @@ mod context;
 pub mod detect;
 mod policy;
 mod records;
+mod trim;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -39,18 +40,19 @@ use babel_api_translation_cell::types::{
     TranslationEventBatch, TranslationEventKind, TranslationQuery, TranslationStatus,
     ViewerLanguage,
 };
-use babel_common::{LogSignals, now_ms, poll_timeout};
+use babel_common::{LogMarks, LogSignals, Role, now_ms, poll_timeout};
 use babel_lang::Normalizer;
-use babel_store::{Batch, Key, KvStore, Scan, StoreError};
+use babel_store::{Batch, KvStore, Scan, StoreError};
 use parking_lot::Mutex;
 pub use policy::plan_limits;
 pub use records::TABLES;
 use records::{
-    EVENTS, JOBS, Job, NODES, NodeRecord, SPACES, SpaceRecord, TENANT, TRANSLATIONS,
+    EVENTS, JOBS, Job, LOCAL_TENANT, NODES, NodeRecord, SPACES, SpaceRecord, TRANSLATIONS,
     TranslationRecord, WINDOWS, WindowEntry, WindowRecord, event_key, job_key, node_key, space_key,
     translation_key, window_key,
 };
 use tokio::sync::{OwnedMutexGuard, Semaphore};
+pub use trim::LOG_RETENTION;
 
 #[derive(Debug, Clone)]
 pub struct TranslationCellConfig {
@@ -114,11 +116,13 @@ struct Inner {
     normalizer: Normalizer,
     config: TranslationCellConfig,
     /// Serializes read-modify-write per space.
-    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    locks: Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
     /// Wakes `poll_events` per space.
-    signals: LogSignals<String>,
+    signals: LogSignals<(String, String)>,
+    /// How far each space's log had grown at each trimming pass.
+    marks: LogMarks<(String, String)>,
     /// Windows with a fold in flight, as (space, conversation).
-    folding: Mutex<HashSet<(String, String)>>,
+    folding: Mutex<HashSet<(String, String, String)>>,
     next_job: AtomicI64,
     permits: Arc<Semaphore>,
 }
@@ -142,6 +146,7 @@ impl TranslationCell {
             config,
             locks: Mutex::default(),
             signals: LogSignals::new(),
+            marks: LogMarks::default(),
             folding: Mutex::default(),
             next_job: AtomicI64::new(next_job),
         });
@@ -152,8 +157,15 @@ impl TranslationCell {
         for (_, job) in jobs {
             tokio::spawn(inner.clone().run_job(job));
         }
+        tokio::spawn(trim::run(inner.clone()));
 
         Ok(Self { inner })
+    }
+
+    /// Trims every space's log to `retention` now (it also happens every
+    /// few minutes, to [`LOG_RETENTION`]). Returns how many entries went.
+    pub async fn trim_logs(&self, retention: Duration) -> Result<usize, StoreError> {
+        self.inner.trim_logs(retention).await
     }
 }
 
@@ -173,6 +185,16 @@ fn add_usage(total: &mut SpaceUsage, usage: &Usage) {
     total.cache_read_tokens += usage.cache_read_tokens;
     total.cache_write_tokens += usage.cache_write_tokens;
     total.output_tokens += usage.output_tokens;
+}
+
+/// Whose spaces a request is about: a platform calling with its own tenant
+/// certificate, or BabelChat itself (its Edges and Message Cells, and every
+/// call within one process).
+fn tenant() -> String {
+    match babel_common::caller() {
+        Some(caller) if caller.role == Role::Tenant => caller.name,
+        _ => LOCAL_TENANT.to_string(),
+    }
 }
 
 fn check_id(id: &str) -> CellResult<()> {
@@ -206,39 +228,47 @@ enum Event {
 }
 
 impl Inner {
-    async fn lock(&self, space: &str) -> OwnedMutexGuard<()> {
+    async fn lock(&self, tenant: &str, space: &str) -> OwnedMutexGuard<()> {
         let lock = self
             .locks
             .lock()
-            .entry(space.to_string())
+            .entry((tenant.to_string(), space.to_string()))
             .or_default()
             .clone();
         lock.lock_owned().await
     }
 
-    fn load_space(&self, space: &str) -> CellResult<Option<SpaceRecord>> {
+    fn load_space(&self, tenant: &str, space: &str) -> CellResult<Option<SpaceRecord>> {
         self.store
-            .get_value(SPACES, &space_key(space))
+            .get_value(SPACES, &space_key(tenant, space))
             .map_err(storage)
     }
 
-    fn space_or_default(&self, space: &str) -> CellResult<SpaceRecord> {
-        Ok(self.load_space(space)?.unwrap_or_else(|| SpaceRecord {
-            context: None,
-            context_version: 0,
-            digest: None,
-            policy: policy::default_policy(space, self.config.default_plan),
-            usage: zero_usage(space),
-            budget_day: 0,
-            budget_used: 0,
-            last_event: 0,
-        }))
+    fn space_or_default(&self, tenant: &str, space: &str) -> CellResult<SpaceRecord> {
+        Ok(self
+            .load_space(tenant, space)?
+            .unwrap_or_else(|| SpaceRecord {
+                context: None,
+                context_version: 0,
+                digest: None,
+                policy: policy::default_policy(space, self.config.default_plan),
+                usage: zero_usage(space),
+                budget_day: 0,
+                budget_used: 0,
+                last_event: 0,
+                trimmed: 0,
+            }))
     }
 
-    fn load_window(&self, space: &str, conversation: &str) -> CellResult<WindowRecord> {
+    fn load_window(
+        &self,
+        tenant: &str,
+        space: &str,
+        conversation: &str,
+    ) -> CellResult<WindowRecord> {
         Ok(self
             .store
-            .get_value(WINDOWS, &window_key(space, conversation))
+            .get_value(WINDOWS, &window_key(tenant, space, conversation))
             .map_err(storage)?
             .unwrap_or_default())
     }
@@ -248,6 +278,7 @@ impl Inner {
     fn push_event(
         &self,
         batch: &mut Batch,
+        tenant: &str,
         space: &str,
         record: &mut SpaceRecord,
         event: Event,
@@ -266,7 +297,7 @@ impl Inner {
         };
         batch.put_value(
             EVENTS,
-            event_key(space, seq),
+            event_key(tenant, space, seq),
             &TranslationEvent {
                 seq,
                 kind,
@@ -278,12 +309,18 @@ impl Inner {
         seq
     }
 
-    fn publish(&self, space: &str, seq: i64) {
-        self.signals.publish(&space.to_string(), seq);
+    fn publish(&self, tenant: &str, space: &str, seq: i64) {
+        self.signals
+            .publish(&(tenant.to_string(), space.to_string()), seq);
     }
 
     /// The conversation's node and its ancestors, nearest first.
-    fn node_chain(&self, space: &str, conversation: &str) -> CellResult<Vec<NodeRecord>> {
+    fn node_chain(
+        &self,
+        tenant: &str,
+        space: &str,
+        conversation: &str,
+    ) -> CellResult<Vec<NodeRecord>> {
         let mut chain = Vec::new();
         let mut next = Some(conversation.to_string());
         while let Some(id) = next.take() {
@@ -292,7 +329,7 @@ impl Inner {
             }
             let Some(record) = self
                 .store
-                .get_value::<NodeRecord>(NODES, &node_key(space, &id))
+                .get_value::<NodeRecord>(NODES, &node_key(tenant, space, &id))
                 .map_err(storage)?
             else {
                 break;
@@ -305,12 +342,12 @@ impl Inner {
 
     // ---- Context ----------------------------------------------------------
 
-    async fn put_space(self: &Arc<Self>, context: SpaceContext) -> CellResult<()> {
+    async fn put_space(self: &Arc<Self>, tenant: &str, context: SpaceContext) -> CellResult<()> {
         check_id(&context.space)?;
         let space = context.space.clone();
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
 
-        let mut record = self.space_or_default(&space)?;
+        let mut record = self.space_or_default(tenant, &space)?;
         if record.context.as_ref() == Some(&context) {
             return Ok(());
         }
@@ -324,17 +361,21 @@ impl Inner {
         record.digest = None;
 
         let mut batch = Batch::new();
-        batch.put_value(SPACES, space_key(&space), &record);
+        batch.put_value(SPACES, space_key(tenant, &space), &record);
         self.store.write(batch).map_err(storage)?;
 
         if needs_digest {
-            tokio::spawn(self.clone().digest(context, record.context_version));
+            tokio::spawn(
+                self.clone()
+                    .digest(tenant.to_string(), context, record.context_version),
+            );
         }
         Ok(())
     }
 
     /// Condenses a long description into the space layer.
-    async fn digest(self: Arc<Self>, context: SpaceContext, version: i64) {
+    async fn digest(self: Arc<Self>, tenant: String, context: SpaceContext, version: i64) {
+        let tenant = tenant.as_str();
         let request = SummarizeRequest {
             purpose: SummaryPurpose::Digest,
             previous: None,
@@ -350,8 +391,8 @@ impl Inner {
             return;
         };
 
-        let _guard = self.lock(&context.space).await;
-        let Ok(Some(mut record)) = self.load_space(&context.space) else {
+        let _guard = self.lock(tenant, &context.space).await;
+        let Ok(Some(mut record)) = self.load_space(tenant, &context.space) else {
             return;
         };
         if record.context_version != version {
@@ -363,18 +404,18 @@ impl Inner {
         add_usage(&mut record.usage, &response.usage);
 
         let mut batch = Batch::new();
-        batch.put_value(SPACES, space_key(&context.space), &record);
+        batch.put_value(SPACES, space_key(tenant, &context.space), &record);
         if let Err(error) = self.store.write(batch) {
             tracing::error!(%error, "storing digest failed");
         }
     }
 
-    async fn put_node(&self, node: ContextNode) -> CellResult<()> {
+    async fn put_node(&self, tenant: &str, node: ContextNode) -> CellResult<()> {
         check_id(&node.space)?;
         check_id(&node.id)?;
-        let _guard = self.lock(&node.space).await;
+        let _guard = self.lock(tenant, &node.space).await;
 
-        let key = node_key(&node.space, &node.id);
+        let key = node_key(tenant, &node.space, &node.id);
         let previous = self
             .store
             .get_value::<NodeRecord>(NODES, &key)
@@ -392,9 +433,9 @@ impl Inner {
             (None, NodeKind::Thread, Some(parent)) => {
                 let parent_node = self
                     .store
-                    .get_value::<NodeRecord>(NODES, &node_key(&node.space, parent))
+                    .get_value::<NodeRecord>(NODES, &node_key(tenant, &node.space, parent))
                     .map_err(storage)?;
-                let parent_window = self.load_window(&node.space, parent)?;
+                let parent_window = self.load_window(tenant, &node.space, parent)?;
                 Some(context::fork_snapshot(
                     &node.title,
                     parent_node.as_ref(),
@@ -416,12 +457,12 @@ impl Inner {
         self.store.write(batch).map_err(storage)
     }
 
-    async fn delete_space(&self, space: String) -> CellResult<()> {
-        let _guard = self.lock(&space).await;
-        let prefix = Key::new().str(TENANT).str(&space).build();
+    async fn delete_space(&self, tenant: &str, space: String) -> CellResult<()> {
+        let _guard = self.lock(tenant, &space).await;
+        let prefix = space_key(tenant, &space);
 
         let mut batch = Batch::new();
-        batch.delete(SPACES, space_key(&space));
+        batch.delete(SPACES, space_key(tenant, &space));
         for table in [NODES, WINDOWS, TRANSLATIONS, EVENTS] {
             batch.delete_prefix(table, prefix.clone());
         }
@@ -431,47 +472,53 @@ impl Inner {
 
     // ---- Language policy --------------------------------------------------
 
-    async fn put_policy(&self, update: PolicyUpdate) -> CellResult<SpacePolicy> {
+    async fn put_policy(&self, tenant: &str, update: PolicyUpdate) -> CellResult<SpacePolicy> {
         check_id(&update.space)?;
         let space = update.space.clone();
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
 
-        let mut record = self.space_or_default(&space)?;
+        let mut record = self.space_or_default(tenant, &space)?;
         record.policy = policy::apply_update(&self.normalizer, &record.policy, &update)?;
-        self.store_policy(&space, record)
+        self.store_policy(tenant, &space, record)
     }
 
-    async fn set_plan(&self, space: String, plan: Plan) -> CellResult<SpacePolicy> {
+    async fn set_plan(&self, tenant: &str, space: String, plan: Plan) -> CellResult<SpacePolicy> {
         check_id(&space)?;
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
 
-        let mut record = self.space_or_default(&space)?;
+        let mut record = self.space_or_default(tenant, &space)?;
         record.policy = policy::apply_plan(&record.policy, plan);
-        self.store_policy(&space, record)
+        self.store_policy(tenant, &space, record)
     }
 
-    fn store_policy(&self, space: &str, mut record: SpaceRecord) -> CellResult<SpacePolicy> {
+    fn store_policy(
+        &self,
+        tenant: &str,
+        space: &str,
+        mut record: SpaceRecord,
+    ) -> CellResult<SpacePolicy> {
         let policy = record.policy.clone();
         let mut batch = Batch::new();
         let seq = self.push_event(
             &mut batch,
+            tenant,
             space,
             &mut record,
             Event::Policy(policy.clone()),
         );
-        batch.put_value(SPACES, space_key(space), &record);
+        batch.put_value(SPACES, space_key(tenant, space), &record);
         self.store.write(batch).map_err(storage)?;
-        self.publish(space, seq);
+        self.publish(tenant, space, seq);
         Ok(policy)
     }
 
-    fn policy(&self, space: &str) -> CellResult<SpacePolicy> {
-        Ok(self.space_or_default(space)?.policy)
+    fn policy(&self, tenant: &str, space: &str) -> CellResult<SpacePolicy> {
+        Ok(self.space_or_default(tenant, space)?.policy)
     }
 
     // ---- Messages ---------------------------------------------------------
 
-    async fn ingest(self: &Arc<Self>, message: IngestMessage) -> CellResult<()> {
+    async fn ingest(self: &Arc<Self>, tenant: &str, message: IngestMessage) -> CellResult<()> {
         check_ref(&message.message)?;
         if message.text.chars().count() > MAX_TEXT_CHARS {
             return Err(TranslationCellError::InvalidRequest);
@@ -479,10 +526,10 @@ impl Inner {
 
         let space = message.message.space.clone();
         let conversation = message.message.conversation.clone();
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
 
-        let mut record = self.space_or_default(&space)?;
-        let key = translation_key(&message.message);
+        let mut record = self.space_or_default(tenant, &space)?;
+        let key = translation_key(tenant, &message.message);
         let existing = self
             .store
             .get_value::<TranslationRecord>(TRANSLATIONS, &key)
@@ -495,7 +542,7 @@ impl Inner {
         }
 
         // Window: append a new message, or update an edited one in place.
-        let mut window = self.load_window(&space, &conversation)?;
+        let mut window = self.load_window(tenant, &space, &conversation)?;
         let entry = WindowEntry {
             id: message.message.id.clone(),
             rev: message.rev.clone(),
@@ -560,9 +607,11 @@ impl Inner {
 
             let mut layers = Vec::new();
             layers.extend(context::space_layer(&space, &record));
-            layers.extend(context::node_layers(
-                &self.node_chain(&space, &conversation)?,
-            ));
+            layers.extend(context::node_layers(&self.node_chain(
+                tenant,
+                &space,
+                &conversation,
+            )?));
             layers.extend(context::summary_layer(&conversation, &window));
 
             let request = TranslateRequest {
@@ -589,6 +638,7 @@ impl Inner {
             };
             let new_job = Job {
                 seq: self.next_job.fetch_add(1, Ordering::Relaxed),
+                tenant: tenant.to_string(),
                 message: message.message.clone(),
                 rev: message.rev.clone(),
                 request,
@@ -598,26 +648,33 @@ impl Inner {
         } else {
             seq = Some(self.push_event(
                 &mut batch,
+                tenant,
                 &space,
                 &mut record,
                 Event::Translated(message_translation(&message.message, &translation)),
             ));
         }
 
-        let fold = self.trim_window(&space, &conversation, &mut window);
+        let fold = self.trim_window(tenant, &space, &conversation, &mut window);
         batch.put_value(TRANSLATIONS, key, &translation);
-        batch.put_value(WINDOWS, window_key(&space, &conversation), &window);
-        batch.put_value(SPACES, space_key(&space), &record);
+        batch.put_value(WINDOWS, window_key(tenant, &space, &conversation), &window);
+        batch.put_value(SPACES, space_key(tenant, &space), &record);
         self.store.write(batch).map_err(storage)?;
 
         if let Some(seq) = seq {
-            self.publish(&space, seq);
+            self.publish(tenant, &space, seq);
         }
         if let Some(job) = job {
             tokio::spawn(self.clone().run_job(job));
         }
         if let Some(cut) = fold {
-            tokio::spawn(self.clone().fold(space, conversation, cut, window.summary));
+            tokio::spawn(self.clone().fold(
+                tenant.to_string(),
+                space,
+                conversation,
+                cut,
+                window.summary,
+            ));
         }
         Ok(())
     }
@@ -626,6 +683,7 @@ impl Inner {
     /// Returns the entries to fold.
     fn trim_window(
         &self,
+        tenant: &str,
         space: &str,
         conversation: &str,
         window: &mut WindowRecord,
@@ -639,7 +697,11 @@ impl Inner {
             return None;
         }
 
-        let key = (space.to_string(), conversation.to_string());
+        let key = (
+            tenant.to_string(),
+            space.to_string(),
+            conversation.to_string(),
+        );
         if !self.folding.lock().insert(key) {
             return None;
         }
@@ -652,11 +714,13 @@ impl Inner {
     /// again.
     async fn fold(
         self: Arc<Self>,
+        tenant: String,
         space: String,
         conversation: String,
         cut: Vec<WindowEntry>,
         previous: Option<String>,
     ) {
+        let tenant = tenant.as_str();
         let request = SummarizeRequest {
             purpose: SummaryPurpose::Conversation,
             previous,
@@ -672,28 +736,28 @@ impl Inner {
         };
         let result = self.engine.summarize(request).await;
 
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
         self.folding
             .lock()
-            .remove(&(space.clone(), conversation.clone()));
+            .remove(&(tenant.to_string(), space.clone(), conversation.clone()));
         let Ok(response) = result else {
             tracing::warn!(%space, %conversation, "folding the window failed; will retry");
             return;
         };
 
         let stored = (|| -> CellResult<()> {
-            let mut window = self.load_window(&space, &conversation)?;
+            let mut window = self.load_window(tenant, &space, &conversation)?;
             let folded = cut.iter().map(|entry| &entry.id).collect::<HashSet<_>>();
             window.entries.retain(|entry| !folded.contains(&entry.id));
             window.summary = Some(response.text);
             window.summary_version += 1;
 
             let mut batch = Batch::new();
-            if let Some(mut record) = self.load_space(&space)? {
+            if let Some(mut record) = self.load_space(tenant, &space)? {
                 add_usage(&mut record.usage, &response.usage);
-                batch.put_value(SPACES, space_key(&space), &record);
+                batch.put_value(SPACES, space_key(tenant, &space), &record);
             }
-            batch.put_value(WINDOWS, window_key(&space, &conversation), &window);
+            batch.put_value(WINDOWS, window_key(tenant, &space, &conversation), &window);
             self.store.write(batch).map_err(storage)
         })();
         if stored.is_err() {
@@ -723,14 +787,15 @@ impl Inner {
         };
 
         let space = job.message.space.clone();
-        let _guard = self.lock(&space).await;
+        let tenant = job.tenant.as_str();
+        let _guard = self.lock(tenant, &space).await;
         let mut batch = Batch::new();
         batch.delete(JOBS, job_key(job.seq));
 
         let result = (|| -> CellResult<Option<i64>> {
-            let key = translation_key(&job.message);
+            let key = translation_key(tenant, &job.message);
             let (Some(mut record), Some(mut translation)) = (
-                self.load_space(&space)?,
+                self.load_space(tenant, &space)?,
                 self.store
                     .get_value::<TranslationRecord>(TRANSLATIONS, &key)
                     .map_err(storage)?,
@@ -765,50 +830,65 @@ impl Inner {
 
             let seq = self.push_event(
                 &mut batch,
+                tenant,
                 &space,
                 &mut record,
                 Event::Translated(message_translation(&job.message, &translation)),
             );
             batch.put_value(TRANSLATIONS, key, &translation);
-            batch.put_value(SPACES, space_key(&space), &record);
+            batch.put_value(SPACES, space_key(tenant, &space), &record);
             Ok(Some(seq))
         })();
 
         match result.and_then(|seq| self.store.write(batch).map_err(storage).map(|()| seq)) {
-            Ok(Some(seq)) => self.publish(&space, seq),
+            Ok(Some(seq)) => self.publish(tenant, &space, seq),
             Ok(None) => {}
             Err(_) => tracing::error!(message = ?job.message, "storing a translation failed"),
         }
     }
 
-    async fn delete_message(&self, message: MessageRef) -> CellResult<()> {
+    async fn delete_message(&self, tenant: &str, message: MessageRef) -> CellResult<()> {
         check_ref(&message)?;
         let space = message.space.clone();
-        let _guard = self.lock(&space).await;
+        let _guard = self.lock(tenant, &space).await;
 
-        let Some(mut record) = self.load_space(&space)? else {
+        let Some(mut record) = self.load_space(tenant, &space)? else {
             return Ok(());
         };
-        let mut window = self.load_window(&space, &message.conversation)?;
+        let mut window = self.load_window(tenant, &space, &message.conversation)?;
         window.entries.retain(|entry| entry.id != message.id);
 
         let mut batch = Batch::new();
-        batch.delete(TRANSLATIONS, translation_key(&message));
-        batch.put_value(WINDOWS, window_key(&space, &message.conversation), &window);
-        let seq = self.push_event(&mut batch, &space, &mut record, Event::Removed(message));
-        batch.put_value(SPACES, space_key(&space), &record);
+        batch.delete(TRANSLATIONS, translation_key(tenant, &message));
+        batch.put_value(
+            WINDOWS,
+            window_key(tenant, &space, &message.conversation),
+            &window,
+        );
+        let seq = self.push_event(
+            &mut batch,
+            tenant,
+            &space,
+            &mut record,
+            Event::Removed(message),
+        );
+        batch.put_value(SPACES, space_key(tenant, &space), &record);
         self.store.write(batch).map_err(storage)?;
-        self.publish(&space, seq);
+        self.publish(tenant, &space, seq);
         Ok(())
     }
 
-    fn get_translations(&self, query: TranslationQuery) -> CellResult<Vec<MessageTranslation>> {
+    fn get_translations(
+        &self,
+        tenant: &str,
+        query: TranslationQuery,
+    ) -> CellResult<Vec<MessageTranslation>> {
         let mut found = Vec::new();
         for message in &query.messages {
             check_ref(message)?;
             let Some(record) = self
                 .store
-                .get_value::<TranslationRecord>(TRANSLATIONS, &translation_key(message))
+                .get_value::<TranslationRecord>(TRANSLATIONS, &translation_key(tenant, message))
                 .map_err(storage)?
             else {
                 continue;
@@ -828,13 +908,14 @@ impl Inner {
 
     async fn poll_events(
         &self,
+        tenant: &str,
         space: String,
         after: i64,
         wait_ms: i64,
     ) -> CellResult<TranslationEventBatch> {
         check_id(&space)?;
-        let prefix = Key::new().str(TENANT).str(&space).build();
-        let after_key = event_key(&space, after.max(0));
+        let prefix = space_key(tenant, &space);
+        let after_key = event_key(tenant, &space, after.max(0));
         let read = || {
             self.store
                 .scan_values::<TranslationEvent>(
@@ -849,16 +930,20 @@ impl Inner {
         if events.is_empty()
             && self
                 .signals
-                .wait_past(&space, after, poll_timeout(wait_ms))
+                .wait_past(
+                    &(tenant.to_string(), space.clone()),
+                    after,
+                    poll_timeout(wait_ms),
+                )
                 .await
         {
             events = read()?;
         }
 
-        let head = self
-            .load_space(&space)?
-            .map(|record| record.last_event)
-            .unwrap_or(0);
+        let (head, trimmed) = self
+            .load_space(tenant, &space)?
+            .map(|record| (record.last_event, record.trimmed))
+            .unwrap_or_default();
         let events = events
             .into_iter()
             .map(|(_, event)| event)
@@ -870,6 +955,7 @@ impl Inner {
                 .unwrap_or(after.min(head)),
             head,
             events,
+            trimmed,
         })
     }
 }
@@ -877,33 +963,33 @@ impl Inner {
 #[async_trait]
 impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
     async fn put_space(&self, body: SpaceContext) -> CellResult<()> {
-        self.inner.put_space(body).await
+        self.inner.put_space(&tenant(), body).await
     }
 
     async fn put_node(&self, body: ContextNode) -> CellResult<()> {
-        self.inner.put_node(body).await
+        self.inner.put_node(&tenant(), body).await
     }
 
     async fn delete_space(&self, space: String) -> CellResult<()> {
-        self.inner.delete_space(space).await
+        self.inner.delete_space(&tenant(), space).await
     }
 
     async fn get_policy(&self, space: String) -> CellResult<SpacePolicy> {
         check_id(&space)?;
-        self.inner.policy(&space)
+        self.inner.policy(&tenant(), &space)
     }
 
     async fn put_policy(&self, body: PolicyUpdate) -> CellResult<SpacePolicy> {
-        self.inner.put_policy(body).await
+        self.inner.put_policy(&tenant(), body).await
     }
 
     async fn set_plan(&self, space: String, plan: Plan) -> CellResult<SpacePolicy> {
-        self.inner.set_plan(space, plan).await
+        self.inner.set_plan(&tenant(), space, plan).await
     }
 
     async fn normalize(&self, space: String, tag: String) -> CellResult<String> {
         check_id(&space)?;
-        let policy = self.inner.policy(&space)?;
+        let policy = self.inner.policy(&tenant(), &space)?;
         self.inner
             .normalizer
             .normalize(&tag, &policy::region_policy_of(&policy))
@@ -917,7 +1003,7 @@ impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
         translate_outside_set: bool,
     ) -> CellResult<ViewerLanguage> {
         check_id(&space)?;
-        let policy = self.inner.policy(&space)?;
+        let policy = self.inner.policy(&tenant(), &space)?;
         let viewer = babel_lang::resolve_viewer(
             &self.inner.normalizer,
             &locale,
@@ -937,18 +1023,18 @@ impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
     }
 
     async fn ingest(&self, body: IngestMessage) -> CellResult<()> {
-        self.inner.ingest(body).await
+        self.inner.ingest(&tenant(), body).await
     }
 
     async fn delete_message(&self, body: MessageRef) -> CellResult<()> {
-        self.inner.delete_message(body).await
+        self.inner.delete_message(&tenant(), body).await
     }
 
     async fn get_translations(
         &self,
         body: TranslationQuery,
     ) -> CellResult<Vec<MessageTranslation>> {
-        self.inner.get_translations(body)
+        self.inner.get_translations(&tenant(), body)
     }
 
     async fn poll_events(
@@ -957,14 +1043,16 @@ impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
         after: i64,
         wait_ms: i64,
     ) -> CellResult<TranslationEventBatch> {
-        self.inner.poll_events(space, after, wait_ms).await
+        self.inner
+            .poll_events(&tenant(), space, after, wait_ms)
+            .await
     }
 
     async fn get_usage(&self, space: String) -> CellResult<SpaceUsage> {
         check_id(&space)?;
         Ok(self
             .inner
-            .load_space(&space)?
+            .load_space(&tenant(), &space)?
             .map(|record| record.usage)
             .unwrap_or_else(|| zero_usage(&space)))
     }

@@ -299,6 +299,71 @@ pub fn router<T: crate::types::MessageCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
+    let api20 = api.clone();
+    router = router.route("/message_cell/freeze_guild", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api20;
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::MessageCell>::freeze_guild(&api, guild_id, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api21 = api.clone();
+    router = router.route("/message_cell/export_guild", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api21;
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let cursor = __query.get("cursor").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(cursor) = cursor else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let limit = __query.get("limit").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(limit) = limit else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::MessageCell>::export_guild(&api, guild_id, cursor, limit, ).await;
+        let result = __raw;
+        match result {
+            Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api22 = api.clone();
+    router = router.route("/message_cell/import_guild", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
+       Json(__body): Json<_>| {
+        let api = api22;
+        let __raw = <T as crate::types::MessageCell>::import_guild(&api, __body, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api23 = api.clone();
+    router = router.route("/message_cell/finish_move", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api23;
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let moved = __query.get("moved").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(moved) = moved else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::MessageCell>::finish_move(&api, guild_id, moved, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api24 = api.clone();
+    router = router.route("/message_cell/discard_guild", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api24;
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::MessageCell>::discard_guild(&api, guild_id, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
 
     router
 }

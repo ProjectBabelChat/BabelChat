@@ -1,0 +1,43 @@
+# A whole BabelChat cluster on one machine, one process per service, as it
+# would run across machines: every internal call goes over mutual TLS.
+# On real machines, replace 127.0.0.1 with each host's WireGuard address
+# (see docs/deployment.md).
+
+pki = "pki"
+
+[account]
+name = "account"
+url = "https://127.0.0.1:7101"
+
+[directory]
+name = "directory"
+url = "https://127.0.0.1:7102"
+
+[[message_cell]]
+name = "message-cell-0"
+url = "https://127.0.0.1:7110"
+
+[[message_cell]]
+name = "message-cell-1"
+url = "https://127.0.0.1:7111"
+
+[[translation_cell]]
+name = "translation-cell-0"
+url = "https://127.0.0.1:7120"
+
+[[translation_cell]]
+name = "translation-cell-1"
+url = "https://127.0.0.1:7121"
+
+[[engine]]
+name = "engine-0"
+url = "https://127.0.0.1:7140"
+
+# Clients connect here. Two Edges, so two people can sit on different ones.
+[[edge]]
+name = "edge-0"
+url = "http://127.0.0.1:7000"
+
+[[edge]]
+name = "edge-1"
+url = "http://127.0.0.1:7001"

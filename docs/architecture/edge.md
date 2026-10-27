@@ -10,7 +10,7 @@ removed or replaced while traffic flows.
 
 | | How |
 |---|---|
-| Authentication | JWTs verified locally with the Account service's key; no call on the request path |
+| Authentication | JWTs (EdDSA) verified locally with the Account service's public key; no call on the request path |
 | Rate limiting | Token bucket per user on writes, acks included (`RateLimiter`) |
 | Placement | Resolves guild → cells from its copy of the Directory's table ([placement](#placement)) |
 | Joining answers | e.g. `get_messages` = Message Cell history + Translation Cell translations for the reader |
@@ -43,6 +43,12 @@ Cell both become `not_found`, so a guild ID cannot be probed for existence.
 
 Placements carry a version; an older one never overwrites a newer one, which
 matters once guilds move between cells.
+
+A Message Cell answers `moved` for a guild that left it. The Edge then looks
+the placement up again and repeats the call on the new cell (`on_cell!` in
+`lib.rs`); its log followers carry on from the same sequence number there.
+Writes that arrive while a guild is being copied wait at the cell, so a
+move costs clients a pause, not an error.
 
 ## Gateway
 
@@ -79,10 +85,17 @@ Translation log ───┘   (one per guild)└─▶ session C queue (carol, 
   subscription it was taken for.
 - Some events concern one user rather than a guild: a read marker moved
   (`read_state_updated`) or notification settings changed
-  (`notifications_updated`). The Edge that handled the request sends them
-  to the user's sessions directly. Sessions on other Edges get them only
-  after reconnecting, for now; a per-user event stream is part of splitting
-  the services up.
+  (`notifications_updated`). The Message Cell logs them in the guild's log
+  with the user's ID, and every Edge passes them to that user's sessions
+  only, so the user's devices follow wherever they are connected.
+- A guild joined (or created) through one Edge reaches the user's sessions
+  on other Edges through the Directory's membership stream
+  (`watch_memberships`): each Edge follows it from its start, and
+  subscribes a user's sessions that do not read the guild yet, with a
+  `guild_joined` event.
+- Logs are trimmed after an hour. A follower told that its log was trimmed
+  past its cursor drops the sessions of that guild (or all sessions, for
+  the membership stream); their clients reload.
 - A queue keeps the last 1000 events, so a client that briefly lost its
   connection polls on from where it was. Sessions not polled for ten
   minutes are dropped, and so is a session asked for events it has already
@@ -97,9 +110,17 @@ user's settings (Account) and the guild's policy (Translation Cell), using
 `babel-lang`. Clients receive the result and need no normalization tables.
 Policy changes arrive as `policy_updated` events with a fresh view per user.
 
+## Running apart
+
+`babel-edge` serves the public API in front of a cluster (see
+[deployment](../deployment.md)); it reaches every other service through
+the `Remote*` clients of `babel-net`, over mutual TLS, and verifies tokens
+with the Account service's Ed25519 public key. A client's gateway session
+lives on one Edge, so load balancers keep each client on one Edge.
+
 ## Not yet
 
-- Per-user events across Edges (see the gateway above).
 - Per-IP limits on login and registration (the generated router does not
   expose the client address yet).
-- HTTP clients for split deployments (in-process only in Phase 0).
+- Settings changes reaching a user's sessions on other Edges (they apply
+  there on the next connect).

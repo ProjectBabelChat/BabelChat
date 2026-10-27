@@ -20,6 +20,8 @@ pub fn cell_error(error: cell::MessageCellError) -> public::ApiError {
         }
         cell::MessageCellError::InvalidRequest => public::ApiError::InvalidRequest,
         cell::MessageCellError::Unavailable => public::ApiError::Unavailable,
+        // Edges follow a moved guild; this is what is left if it keeps moving.
+        cell::MessageCellError::Moved => public::ApiError::Unavailable,
     }
 }
 
@@ -46,6 +48,7 @@ pub fn account_error(error: AccountError) -> public::ApiError {
         AccountError::InvalidCredentials => public::ApiError::InvalidCredentials,
         AccountError::InvalidRequest => public::ApiError::InvalidRequest,
         AccountError::NotFound => public::ApiError::NotFound,
+        AccountError::Unavailable => public::ApiError::Unavailable,
     }
 }
 

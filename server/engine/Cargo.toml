@@ -17,8 +17,9 @@ axum.workspace = true
 babel-api-engine.workspace = true
 babel-api-engine-client.workspace = true
 babel-common.workspace = true
+babel-net.workspace = true
 blake3.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 parking_lot.workspace = true
 reqwest.workspace = true
 serde.workspace = true

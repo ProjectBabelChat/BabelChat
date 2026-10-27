@@ -16,7 +16,7 @@ mod rocks;
 
 pub use key::{Key, KeyReader};
 pub use mem::MemStore;
-pub use rocks::RocksStore;
+pub use rocks::{RocksStore, Update};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// A column family. Each service declares the tables it uses.
@@ -64,6 +64,17 @@ impl Batch {
 
     pub fn delete(&mut self, table: Table, key: impl Into<Vec<u8>>) {
         self.ops.push(Op::Delete(table, key.into()));
+    }
+
+    /// Deletes keys in `[start, end)`.
+    pub fn delete_range(
+        &mut self,
+        table: Table,
+        start: impl Into<Vec<u8>>,
+        end: impl Into<Vec<u8>>,
+    ) {
+        self.ops
+            .push(Op::DeleteRange(table, start.into(), end.into()));
     }
 
     /// Deletes every key starting with `prefix`.
@@ -250,6 +261,65 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = RocksStore::open(dir.path(), &["t"]).unwrap();
         exercise(&store);
+    }
+
+    #[test]
+    fn standbys_replay_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = RocksStore::open(&dir.path().join("primary"), &["t", "u"]).unwrap();
+        let write = |key: &str, value: u8| {
+            let mut batch = Batch::new();
+            batch.put("t", key.as_bytes().to_vec(), vec![value]);
+            batch.put("u", key.as_bytes().to_vec(), vec![value]);
+            primary.write(batch).unwrap();
+        };
+        write("a", 1);
+
+        // A standby starts from a checkpoint...
+        let standby_path = dir.path().join("standby");
+        primary.checkpoint(&standby_path).unwrap();
+        let standby = RocksStore::open_existing(&standby_path).unwrap();
+        assert_eq!(standby.latest_sequence(), primary.latest_sequence());
+
+        // ...and replays what follows, in order.
+        write("b", 2);
+        let mut batch = Batch::new();
+        batch.delete("t", b"a".to_vec());
+        primary.write(batch).unwrap();
+        let updates = primary
+            .updates_since(standby.latest_sequence(), 1 << 20)
+            .unwrap();
+        assert_eq!(updates.len(), 2);
+        for update in &updates {
+            standby.apply(update).unwrap();
+        }
+        assert_eq!(standby.latest_sequence(), primary.latest_sequence());
+        assert!(
+            primary
+                .updates_since(standby.latest_sequence(), 1 << 20)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(standby.get("t", b"a").unwrap(), None);
+        assert_eq!(standby.get("t", b"b").unwrap(), Some(vec![2]));
+        assert_eq!(standby.get("u", b"a").unwrap(), Some(vec![1]));
+    }
+
+    #[test]
+    fn backups_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join("backups");
+        {
+            let store = RocksStore::open(&dir.path().join("live"), &["t"]).unwrap();
+            let mut batch = Batch::new();
+            batch.put("t", b"k".to_vec(), vec![7]);
+            store.write(batch).unwrap();
+            store.backup(&backups, 2).unwrap();
+        }
+        let restored = dir.path().join("restored");
+        RocksStore::restore(&backups, &restored).unwrap();
+        let store = RocksStore::open(&restored, &["t"]).unwrap();
+        assert_eq!(store.get("t", b"k").unwrap(), Some(vec![7]));
     }
 
     #[test]

@@ -20,6 +20,17 @@ impl RemoteEngine {
             client: client::Engine::new(url),
         }
     }
+
+    /// Calls the engine with `client`, e.g. one set up for mutual TLS
+    /// inside a cluster.
+    pub fn with_client(url: impl Into<String>, client: reqwest::Client) -> Self {
+        Self {
+            client: client::Engine {
+                url: url.into().trim_end_matches('/').to_string(),
+                client,
+            },
+        }
+    }
 }
 
 fn engine_error(error: ThrowsOrOtherError<client::EngineError>) -> EngineError {

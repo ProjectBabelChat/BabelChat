@@ -1,0 +1,61 @@
+[package]
+name = "babel-net"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+description = "How BabelChat services reach each other when split up: cluster config, mutual TLS, HTTP clients behind the service traits"
+
+[[bin]]
+name = "babel-pki"
+path = "src/bin/babel-pki.rs"
+
+[[bin]]
+name = "babel-egress"
+path = "src/bin/babel-egress.rs"
+
+[[bin]]
+name = "babel-standby"
+path = "src/bin/babel-standby.rs"
+
+[[bin]]
+name = "babel-admin"
+path = "src/bin/babel-admin.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+babel-api-account.workspace = true
+babel-api-account-client.workspace = true
+babel-api-directory.workspace = true
+babel-api-directory-client.workspace = true
+babel-api-message-cell.workspace = true
+babel-api-message-cell-client.workspace = true
+babel-api-translation-cell.workspace = true
+babel-api-translation-cell-client.workspace = true
+babel-common.workspace = true
+babel-store.workspace = true
+clap = { workspace = true, features = ["env"] }
+futures.workspace = true
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
+rcgen = { version = "0.13", features = ["x509-parser"] }
+reqwest = { workspace = true, features = ["rustls-tls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { workspace = true, features = ["derive"] }
+time = "0.3"
+tokio = { workspace = true, features = ["io-util", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+x509-parser = "0.16"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -47,41 +47,51 @@ Each guild's log (Message Cell) and each space's log (Translation Cell) record
 every change, written in the same batch as the change. One log serves several
 purposes:
 
-| Use | Status |
+| Use | Which logs |
 |---|---|
-| Edge fan-out (`poll_events`) | Phase 0 |
-| Outbox to other services | Phase 0 |
-| Gateway resume from a sequence number | Phase 0 (per session) |
-| Catch-up while moving a guild | planned |
-| Replication to a standby cell | planned |
+| Edge fan-out (`poll_events`) | every event |
+| Per-member events across Edges (read markers, notification settings) | Message Cell logs |
+| Outbox to other services | Message Cell logs |
+| Following a guild to its new cell | sequence numbers move with it |
 
-Logs are not trimmed yet.
+Logs keep an hour (`trim.rs` in each cell): long enough for any follower that
+is only briefly away, except entries the outbox has not delivered yet. Each
+poll says how far its log was trimmed, so a follower knows when it missed
+something. Log entries carry no time; each trimming pass remembers how far
+every log had grown (`LogMarks`), and trims to where it was an hour ago.
 
-## Moving a guild (planned)
+## Moving a guild
 
 ```
-1. snapshot; range-scan the guild's prefix in each table → SST files
-2. ship them; IngestExternalFile on the target while the source keeps serving
-3. stream log entries written since the snapshot
-4. pause the guild's writes (Edges hold requests), ship the last entries,
-   bump the placement epoch in the Directory, resume on the target
-5. DeleteRange on the source after a grace period
+1. freeze the guild on its cell: writes wait, the outbox drains
+2. range-scan the guild's prefix in each table, page by page, into the new cell
+3. switch the placement (epoch + 1); writes resume on the new cell
+4. drop the guild on the old cell, leaving a record that answers `moved`
 ```
 
-PostgreSQL would need the same steps (export a guild's rows from every
-table); a key prefix per guild makes it a range operation here.
+Writes wait for as long as the copy takes, which is short for most guilds.
+Very large guilds will want a copy while the guild keeps serving, then a
+short freeze for what changed meanwhile (an SST export and a catch-up from
+the log). PostgreSQL would need the same steps (export a guild's rows from
+every table); a key prefix per guild makes it a range operation here. See
+[Message Cell › Moving a guild](message-cell.md#moving-a-guild).
 
 ## Durability (the cost of embedding)
 
 RocksDB keeps one disk's worth of durability and has no replication; that is
 the real trade-off against a database server.
 
-| Stage | Plan | Lost on disk failure |
+| | How | Lost on disk failure |
 |---|---|---|
-| Phase 0 | nothing beyond the disk | everything since the last manual backup |
-| next | `BackupEngine` snapshots + log shipping to object storage | seconds |
-| later | ship each guild's log to a standby cell | a few entries at failover |
+| Backups (done) | `BackupEngine` every few minutes, to another disk or object storage (`--backup-dir`) | writes since the last backup |
+| Standbys (done) | `babel-standby` replays the primary's write-ahead log, batch by batch, on another machine | the last moment before failover |
 | if needed | Raft per cell (e.g. openraft) | nothing, at 3× the cost |
+
+A standby starts from a checkpoint of the primary and then applies every
+write batch in order, so its sequence numbers match the primary's. It copies
+the whole store, whichever service it belongs to; primaries keep six hours
+of write-ahead log for standbys that fell behind. Failing over is manual
+(see [deployment](../deployment.md#standbys)).
 
 The Account service is the exception: relational, transactional, small, and
 closed — it uses PostgreSQL in production.

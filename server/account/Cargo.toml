@@ -6,20 +6,27 @@ publish.workspace = true
 license = "Apache-2.0"
 description = "Development stand-in for the closed BabelChat Account service"
 
+[[bin]]
+name = "babel-account"
+path = "src/bin/babel-account.rs"
+
 [dependencies]
+anyhow.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
 babel-api-account.workspace = true
 babel-common.workspace = true
 babel-lang.workspace = true
+babel-net.workspace = true
 babel-store.workspace = true
+clap.workspace = true
 jsonwebtoken.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
+ring = "0.17"
 serde = { workspace = true, features = ["derive"] }
-tracing.workspace = true
-
-[dev-dependencies]
+thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

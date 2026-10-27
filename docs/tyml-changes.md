@@ -79,3 +79,22 @@ added again.
 
 No TYML changes. The desktop app uses only the SDK, which already covered
 everything it shows.
+
+## Phase 4 (split it up)
+
+No TYML changes. The generator already produced everything splitting the
+services up needed:
+
+| Need | How |
+|---|---|
+| HTTP clients for the internal APIs | The client generator, run on three more files (`account`, `directory`, `message_cell`); `babel-net` puts the clients behind the server crates' traits with a small macro |
+| Mutual TLS for the clients | The generated clients expose `url` and `client`, so they take a `reqwest::Client` set up with the service's certificate |
+| Mutual TLS and caller identity for the servers | The generated `router(api)` is an Axum router; `babel-net` serves it over TLS and tells handlers who calls through a task-local, so no function needed a "caller" parameter |
+| Long polls that say the log was trimmed | A `trimmed: int` field in the existing batch types |
+| A request body that is a list | A wrapper type (`GuildImport { guild_id, entries }`) |
+| Binary keys and values when moving a guild | Hex strings |
+| Replication (binary write batches, file streams) | Hand-written routes next to the generated router, like the WebSocket gateway |
+
+Functions that could not fail before (the Directory's membership calls and
+placement watch) now `throw` like the others: over a network, every call
+can.

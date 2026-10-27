@@ -29,33 +29,38 @@ pub const JOBS: Table = "jobs";
 
 pub const TABLES: &[Table] = &[SPACES, NODES, WINDOWS, TRANSLATIONS, EVENTS, JOBS];
 
-/// Phase 0 serves one tenant. Later the tenant comes from the caller's
-/// credentials, and every key already starts with it.
-pub const TENANT: &str = "local";
+/// BabelChat's own spaces. Other platforms are tenants named by their
+/// certificates, so they cannot reach each other's spaces.
+pub const LOCAL_TENANT: &str = "local";
 
-pub fn space_key(space: &str) -> Vec<u8> {
-    Key::new().str(TENANT).str(space).build()
+fn local_tenant() -> String {
+    LOCAL_TENANT.to_string()
 }
 
-pub fn node_key(space: &str, node: &str) -> Vec<u8> {
-    Key::new().str(TENANT).str(space).str(node).build()
+/// Every key of a space starts with this.
+pub fn space_key(tenant: &str, space: &str) -> Vec<u8> {
+    Key::new().str(tenant).str(space).build()
 }
 
-pub fn window_key(space: &str, conversation: &str) -> Vec<u8> {
-    Key::new().str(TENANT).str(space).str(conversation).build()
+pub fn node_key(tenant: &str, space: &str, node: &str) -> Vec<u8> {
+    Key::new().str(tenant).str(space).str(node).build()
 }
 
-pub fn translation_key(message: &MessageRef) -> Vec<u8> {
+pub fn window_key(tenant: &str, space: &str, conversation: &str) -> Vec<u8> {
+    Key::new().str(tenant).str(space).str(conversation).build()
+}
+
+pub fn translation_key(tenant: &str, message: &MessageRef) -> Vec<u8> {
     Key::new()
-        .str(TENANT)
+        .str(tenant)
         .str(&message.space)
         .str(&message.conversation)
         .str(&message.id)
         .build()
 }
 
-pub fn event_key(space: &str, seq: i64) -> Vec<u8> {
-    Key::new().str(TENANT).str(space).u64(seq as u64).build()
+pub fn event_key(tenant: &str, space: &str, seq: i64) -> Vec<u8> {
+    Key::new().str(tenant).str(space).u64(seq as u64).build()
 }
 
 pub fn job_key(seq: i64) -> Vec<u8> {
@@ -76,6 +81,9 @@ pub struct SpaceRecord {
     pub budget_day: i64,
     pub budget_used: i64,
     pub last_event: i64,
+    /// Events up to this sequence number were trimmed.
+    #[serde(default)]
+    pub trimmed: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +127,9 @@ pub struct TranslationRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub seq: i64,
+    /// Jobs queued before tenants existed are BabelChat's.
+    #[serde(default = "local_tenant")]
+    pub tenant: String,
     pub message: MessageRef,
     pub rev: String,
     pub request: TranslateRequest,

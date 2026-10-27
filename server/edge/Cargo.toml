@@ -6,7 +6,12 @@ publish.workspace = true
 license = "Apache-2.0"
 description = "BabelChat Edge: the public entry point that relays to cells it never reveals"
 
+[[bin]]
+name = "babel-edge"
+path = "src/bin/babel-edge.rs"
+
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["ws"] }
 babel-api-account.workspace = true
@@ -16,6 +21,8 @@ babel-api-message-cell.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
 babel-lang.workspace = true
+babel-net.workspace = true
+clap.workspace = true
 futures.workspace = true
 jsonwebtoken.workspace = true
 parking_lot.workspace = true

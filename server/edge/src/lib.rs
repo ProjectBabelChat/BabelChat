@@ -21,7 +21,7 @@ mod websocket;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -51,9 +51,9 @@ pub struct Cluster {
 }
 
 pub struct EdgeConfig {
-    /// Development only: production Edges verify with the Account service's
-    /// public key.
-    pub jwt_secret: Vec<u8>,
+    /// The Account service's public key: Edges verify tokens but cannot
+    /// sign them.
+    pub token_key: DecodingKey,
     /// Sustained writes (messages, guilds, channels) per user per second.
     pub writes_per_second: f64,
     pub write_burst: f64,
@@ -85,6 +85,26 @@ const DEFAULT_INVITE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 type ApiResult<T> = Result<T, ApiError>;
 
+/// Calls the Message Cell holding `guild`. If the guild moved to another
+/// cell meanwhile, looks its placement up again and calls the new cell:
+/// `call` is evaluated once per attempt.
+macro_rules! on_cell {
+    ($inner:expr, $guild:expr, |$cell:ident| $call:expr) => {{
+        let mut attempts = 0;
+        loop {
+            let route = $inner.route($guild).await?;
+            let $cell = &route.cell;
+            match $call.await {
+                Err(MessageCellError::Moved) if attempts < 3 => {
+                    attempts += 1;
+                    $inner.placements.refresh($guild).await;
+                }
+                result => break result.map_err(convert::cell_error),
+            }
+        }
+    }};
+}
+
 impl Edge {
     /// Starts an Edge: its placement watch and session sweeper. Must be
     /// called within a Tokio runtime.
@@ -94,8 +114,8 @@ impl Edge {
             cluster,
             placements,
             normalizer: Normalizer::new(),
-            decoding_key: DecodingKey::from_secret(&config.jwt_secret),
-            validation: Validation::new(Algorithm::HS256),
+            decoding_key: config.token_key,
+            validation: Validation::new(Algorithm::EdDSA),
             limiter: RateLimiter {
                 per_second: config.writes_per_second,
                 burst: config.write_burst,
@@ -115,6 +135,7 @@ impl Edge {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
         });
+        tokio::spawn(follow_memberships(Arc::downgrade(&inner)));
 
         Self { inner }
     }
@@ -123,6 +144,39 @@ impl Edge {
     /// (`GET /gateway/ws`).
     pub fn websocket_router(&self) -> axum::Router {
         websocket::router(self.clone())
+    }
+}
+
+/// Follows the Directory's membership changes from the moment the Edge
+/// starts, so that a user's sessions here learn about guilds they joined
+/// through another Edge (from another device, or another request behind a
+/// load balancer). Leaving needs no help: sessions reading a guild follow
+/// its log, which says so.
+async fn follow_memberships(inner: Weak<Inner>) {
+    // Start at the end: sessions made later list their guilds on connect.
+    let mut cursor = i64::MAX;
+    loop {
+        let Some(directory) = inner.upgrade().map(|inner| inner.cluster.directory.clone()) else {
+            return;
+        };
+        match directory.watch_memberships(cursor, FOLLOW_WAIT_MS).await {
+            Ok(batch) => {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                if cursor < batch.trimmed {
+                    // Away from the Directory for longer than it keeps
+                    // changes: any session may have missed a guild.
+                    let dropped = inner.sessions.drop_all();
+                    tracing::warn!(sessions = dropped, "fell behind trimmed membership changes");
+                }
+                for change in batch.changes.into_iter().filter(|change| change.joined) {
+                    tokio::spawn(inner.clone().joined(change.user_id, change.guild_id));
+                }
+                cursor = batch.version;
+            }
+            Err(_) => tokio::time::sleep(RETRY).await,
+        }
     }
 }
 
@@ -312,6 +366,12 @@ impl Inner {
         }
     }
 
+    /// The guild as `user` sees it, from whichever cell holds it.
+    async fn snapshot(&self, guild: &str, user: &str) -> ApiResult<cell::GuildSnapshot> {
+        on_cell!(self, guild, |cell| cell
+            .get_guild(guild.to_string(), user.to_string()))
+    }
+
     /// Makes `user`'s sessions (or one of them) receive `route`'s events.
     /// Must run before taking the snapshot the client starts from, so no
     /// event falls between the snapshot and the stream.
@@ -323,13 +383,13 @@ impl Inner {
     ) -> ApiResult<cell::GuildSnapshot> {
         let guild = &route.placement.guild_id;
         self.sessions.add_guild(user, session, guild);
-        let snapshot = match route.cell.get_guild(guild.clone(), user.to_string()).await {
+        let snapshot = match self.snapshot(guild, user).await {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 // Not a member (any more): the Directory's copy of the
                 // membership lags behind the cell.
                 self.sessions.cancel_guild(user, guild);
-                return Err(convert::cell_error(error));
+                return Err(error);
             }
         };
         self.sessions.confirm_guild(user, guild, snapshot.last_seq);
@@ -373,15 +433,27 @@ impl Inner {
                 .await
             {
                 Ok(batch) => {
+                    if cursor < batch.trimmed {
+                        self.fell_behind(&guild);
+                    }
                     for guild_event in batch.events {
                         self.on_guild_event(&guild, guild_event);
                     }
                     cursor = batch.next;
                 }
+                // Same log, new cell: carry on there from the same place.
+                Err(MessageCellError::Moved) => self.placements.refresh(&guild).await,
                 Err(MessageCellError::NotFound) => return,
                 Err(_) => tokio::time::sleep(RETRY).await,
             }
         }
+    }
+
+    /// This Edge was away from a guild's log longer than the log is kept:
+    /// sessions reading the guild missed events, so they reload.
+    fn fell_behind(&self, guild: &str) {
+        let dropped = self.sessions.drop_guild(guild);
+        tracing::warn!(%guild, sessions = dropped, "fell behind a trimmed log");
     }
 
     fn on_guild_event(&self, guild: &str, guild_event: cell::GuildEvent) {
@@ -429,6 +501,27 @@ impl Inner {
                 message: guild_event.message.as_ref().map(convert::message),
                 ..event(EventKind::MessageEdited, guild)
             },
+            cell::GuildEventKind::ReadStateUpdated | cell::GuildEventKind::NotificationsUpdated => {
+                let Some(user) = &guild_event.user_id else {
+                    return;
+                };
+                let kind = match guild_event.kind {
+                    cell::GuildEventKind::ReadStateUpdated => EventKind::ReadStateUpdated,
+                    _ => EventKind::NotificationsUpdated,
+                };
+                let public_event = public::Event {
+                    read_state: guild_event.read_state.as_ref().map(convert::read_state),
+                    notifications: guild_event
+                        .notifications
+                        .as_ref()
+                        .map(convert::notifications),
+                    ..event(kind, guild)
+                };
+                self.sessions.broadcast(guild, |session| {
+                    (session.user_id == *user).then(|| public_event.clone())
+                });
+                return;
+            }
             cell::GuildEventKind::MessageDeleted => public::Event {
                 deleted: guild_event
                     .deleted
@@ -460,6 +553,9 @@ impl Inner {
                 .await
             {
                 Ok(batch) => {
+                    if cursor < batch.trimmed {
+                        self.fell_behind(&guild);
+                    }
                     for space_event in batch.events {
                         self.on_space_event(&route, space_event).await;
                     }
@@ -546,6 +642,32 @@ impl Inner {
                     .map(|translated| convert::translation(&translated, &langs)),
             })
             .collect())
+    }
+
+    /// `user` joined `guild`, perhaps through another Edge: subscribes their
+    /// sessions here that do not read it yet, and tells them.
+    async fn joined(self: Arc<Self>, user: String, guild: String) {
+        let missing = self.sessions.without_guild(&user, &guild);
+        if missing.is_empty() {
+            return;
+        }
+        let view = async {
+            let settings = self.settings(&user).await?;
+            let route = self.route(&guild).await?;
+            let snapshot = self.subscribe(&user, None, &route).await?;
+            let policy = self.policy(&route).await?;
+            ApiResult::Ok(self.guild_view(&snapshot, &policy, &settings))
+        };
+        match view.await {
+            Ok(view) => self.sessions.send_to_sessions(
+                &missing,
+                public::Event {
+                    guild: Some(view),
+                    ..event(EventKind::GuildJoined, &guild)
+                },
+            ),
+            Err(error) => tracing::warn!(?error, %guild, "telling sessions about a guild failed"),
+        }
     }
 
     /// Announces a guild to the user's other sessions.
@@ -714,17 +836,14 @@ impl public::Guilds for Edge {
             Some(secs) if secs > 0 => Some(now_ms().saturating_add(secs.saturating_mul(1000))),
             Some(_) => return Err(ApiError::InvalidRequest),
         };
-        let route = inner.route(&body.guild_id).await?;
-        let invite = route
-            .cell
-            .create_invite(cell::NewInvite {
-                guild_id: body.guild_id,
-                user_id: claim.sub,
+        let invite = on_cell!(inner, &body.guild_id, |cell| cell.create_invite(
+            cell::NewInvite {
+                guild_id: body.guild_id.clone(),
+                user_id: claim.sub.clone(),
                 expires_at,
                 max_uses: body.max_uses,
-            })
-            .await
-            .map_err(convert::cell_error)?;
+            }
+        ))?;
         Ok(convert::invite(&invite))
     }
 
@@ -732,12 +851,11 @@ impl public::Guilds for Edge {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
         let (guild_id, secret) = convert::parse_invite(&code).ok_or(ApiError::NotFound)?;
-        let route = inner.route(guild_id).await?;
-        route
-            .cell
-            .revoke_invite(guild_id.to_string(), secret.to_string(), claim.sub)
-            .await
-            .map_err(convert::cell_error)
+        on_cell!(inner, guild_id, |cell| cell.revoke_invite(
+            guild_id.to_string(),
+            secret.to_string(),
+            claim.sub.clone()
+        ))
     }
 
     async fn join_guild(&self, claim: Claim, invite: String) -> ApiResult<public::GuildView> {
@@ -745,17 +863,13 @@ impl public::Guilds for Edge {
         inner.write_allowed(&claim)?;
         let settings = inner.settings(&claim.sub).await?;
         let (guild_id, secret) = convert::parse_invite(&invite).ok_or(ApiError::NotFound)?;
+        on_cell!(inner, guild_id, |cell| cell.join_guild(
+            guild_id.to_string(),
+            secret.to_string(),
+            claim.sub.clone(),
+            claim.name.clone(),
+        ))?;
         let route = inner.route(guild_id).await?;
-        route
-            .cell
-            .join_guild(
-                guild_id.to_string(),
-                secret.to_string(),
-                claim.sub.clone(),
-                claim.name.clone(),
-            )
-            .await
-            .map_err(convert::cell_error)?;
 
         let snapshot = inner.subscribe(&claim.sub, None, &route).await?;
         let policy = inner.policy(&route).await?;
@@ -767,12 +881,8 @@ impl public::Guilds for Edge {
     async fn get_guild(&self, claim: Claim, guild_id: String) -> ApiResult<public::GuildView> {
         let inner = &self.inner;
         let settings = inner.settings(&claim.sub).await?;
+        let snapshot = inner.snapshot(&guild_id, &claim.sub).await?;
         let route = inner.route(&guild_id).await?;
-        let snapshot = route
-            .cell
-            .get_guild(guild_id, claim.sub)
-            .await
-            .map_err(convert::cell_error)?;
         let policy = inner.policy(&route).await?;
         Ok(inner.guild_view(&snapshot, &policy, &settings))
     }
@@ -784,20 +894,17 @@ impl public::Guilds for Edge {
     ) -> ApiResult<public::Channel> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&body.guild_id).await?;
-        let channel = route
-            .cell
-            .create_channel(cell::NewChannel {
-                guild_id: body.guild_id,
-                user_id: claim.sub,
+        let channel = on_cell!(inner, &body.guild_id, |cell| cell.create_channel(
+            cell::NewChannel {
+                guild_id: body.guild_id.clone(),
+                user_id: claim.sub.clone(),
                 kind: convert::internal_channel_kind(body.kind),
-                name: body.name,
-                topic: body.topic,
-                parent_id: body.parent_id,
-                starter_message_id: body.starter_message_id,
-            })
-            .await
-            .map_err(convert::cell_error)?;
+                name: body.name.clone(),
+                topic: body.topic.clone(),
+                parent_id: body.parent_id.clone(),
+                starter_message_id: body.starter_message_id.clone(),
+            }
+        ))?;
         Ok(convert::channel(&channel))
     }
 
@@ -808,13 +915,13 @@ impl public::Guilds for Edge {
     ) -> ApiResult<public::LanguagePolicy> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&body.guild_id).await?;
         // Roles live in the Message Cell; the policy in the Translation Cell.
-        route
-            .cell
-            .check_permission(body.guild_id.clone(), claim.sub, Permission::ManageGuild)
-            .await
-            .map_err(convert::cell_error)?;
+        on_cell!(inner, &body.guild_id, |cell| cell.check_permission(
+            body.guild_id.clone(),
+            claim.sub.clone(),
+            Permission::ManageGuild
+        ))?;
+        let route = inner.route(&body.guild_id).await?;
         let policy = route
             .translation
             .put_policy(convert::policy_update(body))
@@ -825,25 +932,17 @@ impl public::Guilds for Edge {
     }
 
     async fn get_invites(&self, claim: Claim, guild_id: String) -> ApiResult<Vec<public::Invite>> {
-        let route = self.inner.route(&guild_id).await?;
-        let invites = route
-            .cell
-            .get_invites(guild_id, claim.sub)
-            .await
-            .map_err(convert::cell_error)?;
+        let invites = on_cell!(self.inner, &guild_id, |cell| cell
+            .get_invites(guild_id.clone(), claim.sub.clone()))?;
         Ok(invites.iter().map(convert::invite).collect())
     }
 
     async fn leave_guild(&self, claim: Claim, guild_id: String) -> ApiResult<()> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&guild_id).await?;
         // Sessions stop receiving the guild when its log says so.
-        route
-            .cell
-            .leave_guild(guild_id, claim.sub)
-            .await
-            .map_err(convert::cell_error)
+        on_cell!(inner, &guild_id, |cell| cell
+            .leave_guild(guild_id.clone(), claim.sub.clone()))
     }
 
     async fn remove_member(
@@ -855,32 +954,27 @@ impl public::Guilds for Edge {
     ) -> ApiResult<()> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&guild_id).await?;
-        route
-            .cell
-            .remove_member(guild_id, claim.sub, user_id, ban)
-            .await
-            .map_err(convert::cell_error)
+        on_cell!(inner, &guild_id, |cell| cell.remove_member(
+            guild_id.clone(),
+            claim.sub.clone(),
+            user_id.clone(),
+            ban
+        ))
     }
 
     async fn unban_member(&self, claim: Claim, guild_id: String, user_id: String) -> ApiResult<()> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&guild_id).await?;
-        route
-            .cell
-            .unban_member(guild_id, claim.sub, user_id)
-            .await
-            .map_err(convert::cell_error)
+        on_cell!(inner, &guild_id, |cell| cell.unban_member(
+            guild_id.clone(),
+            claim.sub.clone(),
+            user_id.clone()
+        ))
     }
 
     async fn get_bans(&self, claim: Claim, guild_id: String) -> ApiResult<Vec<public::Ban>> {
-        let route = self.inner.route(&guild_id).await?;
-        let bans = route
-            .cell
-            .get_bans(guild_id, claim.sub)
-            .await
-            .map_err(convert::cell_error)?;
+        let bans = on_cell!(self.inner, &guild_id, |cell| cell
+            .get_bans(guild_id.clone(), claim.sub.clone()))?;
         Ok(bans.iter().map(convert::ban).collect())
     }
 
@@ -891,21 +985,13 @@ impl public::Guilds for Edge {
     ) -> ApiResult<public::NotificationSettings> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&body.guild_id).await?;
-        let settings = route
-            .cell
-            .put_notification_settings(convert::internal_notifications(body), claim.sub.clone())
-            .await
-            .map_err(convert::cell_error)?;
-        let settings = convert::notifications(&settings);
-        inner.sessions.send_to_user(
-            &claim.sub,
-            public::Event {
-                notifications: Some(settings.clone()),
-                ..event(EventKind::NotificationsUpdated, &settings.guild_id)
-            },
-        );
-        Ok(settings)
+        let settings = on_cell!(inner, &body.guild_id, |cell| cell
+            .put_notification_settings(
+                convert::internal_notifications(body.clone()),
+                claim.sub.clone()
+            ))?;
+        // The user's sessions hear of it through the guild's log.
+        Ok(convert::notifications(&settings))
     }
 }
 
@@ -919,19 +1005,16 @@ impl public::Messages for Edge {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
         let settings = inner.settings(&claim.sub).await?;
-        let route = inner.route(&body.guild_id).await?;
-        let message = route
-            .cell
-            .send_message(cell::NewMessage {
-                guild_id: body.guild_id,
-                channel_id: body.channel_id,
-                user_id: claim.sub,
-                author_locale: Some(settings.locale),
-                text: body.text,
-                reply_to: body.reply_to,
-            })
-            .await
-            .map_err(convert::cell_error)?;
+        let message = on_cell!(inner, &body.guild_id, |cell| cell.send_message(
+            cell::NewMessage {
+                guild_id: body.guild_id.clone(),
+                channel_id: body.channel_id.clone(),
+                user_id: claim.sub.clone(),
+                author_locale: Some(settings.locale.clone()),
+                text: body.text.clone(),
+                reply_to: body.reply_to.clone(),
+            }
+        ))?;
         Ok(public::MessageView {
             message: convert::message(&message),
             translation: None,
@@ -945,18 +1028,15 @@ impl public::Messages for Edge {
     ) -> ApiResult<public::MessageView> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&body.guild_id).await?;
-        let message = route
-            .cell
-            .edit_message(cell::MessageEdit {
-                guild_id: body.guild_id,
-                channel_id: body.channel_id,
-                message_id: body.message_id,
-                user_id: claim.sub,
-                text: body.text,
-            })
-            .await
-            .map_err(convert::cell_error)?;
+        let message = on_cell!(inner, &body.guild_id, |cell| cell.edit_message(
+            cell::MessageEdit {
+                guild_id: body.guild_id.clone(),
+                channel_id: body.channel_id.clone(),
+                message_id: body.message_id.clone(),
+                user_id: claim.sub.clone(),
+                text: body.text.clone(),
+            }
+        ))?;
         Ok(public::MessageView {
             message: convert::message(&message),
             translation: None,
@@ -972,12 +1052,12 @@ impl public::Messages for Edge {
     ) -> ApiResult<()> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
-        let route = inner.route(&guild_id).await?;
-        route
-            .cell
-            .delete_message(guild_id, channel_id, message_id, claim.sub)
-            .await
-            .map_err(convert::cell_error)
+        on_cell!(inner, &guild_id, |cell| cell.delete_message(
+            guild_id.clone(),
+            channel_id.clone(),
+            message_id.clone(),
+            claim.sub.clone()
+        ))
     }
 
     async fn get_messages(
@@ -990,18 +1070,14 @@ impl public::Messages for Edge {
     ) -> ApiResult<Vec<public::MessageView>> {
         let inner = &self.inner;
         let settings = inner.settings(&claim.sub).await?;
+        let messages = on_cell!(inner, &guild_id, |cell| cell.get_messages(
+            guild_id.clone(),
+            channel_id.clone(),
+            claim.sub.clone(),
+            before.clone(),
+            limit.clamp(1, MAX_PAGE),
+        ))?;
         let route = inner.route(&guild_id).await?;
-        let messages = route
-            .cell
-            .get_messages(
-                guild_id,
-                channel_id,
-                claim.sub,
-                before,
-                limit.clamp(1, MAX_PAGE),
-            )
-            .await
-            .map_err(convert::cell_error)?;
         inner.message_views(&route, messages, &settings).await
     }
 
@@ -1015,21 +1091,14 @@ impl public::Messages for Edge {
         let inner = &self.inner;
         // Each ack recounts mentions; clients batch them.
         inner.write_allowed(&claim)?;
-        let route = inner.route(&guild_id).await?;
-        let state = route
-            .cell
-            .ack(guild_id.clone(), channel_id, claim.sub.clone(), message_id)
-            .await
-            .map_err(convert::cell_error)?;
-        let state = convert::read_state(&state);
-        inner.sessions.send_to_user(
-            &claim.sub,
-            public::Event {
-                read_state: Some(state.clone()),
-                ..event(EventKind::ReadStateUpdated, &guild_id)
-            },
-        );
-        Ok(state)
+        let state = on_cell!(inner, &guild_id, |cell| cell.ack(
+            guild_id.clone(),
+            channel_id.clone(),
+            claim.sub.clone(),
+            message_id.clone()
+        ))?;
+        // The user's sessions hear of it through the guild's log.
+        Ok(convert::read_state(&state))
     }
 }
 
@@ -1043,13 +1112,20 @@ impl public::Gateway for Edge {
             .sessions
             .create(&session_id, &claim.sub, settings.clone());
 
-        let mut guilds = Vec::new();
-        for guild in inner
+        let memberships = match inner
             .cluster
             .directory
             .list_memberships(claim.sub.clone())
             .await
         {
+            Ok(memberships) => memberships,
+            Err(error) => {
+                inner.sessions.remove(&[session_id]);
+                return Err(convert::directory_error(error));
+            }
+        };
+        let mut guilds = Vec::new();
+        for guild in memberships {
             let Ok(route) = inner.route(&guild).await else {
                 continue;
             };

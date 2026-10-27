@@ -29,6 +29,9 @@ pub enum MessageCellError {
     InvalidRequest,
     #[serde(rename = "unavailable")]
     Unavailable,
+    /// The guild lives on another cell now: ask the Directory again.
+    #[serde(rename = "moved")]
+    Moved,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -229,10 +232,13 @@ pub struct GuildEventBatch {
     /// Sequence number of the newest event of the guild. Polling with an
     /// `after` beyond it returns at once, so followers can start at the head.
     pub head: i64,
+    /// Events up to this sequence number were trimmed from the log. A
+    /// follower whose `after` is below it has missed some.
+    pub trimmed: i64,
 }
 
 /// One entry of a guild's event log. Exactly one payload is set, chosen by
-/// `kind`.
+/// `kind`; events about one member also name them in `user_id`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GuildEvent {
     pub seq: i64,
@@ -242,6 +248,9 @@ pub struct GuildEvent {
     pub channel: Option<Channel>,
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
+    pub user_id: Option<String>,
+    pub read_state: Option<ReadState>,
+    pub notifications: Option<NotificationSettings>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -263,12 +272,42 @@ pub enum GuildEventKind {
     MessageEdited,
     #[serde(rename = "message_deleted")]
     MessageDeleted,
+    /// One member's read marker moved (`user_id`, `read_state`). Edges pass
+    /// it to that member's sessions only, on whichever Edge they are.
+    #[serde(rename = "read_state_updated")]
+    ReadStateUpdated,
+    /// One member's notification settings changed (`user_id`,
+    /// `notifications`); for that member's sessions only.
+    #[serde(rename = "notifications_updated")]
+    NotificationsUpdated,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct DeletedMessage {
     pub channel_id: String,
     pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildExport {
+    pub entries: Vec<GuildEntry>,
+    /// Pass to the next export; null once everything is exported.
+    pub cursor: Option<String>,
+}
+
+/// One stored entry of a guild, on its way to another cell. Keys and values
+/// are hex: they are the cell's own storage format.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildEntry {
+    pub table: String,
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildImport {
+    pub guild_id: String,
+    pub entries: Vec<GuildEntry>,
 }
 
 
@@ -308,5 +347,19 @@ pub trait MessageCell: Send + Sync + 'static {
     async fn get_messages(&self, guild_id: String, channel_id: String, user_id: String, before: Option<String>, limit: i64) -> Result<Vec<Message>, MessageCellError>;
     /// Long poll on the guild's event log, for Edges.
     async fn poll_events(&self, guild_id: String, after: i64, wait_ms: i64) -> Result<GuildEventBatch, MessageCellError>;
+    /// Holds the guild's writes (they wait) and returns once its outbox has
+    /// delivered everything, so the guild can be copied as it is.
+    async fn freeze_guild(&self, guild_id: String) -> Result<(), MessageCellError>;
+    /// A page of the frozen guild's entries, from `cursor` on.
+    async fn export_guild(&self, guild_id: String, cursor: Option<String>, limit: i64) -> Result<GuildExport, MessageCellError>;
+    /// Stores exported entries. The guild becomes whole here with its last
+    /// page, but is only reached once the Directory points at it.
+    async fn import_guild(&self, body: GuildImport) -> Result<(), MessageCellError>;
+    /// Ends a move at the old cell: `moved` drops the guild here (calls
+    /// about it answer `moved` from now on); otherwise writes resume.
+    async fn finish_move(&self, guild_id: String, moved: bool) -> Result<(), MessageCellError>;
+    /// Drops whatever this cell holds of a guild: an import that did not
+    /// finish.
+    async fn discard_guild(&self, guild_id: String) -> Result<(), MessageCellError>;
 }
 

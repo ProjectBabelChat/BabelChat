@@ -66,6 +66,42 @@ works with a sign-in made in the window, and the other way round.
 screenshots with `grim`), which is how the app is checked without a person
 at the keyboard; see [the desktop app](architecture/desktop.md#checking-it-without-a-person).
 
+## A cluster on one machine
+
+The same, with every service in its own process, talking over mutual TLS as
+they would across machines (see [deployment](deployment.md)):
+
+```sh
+nix develop -c deploy/local/run.sh --plan free             # terminal 0
+
+cargo run -p babel-desktop -- --profile alice --server http://127.0.0.1:7000   # edge-0
+cargo run -p babel-desktop -- --profile bob --server http://127.0.0.1:7001     # edge-1
+```
+
+Alice and Bob sit on different Edges and chat as above. Logs are in
+`deploy/local/logs`, data and backups in `deploy/local/data`. While they
+chat, an operator can move their guild to the other Message Cell; writes
+pause for a moment and nothing else shows:
+
+```sh
+bin=target/debug
+admin="/babel-admin --cluster deploy/local/cluster.toml --name ops"
+ placements                          # guild id, message cell, translation cell
+ move-guild <guild id> message-cell-1
+```
+
+A standby of a cell, and a restore from its backups:
+
+```sh
+/babel-standby --cluster deploy/local/cluster.toml --name message-cell-0 \
+  --data deploy/local/data/message-cell-0-standby
+/babel-admin restore --backup-dir deploy/local/data/backups/message-cell-0 \
+  --data /tmp/restored-message-cell-0
+```
+
+Profiles made against `babel-server` hold tokens it signed; sign in again
+against the cluster (or use other profile names).
+
 ## Chatting from a terminal
 
 `babel` (`client/cli`) is a line-mode chat client on the client SDK. Each
@@ -216,20 +252,22 @@ model yet.
 cargo test -p babel-lang -p babel-store -p babel-common -p babel-engine \
   -p babel-translation-cell -p babel-message-cell -p babel-directory \
   -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli \
-  -p babel-bergamot -p babel-desktop -p gpui-md3e
+  -p babel-bergamot -p babel-desktop -p gpui-md3e -p babel-net
 cargo test -p babel-bergamot -- --ignored   # downloads three models
 ```
 
 | Crate | What the tests show |
 |---|---|
 | `babel-lang` | normalization rules, viewer resolution |
-| `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike |
-| `babel-account` | registration and sign-in; names are one mentionable word |
+| `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike; standbys replaying a primary from a checkpoint; backups restoring |
+| `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what |
+| `babel-account` | registration and sign-in; names are one mentionable word; tokens verify with the public key only |
+| `babel-directory` | the membership stream, and its trimming |
 | `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; OpenAI-compatible request shape; remote engine over HTTP |
-| `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart |
-| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings |
+| `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming |
+| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries |
 | `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
-| `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart |
+| `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart; split up over mutual TLS: people on different Edges chatting, a user's devices on two Edges staying in step, guilds moving between cells while people write |
 | `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling |
 | `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
 | `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks |

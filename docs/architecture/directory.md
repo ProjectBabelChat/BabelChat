@@ -45,17 +45,34 @@ are the source of truth; they forward `member_joined` through their outbox.
 The Edge double-checks with the Message Cell when it takes a snapshot, so a
 stale entry only costs a skipped guild.
 
+Every change is also numbered in a stream of its own, which Edges follow
+(`watch_memberships`, a long poll like the placement watch): a guild a user
+joins through one Edge reaches their sessions on the others. The stream
+keeps an hour of changes.
+
+## Moving a guild
+
+`move_guild` (operators only) moves a guild to another Message Cell: it
+freezes the guild on its cell, copies its entries page by page to the new
+one, commits the new placement with the next version and epoch, then lets
+the new cell take writes and the old one drop the guild. Edges learn the new
+placement from the watch, or when the old cell answers `moved`. Moves are
+serialized with guild creation. See
+[Message Cell › Moving a guild](message-cell.md#moving-a-guild).
+
 ## Storage
 
 ```
-placements   guild          Placement
-versions     version        guild ID     (placement changes in order)
-memberships  user / guild   ()
+placements      guild          Placement
+versions        version        guild ID          (the newest change of each guild, in order)
+memberships     user / guild   ()
+membership_log  version        MembershipChange  (membership changes, in order; an hour of them)
 ```
 
 ## Availability
 
 When the Directory is down, existing guilds keep working: Edges route from
 their copy. Only guild creation, migration and first lookups of guilds an Edge
-has never seen stop. Phase 0 runs one instance; replication (e.g. Raft on its
-small RocksDB) comes later.
+has never seen stop. One instance runs, with a standby that copies its store
+(see [deployment](../deployment.md#standbys)); consensus replication (e.g.
+Raft on its small RocksDB) comes later.

@@ -6,21 +6,26 @@ publish.workspace = true
 license = "Apache-2.0"
 description = "BabelChat Translation Cell: translations, context and language policy of spaces"
 
+[[bin]]
+name = "babel-translation-cell"
+path = "src/bin/babel-translation-cell.rs"
+
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 babel-api-engine.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
+babel-engine.workspace = true
 babel-lang.workspace = true
+babel-net.workspace = true
 babel-store.workspace = true
+clap.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
 tracing.workspace = true
 whatlang.workspace = true
-
-[dev-dependencies]
-babel-engine.workspace = true
 
 [lints]
 workspace = true

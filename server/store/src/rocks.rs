@@ -1,32 +1,128 @@
 use std::path::Path;
 
-use rocksdb::{ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch};
+use rocksdb::{
+    ColumnFamilyDescriptor, DB, Direction, Env, IteratorMode, Options, WriteBatch,
+    backup::{BackupEngine, BackupEngineOptions, RestoreOptions},
+    checkpoint::Checkpoint,
+};
 
 use crate::{Batch, KvStore, Op, Result, Scan, StoreError, Table, prefix_end};
+
+/// How long write-ahead log files are kept after they stop being needed
+/// locally, so a standby that fell behind can still catch up from them.
+const WAL_TTL_SECS: u64 = 6 * 60 * 60;
+const WAL_LIMIT_MB: u64 = 4 * 1024;
 
 /// RocksDB with one column family per table.
 pub struct RocksStore {
     db: DB,
 }
 
+/// One write of the primary, as a standby replays it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Update {
+    /// Sequence number of the write's first operation.
+    pub seq: u64,
+    /// The write batch, in RocksDB's own encoding.
+    pub data: Vec<u8>,
+}
+
+fn options() -> Options {
+    let mut options = Options::default();
+    options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    options.set_wal_ttl_seconds(WAL_TTL_SECS);
+    options.set_wal_size_limit_mb(WAL_LIMIT_MB);
+    options
+}
+
 impl RocksStore {
     /// Opens (or creates) the store in `path` with the given tables.
     pub fn open(path: &Path, tables: &[Table]) -> Result<Self> {
-        let mut options = Options::default();
-        options.create_if_missing(true);
-        options.create_missing_column_families(true);
-
         let families = tables
             .iter()
             .map(|table| ColumnFamilyDescriptor::new(*table, Options::default()));
-        let db = DB::open_cf_descriptors(&options, path, families)?;
+        let db = DB::open_cf_descriptors(&options(), path, families)?;
         Ok(Self { db })
+    }
+
+    /// Opens a store with whatever tables it has, for replaying a primary's
+    /// writes into it (a standby does not know which service it copies).
+    pub fn open_existing(path: &Path) -> Result<Self> {
+        let families = DB::list_cf(&options(), path)?;
+        let db = DB::open_cf(&options(), path, families)?;
+        Ok(Self { db })
+    }
+
+    /// Where the store lives.
+    pub fn path(&self) -> &Path {
+        self.db.path()
     }
 
     fn family(&self, table: Table) -> Result<&rocksdb::ColumnFamily> {
         self.db
             .cf_handle(table)
             .ok_or(StoreError::UnknownTable(table))
+    }
+
+    // ---- Replication ------------------------------------------------------
+
+    /// Sequence number of the last write.
+    pub fn latest_sequence(&self) -> u64 {
+        self.db.latest_sequence_number()
+    }
+
+    /// Writes after `seq`, oldest first, up to about `max_bytes`. Fails if
+    /// the write-ahead log no longer goes back that far.
+    pub fn updates_since(&self, seq: u64, max_bytes: usize) -> Result<Vec<Update>> {
+        let mut updates = Vec::new();
+        let mut bytes = 0;
+        if seq >= self.latest_sequence() {
+            return Ok(updates);
+        }
+        for update in self.db.get_updates_since(seq)? {
+            let (seq, batch) = update?;
+            bytes += batch.data().len();
+            updates.push(Update {
+                seq,
+                data: batch.data().to_vec(),
+            });
+            if bytes >= max_bytes {
+                break;
+            }
+        }
+        Ok(updates)
+    }
+
+    /// Replays a primary's write. A standby applies them in order, so its
+    /// sequence numbers keep matching the primary's.
+    pub fn apply(&self, update: &Update) -> Result<()> {
+        Ok(self.db.write(WriteBatch::from_data(&update.data))?)
+    }
+
+    /// A consistent copy of the store in `path` (which must not exist):
+    /// what a new standby starts from.
+    pub fn checkpoint(&self, path: &Path) -> Result<()> {
+        Ok(Checkpoint::new(&self.db)?.create_checkpoint(path)?)
+    }
+
+    // ---- Backups ----------------------------------------------------------
+
+    /// Adds a backup to `dir` and keeps the newest `keep` of them. Backups
+    /// share unchanged files, so frequent ones are cheap.
+    pub fn backup(&self, dir: &Path, keep: usize) -> Result<()> {
+        let mut engine = BackupEngine::open(&BackupEngineOptions::new(dir)?, &Env::new()?)?;
+        engine.create_new_backup_flush(&self.db, true)?;
+        engine.purge_old_backups(keep)?;
+        Ok(())
+    }
+
+    /// Restores the newest backup in `backups` into `path`, which must not
+    /// hold a store that is open.
+    pub fn restore(backups: &Path, path: &Path) -> Result<()> {
+        let mut engine = BackupEngine::open(&BackupEngineOptions::new(backups)?, &Env::new()?)?;
+        engine.restore_from_latest_backup(path, path, &RestoreOptions::default())?;
+        Ok(())
     }
 }
 

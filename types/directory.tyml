@@ -28,6 +28,24 @@ type PlacementBatch {
     version: int
 }
 
+/// Someone joined or left a guild.
+type MembershipChange {
+    user_id: string
+    guild_id: string
+    joined: bool
+    /// Position in the stream of membership changes.
+    version: int
+}
+
+type MembershipBatch {
+    changes: [MembershipChange]
+    /// Pass as `after` to the next watch.
+    version: int
+    /// Changes up to this version were trimmed. A follower whose `after` is
+    /// below it has missed some.
+    trimmed: int
+}
+
 type GuildRequest {
     owner_id: string
     owner_name: string
@@ -51,12 +69,24 @@ interface Directory {
 
     /// Long poll: placements committed after version `after`.
     #[kind = "get"]
-    function watch_placements(after: int, wait_ms: int) -> PlacementBatch
+    function watch_placements(after: int, wait_ms: int) -> PlacementBatch throws DirectoryError
 
-    function add_membership(user_id: string, guild_id: string)
+    function add_membership(user_id: string, guild_id: string) throws DirectoryError
 
-    function remove_membership(user_id: string, guild_id: string)
+    function remove_membership(user_id: string, guild_id: string) throws DirectoryError
 
     #[kind = "get"]
-    function list_memberships(user_id: string) -> [string]
+    function list_memberships(user_id: string) -> [string] throws DirectoryError
+
+    /// Long poll: membership changes after version `after`. Edges follow it
+    /// so that a user's sessions on every Edge learn about a guild they
+    /// joined, wherever they joined it. An `after` beyond the newest change
+    /// returns at once with the newest version, to start from there.
+    #[kind = "get"]
+    function watch_memberships(after: int, wait_ms: int) -> MembershipBatch throws DirectoryError
+
+    /// Moves a guild to another Message Cell (operators only). Its writes
+    /// wait while it is copied; then the placement switches and Edges
+    /// follow it there.
+    function move_guild(guild_id: string, message_cell: string) -> Placement throws DirectoryError
 }

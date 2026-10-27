@@ -6,13 +6,20 @@ publish.workspace = true
 license = "Apache-2.0"
 description = "BabelChat Message Cell: guilds, channels, members and original messages"
 
+[[bin]]
+name = "babel-message-cell"
+path = "src/bin/babel-message-cell.rs"
+
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 babel-api-directory.workspace = true
 babel-api-message-cell.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
+babel-net.workspace = true
 babel-store.workspace = true
+clap.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
@@ -21,6 +28,7 @@ tracing.workspace = true
 [dev-dependencies]
 babel-engine.workspace = true
 babel-translation-cell.workspace = true
+reqwest.workspace = true
 
 [lints]
 workspace = true
