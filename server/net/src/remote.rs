@@ -147,6 +147,7 @@ mod translation_cell {
         fn get_policy(space: String) -> SpacePolicy;
         fn put_policy(body: PolicyUpdate) -> SpacePolicy;
         fn set_plan(space: String, plan: Plan) -> SpacePolicy;
+        fn list_models(space: String) -> Vec<TranslationModel>;
         fn normalize(space: String, tag: String) -> String;
         fn resolve_viewer(space: String, locale: String, translate_outside_set: bool) -> ViewerLanguage;
         fn ingest(body: IngestMessage) -> ();

@@ -99,6 +99,7 @@ async fn messages_reach_every_reader_in_their_language() {
                 region_mode: RegionMode::Merged,
                 aliases: Vec::new(),
                 translate_regional_variants: false,
+                model: None,
             },
         )
         .await
@@ -157,6 +158,7 @@ async fn messages_reach_every_reader_in_their_language() {
                 region_mode: RegionMode::Merged,
                 aliases: Vec::new(),
                 translate_regional_variants: false,
+                model: None,
             },
         )
         .await;
@@ -365,6 +367,7 @@ async fn sdk_sessions_survive_a_server_restart() {
             region_mode: babel_sdk::RegionMode::Merged,
             aliases: Vec::new(),
             translate_regional_variants: false,
+            model: None,
         })
         .await
         .unwrap();

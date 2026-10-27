@@ -16,6 +16,7 @@ SpacePolicy {
   region_mode                  merged | distinct
   aliases                      space-specific overrides, e.g. pt -> pt-PT
   translate_regional_variants  translate pt-BR <-> pt-PT in distinct mode
+  model                        what the LLM translates with; null: the default
 }
 ```
 
@@ -27,8 +28,11 @@ SpacePolicy {
 | paid3 | 5 | 5 |
 
 Billing does not exist yet: new spaces get the plan from configuration
-(`babel-server --plan`), and `set_plan` is the hook billing will call.
-Downgrades trim languages that no longer fit.
+(`babel-server --plan`), plans are changed by operators (`babel-admin
+set-plan`), and `set_plan` is the hook billing will call. Downgrades trim
+languages that no longer fit. Paid spaces choose their model from the
+Translation Cell's catalog (`list_models`; see
+[Translation Cell](translation-cell.md#models-and-engines)).
 
 ## Normalization
 

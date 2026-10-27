@@ -100,6 +100,9 @@ type SpacePolicy {
     /// Whether to translate between regional variants of one language
     /// (pt-BR to pt-PT) in distinct mode.
     translate_regional_variants: bool
+    /// What the LLM translates with, one of `list_models`. Null: the
+    /// default model.
+    model: string?
 }
 
 type PolicyUpdate {
@@ -109,6 +112,13 @@ type PolicyUpdate {
     region_mode: RegionMode
     aliases: [LanguageAlias]
     translate_regional_variants: bool
+    model: string?
+}
+
+/// A model spaces can translate with.
+type TranslationModel {
+    id: string
+    name: string
 }
 
 /// How one viewer reads a space.
@@ -233,6 +243,10 @@ interface TranslationCell {
 
     /// Billing hook. Until billing exists, plans are set by configuration.
     function set_plan(space: string, plan: Plan) -> SpacePolicy throws TranslationCellError
+
+    /// Models the space may translate with; the first is the default.
+    #[kind = "get"]
+    function list_models(space: string) -> [TranslationModel] throws TranslationCellError
 
     /// Normalizes a language tag with the space's policy. Rust callers use
     /// the babel-lang crate on a policy snapshot instead of calling this.

@@ -61,6 +61,8 @@ type TranslateRequest {
     /// Every target is translated directly from the source (N to N): no
     /// pivot language, so errors do not compound.
     targets: [TargetLanguage]
+    /// One of `info().models`. Null: the engine's default.
+    model: string?
 }
 
 type Translation {
@@ -97,6 +99,8 @@ type SummarizeRequest {
     max_chars: int
     /// Language to write the summary in. Null keeps the source language.
     lang: string?
+    /// One of `info().models`. Null: the engine's default.
+    model: string?
 }
 
 type SummarizeResponse {
@@ -104,9 +108,18 @@ type SummarizeResponse {
     usage: Usage
 }
 
-type EngineInfo {
+type ModelInfo {
+    /// What requests and space policies name the model by.
+    id: string
+    /// Shown to people choosing a model.
+    name: string
+    /// How the engine reaches it: "mock", "openai-compatible", "anthropic".
     backend: string
-    model: string
+}
+
+type EngineInfo {
+    /// Every model the engine serves; the first is its default.
+    models: [ModelInfo]
 }
 
 enum EngineError {
@@ -114,6 +127,8 @@ enum EngineError {
     "rate_limited"
     "invalid_output"
     "unsupported_language"
+    /// The request names a model the engine does not serve.
+    "unknown_model"
 }
 
 interface Engine {

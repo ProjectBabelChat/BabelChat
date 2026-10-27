@@ -5,7 +5,7 @@
 //! | Account | Edges |
 //! | Directory | Edges (placement, memberships to list and watch); Message Cells (memberships to record); operators (moving guilds, reading placements) |
 //! | Message Cell | Edges; the Directory (creating and moving guilds) |
-//! | Translation Cell | Edges, Message Cells, tenants (other platforms, each in its own spaces) |
+//! | Translation Cell | Edges, Message Cells, tenants (other platforms, each in its own spaces); operators (setting plans) |
 //! | Engine | Translation Cells |
 //!
 //! Every service also lets its own standbys copy it ([`Policy::with_replication`]).
@@ -44,7 +44,12 @@ pub fn message_cell() -> Policy {
 }
 
 pub fn translation_cell() -> Policy {
-    Policy::roles(&[Role::Edge, Role::MessageCell, Role::Tenant])
+    Policy::new(|caller, path| match path {
+        // Plans are what spaces pay for: billing (an operator for now) sets
+        // them, never a tenant for itself.
+        "/translation_cell/set_plan" => caller.role == Role::Admin,
+        _ => matches!(caller.role, Role::Edge | Role::MessageCell | Role::Tenant),
+    })
 }
 
 pub fn engine() -> Policy {
@@ -78,5 +83,15 @@ mod tests {
         assert!(!directory.allows(&caller(Role::Edge), "/directory/move_guild"));
         assert!(!directory.allows(&caller(Role::Admin), "/directory/create_guild"));
         assert!(!directory.allows(&caller(Role::Edge), "/directory/add_membership"));
+    }
+
+    #[test]
+    fn only_operators_set_plans() {
+        let cell = translation_cell();
+        assert!(cell.allows(&caller(Role::Tenant), "/translation_cell/ingest"));
+        assert!(!cell.allows(&caller(Role::Tenant), "/translation_cell/set_plan"));
+        assert!(!cell.allows(&caller(Role::Edge), "/translation_cell/set_plan"));
+        assert!(cell.allows(&caller(Role::Admin), "/translation_cell/set_plan"));
+        assert!(!cell.allows(&caller(Role::Admin), "/translation_cell/ingest"));
     }
 }

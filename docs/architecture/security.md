@@ -50,10 +50,12 @@ target guild. So placement does not leak either:
 | Threat | Countermeasure |
 |---|---|
 | Spam in many languages to run up the LLM bill | Daily budget per space; on-device fallback past it |
-| Prompt injection in messages or descriptions | Content embedded as JSON data, never as instructions; engines have no tools; outputs missing targets or far longer than the source are rejected |
+| Prompt injection in messages or descriptions | Content embedded as JSON data, never as instructions (`json` models); engines have no tools; outputs missing targets or far longer than the source are rejected |
+| A message talking a translation model into a different translation (`plain` models such as Hy-MT2 read text, not JSON) | The prompt tells the model to translate requests as written; the harm stays within the author's own message, whose original every reader can show; spaces that need more pick a `json` model |
+| A tenant giving itself a better plan | `set_plan` only takes operators' calls (billing later) |
 | A malicious owner's description | Only affects that owner's space: context layers are per space |
 | Private channel content leaking through context | Only channels everyone in the guild can read may become reference context (planned with reference channels) |
-| A self-hosted engine URL used for SSRF | Engine URLs are operator configuration; hosted models are reached through the egress proxy, which only tunnels to public addresses (checking the address it connects to, so DNS rebinding gains nothing) |
+| A self-hosted engine URL used for SSRF | Engine URLs are operator configuration; so are models and their API keys (environment variables of the engine); hosted models are reached through the egress proxy, which only tunnels to public addresses (checking the address it connects to, so DNS rebinding gains nothing) |
 | Another platform reading BabelChat's translations, or another platform's | The tenant comes from the caller's certificate; every key starts with it |
 
 ## Accounts

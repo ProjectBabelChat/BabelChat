@@ -10,6 +10,8 @@ pub struct TranslateRequest {
     /// Every target is translated directly from the source (N to N): no
     /// pivot language, so errors do not compound.
     pub targets: Vec<TargetLanguage>,
+    /// One of `info().models`. Null: the engine's default.
+    pub model: Option<String>,
 }
 
 /// One layer of context, ordered from the broadest (the space) to the
@@ -90,6 +92,9 @@ pub enum EngineError {
     InvalidOutput,
     #[serde(rename = "unsupported_language")]
     UnsupportedLanguage,
+    /// The request names a model the engine does not serve.
+    #[serde(rename = "unknown_model")]
+    UnknownModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -101,6 +106,8 @@ pub struct SummarizeRequest {
     pub max_chars: i64,
     /// Language to write the summary in. Null keeps the source language.
     pub lang: Option<String>,
+    /// One of `info().models`. Null: the engine's default.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -121,8 +128,18 @@ pub struct SummarizeResponse {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct EngineInfo {
+    /// Every model the engine serves; the first is its default.
+    pub models: Vec<ModelInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ModelInfo {
+    /// What requests and space policies name the model by.
+    pub id: String,
+    /// Shown to people choosing a model.
+    pub name: String,
+    /// How the engine reaches it: "mock", "openai-compatible", "anthropic".
     pub backend: String,
-    pub model: String,
 }
 
 

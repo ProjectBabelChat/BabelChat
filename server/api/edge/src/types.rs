@@ -134,6 +134,9 @@ pub struct LanguagePolicy {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    /// What the LLM translates with, one of `get_models`. Null: the
+    /// default model.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -238,6 +241,14 @@ pub struct LanguagePolicyUpdate {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    pub model: Option<String>,
+}
+
+/// A model a guild can translate with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslationModel {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -450,6 +461,8 @@ pub trait Guilds: Send + Sync + 'static {
     /// Only the owner may change the policy. Languages are normalized and
     /// counted after normalization.
     async fn put_language_policy(&self, claim: Claim, body: LanguagePolicyUpdate) -> Result<LanguagePolicy, ApiError>;
+    /// Models the guild may translate with; the first is the default.
+    async fn get_models(&self, claim: Claim, guild_id: String) -> Result<Vec<TranslationModel>, ApiError>;
     /// The owner cannot leave (`invalid_request`).
     async fn leave_guild(&self, claim: Claim, guild_id: String) -> Result<(), ApiError>;
     /// Owner only. With `ban`, invites no longer let the user back in.

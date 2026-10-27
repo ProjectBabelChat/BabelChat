@@ -11,14 +11,14 @@ use std::{
 
 use async_trait::async_trait;
 use babel_api_engine::types::{
-    EngineError, EngineInfo, SummarizeRequest, SummarizeResponse, TranslateRequest,
-    TranslateResponse, Translation, Usage,
+    EngineError, SummarizeRequest, SummarizeResponse, TranslateRequest, TranslateResponse,
+    Translation, Usage,
 };
 use parking_lot::Mutex;
 
 use crate::{
     Backend,
-    prompt::{Prompt, summary_prompt, translation_prompt},
+    prompt::{Prompt, extractive_summary, summary_prompt, translation_prompt},
 };
 
 #[derive(Debug, Clone)]
@@ -114,11 +114,8 @@ pub fn estimate_tokens(text: &str) -> i64 {
 
 #[async_trait]
 impl Backend for MockBackend {
-    fn info(&self) -> EngineInfo {
-        EngineInfo {
-            backend: "mock".into(),
-            model: "mock".into(),
-        }
+    fn kind(&self) -> &'static str {
+        "mock"
     }
 
     async fn translate(
@@ -150,22 +147,7 @@ impl Backend for MockBackend {
         &self,
         request: &SummarizeRequest,
     ) -> Result<SummarizeResponse, EngineError> {
-        let mut text = request.previous.clone().unwrap_or_default();
-        for message in &request.messages {
-            if !text.is_empty() {
-                text.push_str(" / ");
-            }
-            text.push_str(&message.author);
-            text.push_str(": ");
-            text.push_str(&message.text);
-        }
-        let max_chars = request.max_chars.max(0) as usize;
-        if text.chars().count() > max_chars {
-            // Keep the most recent part, like a rolling summary would.
-            let skip = text.chars().count() - max_chars;
-            text = text.chars().skip(skip).collect();
-        }
-
+        let text = extractive_summary(request);
         Ok(SummarizeResponse {
             usage: self.account(&summary_prompt(request), &text),
             text,
@@ -203,6 +185,7 @@ mod tests {
                 tag: "ja-JP".into(),
                 name: "Japanese".into(),
             }],
+            model: None,
         }
     }
 

@@ -12,7 +12,7 @@ use babel_api_translation_cell::types::{
     ContextNode, IngestMessage, MessageRef, NodeKind, Plan, PolicyUpdate, RegionMode, SpaceContext,
     TranslationCell as _, TranslationEventKind, TranslationQuery, TranslationStatus,
 };
-use babel_engine::mock::{MockBackend, MockConfig};
+use babel_engine::mock::MockConfig;
 use babel_store::{KvStore, MemStore};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
 use parking_lot::Mutex;
@@ -47,10 +47,10 @@ impl Engine for RecordingEngine {
 fn engine() -> (Arc<dyn Engine>, Arc<Recorder>) {
     let recorder = Arc::new(Recorder::default());
     let engine = RecordingEngine {
-        inner: babel_engine::Engine::new(Arc::new(MockBackend::new(MockConfig {
+        inner: babel_engine::Engine::mock(MockConfig {
             latency: Duration::ZERO,
             ..MockConfig::default()
-        }))),
+        }),
         recorder: recorder.clone(),
     };
     (Arc::new(engine), recorder)
@@ -90,6 +90,7 @@ async fn paid_space(cell: &TranslationCell) {
         region_mode: RegionMode::Merged,
         aliases: Vec::new(),
         translate_regional_variants: false,
+        model: None,
     })
     .await
     .unwrap();
@@ -342,10 +343,7 @@ impl Engine for StuckEngine {
     }
 
     async fn info(&self) -> EngineInfo {
-        EngineInfo {
-            backend: "stuck".into(),
-            model: String::new(),
-        }
+        EngineInfo { models: Vec::new() }
     }
 }
 
@@ -448,4 +446,61 @@ async fn space_logs_are_trimmed() {
         .unwrap();
     let batch = cell.poll_events("guild".into(), 3, 0).await.unwrap();
     assert_eq!(batch.events.len(), 1);
+}
+
+#[tokio::test]
+async fn spaces_choose_their_model() {
+    let recorder = Arc::new(Recorder::default());
+    let mock = || {
+        Arc::new(babel_engine::mock::MockBackend::new(MockConfig {
+            latency: Duration::ZERO,
+            ..MockConfig::default()
+        }))
+    };
+    let engine = RecordingEngine {
+        inner: babel_engine::Engine::new(vec![
+            babel_engine::Model::new("small", "Small", mock()),
+            babel_engine::Model::new("large", "Large", mock()),
+        ]),
+        recorder: recorder.clone(),
+    };
+    let cell = TranslationCell::open(
+        Arc::new(MemStore::new()),
+        Arc::new(engine),
+        TranslationCellConfig::default(),
+    )
+    .unwrap();
+
+    // Free spaces translate on device: no model to choose.
+    assert!(cell.list_models("guild".into()).await.unwrap().is_empty());
+
+    paid_space(&cell).await;
+    let models = cell.list_models("guild".into()).await.unwrap();
+    let ids = models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(ids, ["small", "large"]);
+
+    let choose = |model: &str| PolicyUpdate {
+        space: "guild".into(),
+        languages: vec!["ja".into(), "en".into()],
+        llm_languages: vec!["ja".into(), "en".into()],
+        region_mode: RegionMode::Merged,
+        aliases: Vec::new(),
+        translate_regional_variants: false,
+        model: Some(model.into()),
+    };
+    assert_eq!(
+        cell.put_policy(choose("huge")).await.unwrap_err(),
+        babel_api_translation_cell::types::TranslationCellError::InvalidRequest
+    );
+    let policy = cell.put_policy(choose("large")).await.unwrap();
+    assert_eq!(policy.model.as_deref(), Some("large"));
+
+    cell.ingest(message("general", "1", "1", JAPANESE, "ja-JP"))
+        .await
+        .unwrap();
+    assert_eq!(settled(&cell, "1").await.status, TranslationStatus::Done);
+    assert_eq!(
+        recorder.requests.lock().last().unwrap().model.as_deref(),
+        Some("large")
+    );
 }

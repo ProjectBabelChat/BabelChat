@@ -94,6 +94,9 @@ pub struct SpacePolicy {
     /// Whether to translate between regional variants of one language
     /// (pt-BR to pt-PT) in distinct mode.
     pub translate_regional_variants: bool,
+    /// What the LLM translates with, one of `list_models`. Null: the
+    /// default model.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -133,6 +136,14 @@ pub struct PolicyUpdate {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    pub model: Option<String>,
+}
+
+/// A model spaces can translate with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslationModel {
+    pub id: String,
+    pub name: String,
 }
 
 /// How one viewer reads a space.
@@ -355,6 +366,25 @@ impl TranslationCell {
     pub async fn set_plan(&self, space: String, plan: Plan) -> Result<SpacePolicy, ThrowsOrOtherError<TranslationCellError>> {
         let mut request = self.client.post(format!("{}/translation_cell/set_plan", &self.url));
         request = request.query(&[("space", serde_json::to_string(&space).unwrap()), ("plan", serde_json::to_string(&plan).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Models the space may translate with; the first is the default.
+    pub async fn list_models(&self, space: String) -> Result<Vec<TranslationModel>, ThrowsOrOtherError<TranslationCellError>> {
+        let mut request = self.client.get(format!("{}/translation_cell/list_models", &self.url));
+        request = request.query(&[("space", serde_json::to_string(&space).unwrap())]);
         request = request.header("Accept", "application/json");
         let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
 

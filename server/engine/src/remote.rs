@@ -64,10 +64,8 @@ impl babel_api_engine::types::Engine for RemoteEngine {
     async fn info(&self) -> EngineInfo {
         match self.client.info().await {
             Ok(info) => convert(&info),
-            Err(_) => EngineInfo {
-                backend: "remote (unreachable)".into(),
-                model: String::new(),
-            },
+            // Unreachable: no models for now.
+            Err(_) => EngineInfo { models: Vec::new() },
         }
     }
 }

@@ -181,6 +181,7 @@ pub fn policy(policy: &translation::SpacePolicy) -> public::LanguagePolicy {
             })
             .collect(),
         translate_regional_variants: policy.translate_regional_variants,
+        model: policy.model.clone(),
     }
 }
 
@@ -202,6 +203,7 @@ pub fn policy_update(update: public::LanguagePolicyUpdate) -> translation::Polic
             })
             .collect(),
         translate_regional_variants: update.translate_regional_variants,
+        model: update.model,
     }
 }
 

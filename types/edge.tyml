@@ -102,6 +102,15 @@ type LanguagePolicy {
     region_mode: RegionMode
     aliases: [LanguageAlias]
     translate_regional_variants: bool
+    /// What the LLM translates with, one of `get_models`. Null: the
+    /// default model.
+    model: string?
+}
+
+/// A model a guild can translate with.
+type TranslationModel {
+    id: string
+    name: string
 }
 
 /// How the current user reads a guild. Computed by the Edge from the user's
@@ -203,6 +212,7 @@ type LanguagePolicyUpdate {
     region_mode: RegionMode
     aliases: [LanguageAlias]
     translate_regional_variants: bool
+    model: string?
 }
 
 // ---- Messages --------------------------------------------------------------
@@ -376,6 +386,10 @@ interface Guilds {
     /// Only the owner may change the policy. Languages are normalized and
     /// counted after normalization.
     authed function put_language_policy(@claim: Claim, @body: LanguagePolicyUpdate) -> LanguagePolicy throws ApiError
+
+    /// Models the guild may translate with; the first is the default.
+    #[kind = "get"]
+    authed function get_models(@claim: Claim, guild_id: string) -> [TranslationModel] throws ApiError
 
     /// The owner cannot leave (`invalid_request`).
     authed function leave_guild(@claim: Claim, guild_id: string) throws ApiError

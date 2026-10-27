@@ -93,6 +93,8 @@ pub struct Strings {
     pub you_read_device: &'static str,
     pub you_read_original: &'static str,
     pub ai_translation: &'static str,
+    pub ai_model: &'static str,
+    pub default_model: &'static str,
     pub languages_limit: &'static str,
 
     pub removed_from: &'static str,
@@ -206,6 +208,8 @@ pub static EN: Strings = Strings {
     you_read_device: "You read {0}; this device translates for you.",
     you_read_original: "You read {0}; messages are shown as written.",
     ai_translation: "AI translation",
+    ai_model: "AI translation model",
+    default_model: "{0} (default)",
     languages_limit: "Plan {0}: up to {1} languages, {2} of them with AI translation.",
 
     removed_from: "You were removed from {0}.",
@@ -319,6 +323,8 @@ pub static JA: Strings = Strings {
     you_read_device: "あなたは{0}で読みます。この端末が翻訳します。",
     you_read_original: "あなたは{0}で読みます。メッセージは原文のまま表示されます。",
     ai_translation: "AI 翻訳",
+    ai_model: "AI 翻訳のモデル",
+    default_model: "{0}（標準）",
     languages_limit: "プラン {0}: 言語は {1} つまで、うち {2} つを AI で翻訳します。",
 
     removed_from: "{0} から外されました。",

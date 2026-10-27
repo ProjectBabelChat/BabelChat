@@ -86,6 +86,9 @@ pub struct SpacePolicy {
     /// Whether to translate between regional variants of one language
     /// (pt-BR to pt-PT) in distinct mode.
     pub translate_regional_variants: bool,
+    /// What the LLM translates with, one of `list_models`. Null: the
+    /// default model.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -125,6 +128,14 @@ pub struct PolicyUpdate {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    pub model: Option<String>,
+}
+
+/// A model spaces can translate with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslationModel {
+    pub id: String,
+    pub name: String,
 }
 
 /// How one viewer reads a space.
@@ -254,6 +265,8 @@ pub trait TranslationCell: Send + Sync + 'static {
     async fn put_policy(&self, body: PolicyUpdate) -> Result<SpacePolicy, TranslationCellError>;
     /// Billing hook. Until billing exists, plans are set by configuration.
     async fn set_plan(&self, space: String, plan: Plan) -> Result<SpacePolicy, TranslationCellError>;
+    /// Models the space may translate with; the first is the default.
+    async fn list_models(&self, space: String) -> Result<Vec<TranslationModel>, TranslationCellError>;
     /// Normalizes a language tag with the space's policy. Rust callers use
     /// the babel-lang crate on a policy snapshot instead of calling this.
     async fn normalize(&self, space: String, tag: String) -> Result<String, TranslationCellError>;

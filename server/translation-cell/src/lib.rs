@@ -16,6 +16,7 @@
 
 mod context;
 pub mod detect;
+mod engines;
 mod policy;
 mod records;
 mod trim;
@@ -31,18 +32,19 @@ use std::{
 
 use async_trait::async_trait;
 use babel_api_engine::types::{
-    Engine, EngineError, SourceMessage, SummarizeRequest, SummaryPurpose, TargetLanguage,
-    TranslateRequest, Usage,
+    EngineError, SourceMessage, SummarizeRequest, SummaryPurpose, TargetLanguage, TranslateRequest,
+    Usage,
 };
 use babel_api_translation_cell::types::{
     ContextNode, IngestMessage, MessageRef, MessageTranslation, NodeKind, Plan, PolicyUpdate,
     SpaceContext, SpacePolicy, SpaceUsage, Translation, TranslationCellError, TranslationEvent,
-    TranslationEventBatch, TranslationEventKind, TranslationQuery, TranslationStatus,
-    ViewerLanguage,
+    TranslationEventBatch, TranslationEventKind, TranslationModel, TranslationQuery,
+    TranslationStatus, ViewerLanguage,
 };
 use babel_common::{LogMarks, LogSignals, Role, now_ms, poll_timeout};
 use babel_lang::Normalizer;
 use babel_store::{Batch, KvStore, Scan, StoreError};
+pub use engines::Engines;
 use parking_lot::Mutex;
 pub use policy::plan_limits;
 pub use records::TABLES;
@@ -112,7 +114,7 @@ pub struct TranslationCell {
 
 struct Inner {
     store: Arc<dyn KvStore>,
-    engine: Arc<dyn Engine>,
+    engines: Engines,
     normalizer: Normalizer,
     config: TranslationCellConfig,
     /// Serializes read-modify-write per space.
@@ -129,10 +131,11 @@ struct Inner {
 
 impl TranslationCell {
     /// Opens the cell on its store and resumes jobs left by a previous run.
+    /// `engines` is one engine (`Arc<dyn Engine>`) or several ([`Engines`]).
     /// Must be called within a Tokio runtime.
     pub fn open(
         store: Arc<dyn KvStore>,
-        engine: Arc<dyn Engine>,
+        engines: impl Into<Engines>,
         config: TranslationCellConfig,
     ) -> Result<Self, StoreError> {
         let jobs = store.scan_values::<Job>(Scan::prefix(JOBS, &[]))?;
@@ -140,7 +143,7 @@ impl TranslationCell {
 
         let inner = Arc::new(Inner {
             store,
-            engine,
+            engines: engines.into(),
             normalizer: Normalizer::new(),
             permits: Arc::new(Semaphore::new(config.concurrency)),
             config,
@@ -195,6 +198,11 @@ fn tenant() -> String {
         Some(caller) if caller.role == Role::Tenant => caller.name,
         _ => LOCAL_TENANT.to_string(),
     }
+}
+
+/// Which engine replica a space's requests start at.
+fn affinity(tenant: &str, space: &str) -> String {
+    format!("{tenant}/{space}")
 }
 
 fn check_id(id: &str) -> CellResult<()> {
@@ -365,16 +373,24 @@ impl Inner {
         self.store.write(batch).map_err(storage)?;
 
         if needs_digest {
-            tokio::spawn(
-                self.clone()
-                    .digest(tenant.to_string(), context, record.context_version),
-            );
+            tokio::spawn(self.clone().digest(
+                tenant.to_string(),
+                context,
+                record.context_version,
+                record.policy.model.clone(),
+            ));
         }
         Ok(())
     }
 
     /// Condenses a long description into the space layer.
-    async fn digest(self: Arc<Self>, tenant: String, context: SpaceContext, version: i64) {
+    async fn digest(
+        self: Arc<Self>,
+        tenant: String,
+        context: SpaceContext,
+        version: i64,
+        model: Option<String>,
+    ) {
         let tenant = tenant.as_str();
         let request = SummarizeRequest {
             purpose: SummaryPurpose::Digest,
@@ -385,8 +401,10 @@ impl Inner {
             }],
             max_chars: self.config.summary_chars,
             lang: context.description_lang.clone(),
+            model,
         };
-        let Ok(response) = self.engine.summarize(request).await else {
+        let affinity = affinity(tenant, &context.space);
+        let Ok(response) = self.engines.summarize(&affinity, request).await else {
             tracing::warn!(space = %context.space, "digest failed; using the raw description");
             return;
         };
@@ -474,6 +492,15 @@ impl Inner {
 
     async fn put_policy(&self, tenant: &str, update: PolicyUpdate) -> CellResult<SpacePolicy> {
         check_id(&update.space)?;
+        if let Some(model) = &update.model {
+            let models = self.engines.models().await;
+            if models.is_empty() {
+                return Err(TranslationCellError::Unavailable);
+            }
+            if !models.iter().any(|known| &known.id == model) {
+                return Err(TranslationCellError::InvalidRequest);
+            }
+        }
         let space = update.space.clone();
         let _guard = self.lock(tenant, &space).await;
 
@@ -514,6 +541,14 @@ impl Inner {
 
     fn policy(&self, tenant: &str, space: &str) -> CellResult<SpacePolicy> {
         Ok(self.space_or_default(tenant, space)?.policy)
+    }
+
+    /// Free spaces translate on device only, with no model.
+    async fn list_models(&self, tenant: &str, space: &str) -> CellResult<Vec<TranslationModel>> {
+        if self.policy(tenant, space)?.max_llm_languages == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(self.engines.models().await)
     }
 
     // ---- Messages ---------------------------------------------------------
@@ -635,6 +670,7 @@ impl Inner {
                         name: babel_lang::english_name(tag),
                     })
                     .collect(),
+                model: record.policy.model.clone(),
             };
             let new_job = Job {
                 seq: self.next_job.fetch_add(1, Ordering::Relaxed),
@@ -733,8 +769,16 @@ impl Inner {
                 .collect(),
             max_chars: self.config.summary_chars,
             lang: None,
+            model: self
+                .load_space(tenant, &space)
+                .ok()
+                .flatten()
+                .and_then(|record| record.policy.model),
         };
-        let result = self.engine.summarize(request).await;
+        let result = self
+            .engines
+            .summarize(&affinity(tenant, &space), request)
+            .await;
 
         let _guard = self.lock(tenant, &space).await;
         self.folding
@@ -772,7 +816,14 @@ impl Inner {
             let mut delay = Duration::from_millis(500);
             let mut attempt = 1;
             loop {
-                match self.engine.translate(job.request.clone()).await {
+                match self
+                    .engines
+                    .translate(
+                        &affinity(&job.tenant, &job.message.space),
+                        job.request.clone(),
+                    )
+                    .await
+                {
                     Ok(response) => break Ok(response),
                     Err(EngineError::Unavailable | EngineError::RateLimited)
                         if attempt < ENGINE_ATTEMPTS =>
@@ -985,6 +1036,11 @@ impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
 
     async fn set_plan(&self, space: String, plan: Plan) -> CellResult<SpacePolicy> {
         self.inner.set_plan(&tenant(), space, plan).await
+    }
+
+    async fn list_models(&self, space: String) -> CellResult<Vec<TranslationModel>> {
+        check_id(&space)?;
+        self.inner.list_models(&tenant(), &space).await
     }
 
     async fn normalize(&self, space: String, tag: String) -> CellResult<String> {

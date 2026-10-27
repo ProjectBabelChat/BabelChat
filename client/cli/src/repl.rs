@@ -67,6 +67,7 @@ Type to send to the current channel; @name notifies someone. Commands:
   /notify [all|mentions|none] [here]                     what notifies you (here: this channel)
   /languages                   show the guild's languages
   /languages <tags..> [llm <tags..>] [distinct]     set them (owner)
+  /model [<id>|default]       what the server translates with; choose one (owner)
   /locale <tag>                your language             /original on|off  show originals too
   /outside on|off              translate languages the guild does not declare, on device
   /status                      connection                /quit";
@@ -150,6 +151,7 @@ impl Repl {
             "invite" => self.invite(rest).await,
             "join" if !rest.is_empty() => self.join(rest).await,
             "languages" | "langs" => self.languages(rest).await,
+            "model" => self.model(rest).await,
             "locale" if !rest.is_empty() => {
                 let locale = rest.to_string();
                 self.settings(|settings| settings.locale = locale).await
@@ -772,12 +774,62 @@ impl Repl {
             region_mode,
             aliases: view.policy.aliases.clone(),
             translate_regional_variants: view.policy.translate_regional_variants,
+            model: view.policy.model.clone(),
         };
         if let Err(error) = self.session.set_languages(update).await {
             self.say(format!(
                 "! {error} (plan {}: up to {} languages, {} by LLM)",
                 view.policy.plan, view.policy.max_languages, view.policy.max_llm_languages
             ));
+        }
+    }
+
+    async fn model(&mut self, rest: &str) {
+        let Some(view) = self.current_view() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        let models = match self.session.models(&view.guild.id).await {
+            Ok(models) => models,
+            Err(error) => {
+                self.say(format!("! {error}"));
+                return;
+            }
+        };
+        if models.is_empty() {
+            self.say(format!(
+                "Plan {} translates on each reader's device: no server model.",
+                view.policy.plan
+            ));
+            return;
+        }
+        if rest.is_empty() {
+            let current = view.policy.model.as_deref().unwrap_or(&models[0].id);
+            for (index, model) in models.iter().enumerate() {
+                self.say(format!(
+                    "{} {} ({}){}",
+                    if model.id == current { "*" } else { " " },
+                    model.id,
+                    model.name,
+                    if index == 0 { ", the default" } else { "" }
+                ));
+            }
+            return;
+        }
+        let choice = match rest {
+            "default" => None,
+            id if models.iter().any(|model| model.id == id) => Some(id.to_string()),
+            _ => {
+                self.say(format!("! no model {rest}; /model lists them"));
+                return;
+            }
+        };
+        match self.session.set_model(&view.guild.id, choice).await {
+            Ok(policy) => self.say(format!(
+                "Translating with {}.",
+                policy.model.as_deref().unwrap_or(&models[0].id)
+            )),
+            Err(error) => self.say(format!("! {error}")),
         }
     }
 
@@ -1031,7 +1083,7 @@ fn languages_summary(view: &GuildView) -> String {
         "not translated"
     };
     format!(
-        "Languages: {} (LLM: {}; plan {}). You read {}, {how}.",
+        "Languages: {} (LLM: {}; plan {}{}). You read {}, {how}.",
         policy.languages.join(" "),
         if policy.llm_languages.is_empty() {
             "none".to_string()
@@ -1039,6 +1091,10 @@ fn languages_summary(view: &GuildView) -> String {
             policy.llm_languages.join(" ")
         },
         policy.plan,
+        match &policy.model {
+            Some(model) => format!("; model {model}"),
+            None => String::new(),
+        },
         language.effective,
     )
 }

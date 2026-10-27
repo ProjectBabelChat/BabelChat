@@ -143,6 +143,7 @@ pub async fn guild(
             region_mode: RegionMode::Merged,
             aliases: Vec::new(),
             translate_regional_variants: false,
+            model: None,
         })
         .await
         .unwrap();

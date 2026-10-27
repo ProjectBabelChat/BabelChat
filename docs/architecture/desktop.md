@@ -38,8 +38,9 @@ What a user can do: sign up or in; create a guild (with its languages and a
 each message in their language, with where the translation came from and
 the original on request; unread markers and mention counts per channel and
 guild; notification levels per guild and channel; invite people; leave;
-kick and ban (owners); change the language they read and their display
-settings; sign out.
+kick and ban (owners); choose the guild's languages and, in paid guilds,
+the model the server translates with (owners); change the language they
+read and their display settings; sign out.
 
 ## Two runtimes
 

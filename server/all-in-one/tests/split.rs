@@ -12,7 +12,7 @@ use babel_api_translation_cell::types::{Plan, TranslationCell as TranslationCell
 use babel_common::{Identity, Role};
 use babel_directory::Directory;
 use babel_edge::{Cluster, Edge, EdgeConfig};
-use babel_engine::mock::{MockBackend, MockConfig};
+use babel_engine::mock::MockConfig;
 use babel_message_cell::MessageCell;
 use babel_net::{
     Policy,
@@ -161,12 +161,10 @@ pub async fn start(edges: usize) -> SplitCluster {
         policies::account(),
     );
 
-    let engine = Arc::new(babel_engine::Engine::new(Arc::new(MockBackend::new(
-        MockConfig {
-            latency: Duration::from_millis(20),
-            ..MockConfig::default()
-        },
-    ))));
+    let engine = Arc::new(babel_engine::Engine::mock(MockConfig {
+        latency: Duration::from_millis(20),
+        ..MockConfig::default()
+    }));
     let translation = TranslationCell::open(
         store(),
         engine,
@@ -285,6 +283,7 @@ async fn people_on_different_edges_chat() {
             region_mode: babel_sdk::RegionMode::Merged,
             aliases: Vec::new(),
             translate_regional_variants: false,
+            model: None,
         })
         .await
         .unwrap();

@@ -98,3 +98,13 @@ services up needed:
 Functions that could not fail before (the Directory's membership calls and
 placement watch) now `throw` like the others: over a network, every call
 can.
+
+## Phase 5 (real translation, choosing models)
+
+No TYML changes. Choosing a model per space needed:
+
+| Need | How |
+|---|---|
+| A field added to types that are stored (`SpacePolicy.model`, `TranslateRequest.model` in queued jobs) | Optional fields (`model: string?`): records written before read as null, which means "the default model" |
+| An engine listing several models | `EngineInfo { models: [ModelInfo] }`, replacing its two fields; nothing outside the repository calls the Engine API yet |
+| A request naming a model the engine does not serve | One more `EngineError` variant, `unknown_model` |

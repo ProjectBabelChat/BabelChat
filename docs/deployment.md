@@ -79,8 +79,8 @@ url = "https://10.8.0.3:7110"
 name = "translation-cell-0"
 url = "https://10.8.0.4:7120"
 
-[[engine]]                        # optional: without one, Translation Cells use a mock
-name = "engine-0"
+[[engine]]                        # optional: without one, Translation Cells use a mock;
+name = "engine-0"                 # with several, guilds choose from all their models
 url = "https://10.8.0.5:7140"
 
 [[edge]]
@@ -106,7 +106,7 @@ babel-message-cell --cluster cluster.toml --name message-cell-0 \
 | `--backup-dir`, `--backup-every-mins`, `--backup-keep` | storing services | no backups; 15; 96 |
 | `--plan`, `--daily-budget`, `--mock-latency-ms` | Translation Cells | `free`; none; 300 |
 | `--writes-per-second`, `--write-burst` | Edges | 5; 20 |
-| `--backend`, `--base-url`, `--model`, `--egress-proxy` | engines | `mock` |
+| `--models` (`BABEL_MODELS`), or `--backend`, `--base-url`, `--model`, `--style` for one model; `--egress-proxy` | engines | one mock model |
 
 ## Certificates
 
@@ -229,6 +229,29 @@ Failing over, by hand:
    else changes.
 
 Writes the primary made in its last moment may be lost.
+
+## Models and plans
+
+Each engine serves the models of its models file
+([Translation Engine](architecture/translation-engine.md#models)): local ones on
+its machine or the private network, hosted ones through the egress proxy.
+Translation Cells use every `[[engine]]` of the cluster file; owners of paid
+guilds choose among all their models, and engines serving the same model
+share it by guild.
+
+```sh
+babel-engine --cluster cluster.toml --name engine-0 --models /etc/babel/models.toml \
+  --egress-proxy http://10.8.0.9:3128
+```
+
+API keys stay in the engine's environment (`api_key_env`). Plans are set
+per guild by operators until billing does it:
+
+```sh
+babel-admin --cluster cluster.toml --name ops set-plan <guild id> paid1
+```
+
+`--plan` on Translation Cells is only the plan new guilds start with.
 
 ## Moving guilds
 

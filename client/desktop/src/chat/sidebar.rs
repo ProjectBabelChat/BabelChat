@@ -421,7 +421,7 @@ impl ChatView {
                 t.guild_languages,
                 Icon::Translate,
                 Box::new(|this, window, cx| {
-                    this.dialog = Some(Dialog::languages(this, window, cx));
+                    this.open_languages(window, cx);
                 }),
             ),
             (

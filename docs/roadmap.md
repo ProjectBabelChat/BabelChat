@@ -103,21 +103,51 @@ on as many machines as needed (`docs/deployment.md`).
   sessions on every Edge.
 - Logs trimmed after an hour.
 
-## Phase 5 — real translation
+## Phase 5 — real translation, choosing models (done)
 
-- Moving a guild's Translation Cell space; automatic failover and fencing;
-  a replicated Directory; certificate rotation.
+Translation runs on real models, and guilds choose which:
 
-- Validate the OpenAI-compatible backend against llama.cpp / vLLM with
-  Hy-MT2 and Qwen3; tune window and summary sizes with real usage numbers.
-- Space-affinity routing for engine replicas.
-- Reference channels (owner-chosen descriptions) as context.
+- Engines serve several models from a models file: local ones
+  (OpenAI-compatible servers: llama.cpp, vLLM, Ollama) and hosted ones
+  (OpenAI and others through the same protocol; Claude through the native
+  Messages API with prompt caching). Hosted ones go through the egress
+  proxy.
+- Two prompt styles: JSON for instruction-following models, plain text one
+  target at a time for translation models (Hy-MT2), with summaries kept
+  without the model for those.
+- Measured on a laptop (Intel Iris Xe, llama.cpp over Vulkan): Hy-MT2 1.8B
+  translates a chat message into two or three languages in about 3 s and
+  is the local default (`deploy/local/llm.sh`); Qwen3.5 2B and 4B compared.
+  A tool to run the same chat through any models (`sample_chat`).
+- Translation Cells use every engine of the cluster: one catalog of
+  models, a space's requests always starting at the same replica of its
+  model, the default model for spaces that chose none or one that is gone.
+- Owners of paid guilds choose the model: the guild's language settings in
+  the desktop app, `/model` in the terminal client.
+- Plans are set by operators only (`babel-admin set-plan`), never by a
+  tenant for itself.
+
+## Phase 6 — running it for real
+
+BabelChat on real servers, open to people:
+
+- Deployment: one-VPS and multi-machine examples, systemd units (or a Nix
+  module), HTTPS for clients in front of the Edges, the desktop app on an
+  `https://` server.
+- Operations: health checks, metrics, structured logs; certificate
+  rotation; moving a guild's Translation Cell space; automatic failover and
+  fencing; a replicated Directory.
+- An open server's basics: closing or inviting sign-ups, password changes,
+  signing out other devices.
+- Translation from real usage: window and summary sizes tuned with real
+  numbers; reference channels (owner-chosen descriptions) as context.
 - Translation Cell as a standalone, self-hostable product for other
   platforms; Server SDK documentation.
 
-## Phase 6 — the product
+## Phase 7 — the product
 
-- BabelChat Cloud engine; billing setting plans; Discord account linking.
+- BabelChat Cloud engine; billing setting plans (and which models each
+  plan may use; owners bringing their own API keys); Discord account linking.
 - Managed Translation Cells for platforms that do not want to host one.
 - Mirrored hosting for the on-device models, and model updates.
 - The desktop app: multi-line messages, editing guilds and channels,

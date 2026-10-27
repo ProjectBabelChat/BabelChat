@@ -26,10 +26,7 @@ use babel_api_message_cell::types::MessageCell as MessageCellApi;
 use babel_api_translation_cell::types::{Plan, TranslationCell as TranslationCellApi};
 use babel_directory::Directory;
 use babel_edge::{Cluster, Edge, EdgeConfig};
-use babel_engine::{
-    RemoteEngine,
-    mock::{MockBackend, MockConfig},
-};
+use babel_engine::{RemoteEngine, mock::MockConfig};
 use babel_message_cell::MessageCell;
 use babel_store::{KvStore, RocksStore, Table};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
@@ -74,12 +71,10 @@ impl Server {
     /// Opens every service. Must be called within a Tokio runtime.
     pub fn open(config: &ServerConfig) -> anyhow::Result<Self> {
         let engine: Arc<dyn Engine> = match &config.engine {
-            EngineChoice::Mock { latency } => Arc::new(babel_engine::Engine::new(Arc::new(
-                MockBackend::new(MockConfig {
-                    latency: *latency,
-                    ..MockConfig::default()
-                }),
-            ))),
+            EngineChoice::Mock { latency } => Arc::new(babel_engine::Engine::mock(MockConfig {
+                latency: *latency,
+                ..MockConfig::default()
+            })),
             EngineChoice::Remote { url } => Arc::new(RemoteEngine::new(url.clone())),
         };
 

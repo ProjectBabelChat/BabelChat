@@ -31,6 +31,7 @@ pub fn default_policy(space: &str, plan: Plan) -> SpacePolicy {
         region_mode: RegionMode::Merged,
         aliases: Vec::new(),
         translate_regional_variants: false,
+        model: None,
     }
 }
 
@@ -107,6 +108,7 @@ pub fn apply_update(
         region_mode: update.region_mode,
         aliases: update.aliases.clone(),
         translate_regional_variants: update.translate_regional_variants,
+        model: update.model.clone(),
         ..current.clone()
     })
 }
@@ -162,6 +164,7 @@ mod tests {
             region_mode: RegionMode::Merged,
             aliases: Vec::new(),
             translate_regional_variants: false,
+            model: None,
         }
     }
 

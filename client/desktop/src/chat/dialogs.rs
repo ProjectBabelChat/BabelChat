@@ -1,7 +1,7 @@
 //! Dialogs: adding a guild, inviting, channels, languages, notifications,
 //! settings and confirmations.
 
-use babel_sdk::{ChannelNotify, LanguagePolicyUpdate, NotifyLevel, UserSettings};
+use babel_sdk::{ChannelNotify, LanguagePolicyUpdate, NotifyLevel, TranslationModel, UserSettings};
 use gpui::Focusable;
 use gpui::prelude::*;
 use gpui::{
@@ -45,6 +45,10 @@ pub enum Dialog {
         guild_id: String,
         languages: Vec<String>,
         llm: Vec<String>,
+        /// What the guild may translate with, once loaded.
+        models: Vec<TranslationModel>,
+        /// None: the default model.
+        model: Option<String>,
         busy: bool,
         error: Option<String>,
     },
@@ -190,13 +194,21 @@ impl Dialog {
 
     pub fn languages(chat: &ChatView, _: &mut Window, _: &mut Context<ChatView>) -> Self {
         let guild = chat.current_guild();
-        let (languages, llm) = guild
-            .map(|guild| (guild.policy.languages, guild.policy.llm_languages))
+        let (languages, llm, model) = guild
+            .map(|guild| {
+                (
+                    guild.policy.languages,
+                    guild.policy.llm_languages,
+                    guild.policy.model,
+                )
+            })
             .unwrap_or_default();
         Dialog::Languages {
             guild_id: chat.guild.clone().unwrap_or_default(),
             languages,
             llm,
+            models: Vec::new(),
+            model,
             busy: false,
             error: None,
         }
@@ -305,6 +317,30 @@ fn set_status(dialog: &mut Option<Dialog>, now_busy: bool, failure: Option<Strin
 }
 
 impl ChatView {
+    /// Opens the guild's language settings and loads the models it may
+    /// translate with.
+    pub(super) fn open_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::languages(self, window, cx));
+        let Some(guild_id) = self.guild.clone() else {
+            return;
+        };
+        let session = self.session.clone();
+        let task = runtime::spawn(cx, async move { session.models(&guild_id).await });
+        cx.spawn_in(window, async move |this, cx| {
+            // Without the list the dialog just offers no choice.
+            let Ok(loaded) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if let Some(Dialog::Languages { models, .. }) = &mut this.dialog {
+                    *models = loaded;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Runs `work` on the SDK runtime with the dialog marked busy; on
     /// success the dialog closes and `done` runs, on failure it shows the
     /// error.
@@ -400,6 +436,7 @@ impl ChatView {
                                         aliases: policy.aliases.clone(),
                                         translate_regional_variants: policy
                                             .translate_regional_variants,
+                                        model: policy.model.clone(),
                                     })
                                     .await?;
                             }
@@ -446,6 +483,7 @@ impl ChatView {
                 guild_id,
                 languages,
                 llm,
+                model,
                 ..
             } => {
                 let Some(guild) = self.session.guild(guild_id) else {
@@ -459,6 +497,7 @@ impl ChatView {
                     region_mode: policy.region_mode,
                     aliases: policy.aliases,
                     translate_regional_variants: policy.translate_regional_variants,
+                    model: model.clone(),
                 };
                 self.run_dialog(
                     async move { session.set_languages(update).await },
@@ -830,6 +869,8 @@ impl ChatView {
                 guild_id,
                 languages,
                 llm,
+                models,
+                model,
                 busy,
                 error,
             } => {
@@ -846,8 +887,18 @@ impl ChatView {
                 } else {
                     t.you_read_original
                 };
-                let mut options: Vec<String> =
-                    COMMON_LANGUAGES.iter().map(|tag| tag.to_string()).collect();
+                // The guild's tags are normalized ("ja-JP"): a common
+                // language it has shows as its tag, not a second chip.
+                let mut options: Vec<String> = COMMON_LANGUAGES
+                    .iter()
+                    .map(|common| {
+                        languages
+                            .iter()
+                            .find(|tag| tag.split('-').next() == Some(*common))
+                            .cloned()
+                            .unwrap_or_else(|| common.to_string())
+                    })
+                    .collect();
                 for tag in languages {
                     if !options.iter().any(|option| option == tag) {
                         options.push(tag.clone());
@@ -934,6 +985,46 @@ impl ChatView {
                                 .child(t.ai_translation),
                         )
                         .child(ai);
+                    if models.len() > 1 {
+                        // The first model is the default; choosing it means
+                        // following the default.
+                        let current = model.as_deref().unwrap_or(&models[0].id);
+                        let mut choices = div().flex().flex_row().flex_wrap().gap_2();
+                        for (index, option) in models.iter().enumerate() {
+                            let selected = option.id == current;
+                            if !owner && !selected {
+                                continue;
+                            }
+                            let label = if index == 0 {
+                                fill(t.default_model, &[&option.name])
+                            } else {
+                                option.name.clone()
+                            };
+                            let choice = (index > 0).then(|| option.id.clone());
+                            choices = choices.child(
+                                Chip::new(
+                                    SharedString::from(format!("model-{}", option.id)),
+                                    label,
+                                )
+                                .kind(ChipKind::Filter)
+                                .selected(selected)
+                                .disabled(!owner)
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if let Some(Dialog::Languages { model, .. }) =
+                                            &mut this.dialog
+                                        {
+                                            *model = choice.clone();
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            );
+                        }
+                        body = body
+                            .child(div().md_type(TypeRole::TitleSmall, cx).child(t.ai_model))
+                            .child(choices);
+                    }
                 } else {
                     body = body.child(widgets::supporting(t.languages_free, cx));
                 }

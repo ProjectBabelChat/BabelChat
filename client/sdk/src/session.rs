@@ -24,7 +24,8 @@ use std::{
 
 use babel_api_edge_client::types::{
     ApiError, Ban, Channel, ChannelKind, GuildView, Invite, LanguagePolicy, LanguagePolicyUpdate,
-    MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings, UserSettings,
+    MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings,
+    TranslationModel, UserSettings,
 };
 use babel_lang::Normalizer;
 use parking_lot::Mutex;
@@ -732,6 +733,36 @@ impl Session {
             .await?;
         self.shared.refresh_guild(&guild_id).await?;
         Ok(policy)
+    }
+
+    /// Models the guild may translate with; the first is the default. Empty
+    /// for guilds that translate on device only.
+    pub async fn models(&self, guild_id: &str) -> Result<Vec<TranslationModel>> {
+        Ok(self
+            .shared
+            .client
+            .guilds()
+            .get_models(self.shared.client.jwt(), guild_id.to_string())
+            .await?)
+    }
+
+    /// Owner only. Chooses what the LLM translates the guild with; `None`
+    /// is the default model. The languages stay as they are.
+    pub async fn set_model(&self, guild_id: &str, model: Option<String>) -> Result<LanguagePolicy> {
+        let policy = self
+            .guild(guild_id)
+            .map(|view| view.policy)
+            .ok_or(Error::Api(ApiError::NotFound))?;
+        self.set_languages(LanguagePolicyUpdate {
+            guild_id: guild_id.to_string(),
+            languages: policy.languages,
+            llm_languages: policy.llm_languages,
+            region_mode: policy.region_mode,
+            aliases: policy.aliases,
+            translate_regional_variants: policy.translate_regional_variants,
+            model,
+        })
+        .await
     }
 
     /// Saves settings, then reloads what depends on them: how each guild is

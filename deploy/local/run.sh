@@ -5,10 +5,16 @@
 #
 #   nix develop -c deploy/local/run.sh [--plan paid3]
 #
-# Options after the script name go to the Translation Cells. The operator
-# certificate `ops` is made too:
+# Options after the script name go to the Translation Cells. The engine
+# translates with a mock, or with the models of a models file:
+#
+#   deploy/local/llm.sh &                     # a local model (Hy-MT2)
+#   BABEL_MODELS=models.toml nix develop -c deploy/local/run.sh --plan paid3
+#
+# The operator certificate `ops` is made too:
 #
 #   target/debug/babel-admin --cluster deploy/local/cluster.toml --name ops placements
+#   target/debug/babel-admin --cluster deploy/local/cluster.toml --name ops set-plan <guild> paid1
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -44,8 +50,8 @@ done
 run engine-0 "$bin/babel-engine"
 run edge-0 "$bin/babel-edge"
 run edge-1 "$bin/babel-edge"
-# Nothing here calls the internet (the engine is a mock); the proxy is
-# where an engine for a hosted model would send its requests.
+# The proxy is where an engine sends requests for hosted models
+# (BABEL_EGRESS_PROXY=http://127.0.0.1:3128); local ones are reached directly.
 "$bin/babel-egress" --listen 127.0.0.1:3128 >logs/egress.log 2>&1 &
 echo "started egress (pid $!)"
 

@@ -41,7 +41,7 @@ for BabelChat.
 | `server/directory` | Directory: placement and membership index |
 | `server/message-cell` | Message Cell: guilds and original messages |
 | `server/translation-cell` | Translation Cell: translations, context, language policy |
-| `server/engine` | Reference translation engine (mock, OpenAI-compatible) |
+| `server/engine` | Reference translation engine: models from a models file over mock, OpenAI-compatible and Anthropic backends |
 | `server/account` | Development stand-in for the closed Account service |
 | `server/store` | RocksDB storage shared by the services |
 | `server/common` | Small shared helpers |

@@ -269,3 +269,53 @@ async fn invites_are_needed_and_updates_announce_members() {
     }
     assert_eq!(created.unwrap(), sent.message.id);
 }
+
+#[tokio::test]
+async fn owners_choose_the_model_of_paid_guilds() {
+    let paid = server(Plan::Paid3).await;
+    let mut alice = user(&paid, "alice", "ja-JP").await;
+    let mut bob = user(&paid, "bob", "en-US").await;
+    let channel = guild(&mut alice, &mut [&mut bob], &["ja", "en"], &["ja", "en"]).await;
+    let guild_id = alice.session.channel(&channel).unwrap().guild_id;
+
+    let models = bob.session.models(&guild_id).await.unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "mock");
+
+    // Only the owner chooses, and only among the guild's models.
+    assert!(
+        bob.session
+            .set_model(&guild_id, Some("mock".into()))
+            .await
+            .is_err()
+    );
+    assert!(
+        alice
+            .session
+            .set_model(&guild_id, Some("gpt-9".into()))
+            .await
+            .is_err()
+    );
+    let policy = alice
+        .session
+        .set_model(&guild_id, Some("mock".into()))
+        .await
+        .unwrap();
+    assert_eq!(policy.model.as_deref(), Some("mock"));
+    assert_eq!(policy.llm_languages, ["ja-JP", "en-US"]);
+
+    // Bob's session hears of it.
+    bob.until(|session| {
+        session
+            .guild(&guild_id)
+            .filter(|view| view.policy.model.as_deref() == Some("mock"))
+    })
+    .await;
+
+    // Free guilds translate on device: nothing to choose.
+    let free = server(Plan::Free).await;
+    let mut carol = user(&free, "carol", "ja-JP").await;
+    let channel = guild(&mut carol, &mut [], &["ja", "en"], &[]).await;
+    let guild_id = carol.session.channel(&channel).unwrap().guild_id;
+    assert!(carol.session.models(&guild_id).await.unwrap().is_empty());
+}

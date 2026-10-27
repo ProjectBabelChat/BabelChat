@@ -812,6 +812,7 @@ impl public::Guilds for Edge {
                 region_mode: RegionMode::Merged,
                 aliases: Vec::new(),
                 translate_regional_variants: false,
+                model: None,
             })
             .await
             .map_err(convert::translation_error)?;
@@ -929,6 +930,32 @@ impl public::Guilds for Edge {
             .map_err(convert::translation_error)?;
         inner.remember_policy(policy.clone());
         Ok(convert::policy(&policy))
+    }
+
+    async fn get_models(
+        &self,
+        claim: Claim,
+        guild_id: String,
+    ) -> ApiResult<Vec<public::TranslationModel>> {
+        let inner = &self.inner;
+        on_cell!(inner, &guild_id, |cell| cell.check_permission(
+            guild_id.clone(),
+            claim.sub.clone(),
+            Permission::View
+        ))?;
+        let route = inner.route(&guild_id).await?;
+        let models = route
+            .translation
+            .list_models(guild_id.clone())
+            .await
+            .map_err(convert::translation_error)?;
+        Ok(models
+            .into_iter()
+            .map(|model| public::TranslationModel {
+                id: model.id,
+                name: model.name,
+            })
+            .collect())
     }
 
     async fn get_invites(&self, claim: Claim, guild_id: String) -> ApiResult<Vec<public::Invite>> {

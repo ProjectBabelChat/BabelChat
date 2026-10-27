@@ -227,24 +227,38 @@ websocat -H "authorization: Bearer $B" "ws://127.0.0.1:7000/gateway/ws?session_i
 ## Translating with a local model
 
 Any OpenAI-compatible server works: llama.cpp's `llama-server`, vLLM, Ollama,
-LM Studio.
+LM Studio. `deploy/local/llm.sh` serves Hy-MT2 1.8B with llama.cpp (from
+nixpkgs, over Vulkan, so integrated GPUs help; `LLM_DEVICE=cpu` for the
+CPU), downloading the model on first run; `deploy/local/models.toml`
+describes it to the engine. About 3 s per message on an Intel Iris Xe (see
+[Translation Engine](architecture/translation-engine.md#measured-on-a-laptop)).
 
 ```sh
-# 1. a model server, e.g.
-llama-server -m hy-mt2-1.8b-q8_0.gguf --port 8000
+# 1. the model server (127.0.0.1:8001)
+deploy/local/llm.sh
 
-# 2. the reference engine in front of it
-cargo run -p babel-engine -- --backend openai \
-  --base-url http://127.0.0.1:8000/v1 --model hy-mt2 --listen 127.0.0.1:7100
+# 2a. the local cluster translating with it
+BABEL_MODELS=models.toml nix develop -c deploy/local/run.sh --plan paid3
 
-# 3. BabelChat using it
+# 2b. or babel-server, with the reference engine in front of the model
+cargo run -p babel-engine -- --models deploy/local/models.toml --listen 127.0.0.1:7100
 cargo run -p babel-server -- --plan paid3 --engine-url http://127.0.0.1:7100
 ```
 
-`--api-key-env NAME` passes a key from an environment variable;
-`--no-json-mode` turns off `response_format` for servers without it. The
-backend is tested against a fake server; it has not been run against a real
-model yet.
+The models file can list several models, local and hosted (OpenAI,
+Anthropic); owners of paid guilds choose among them in the guild's language
+settings (desktop app) or with `/model` (terminal client). Guilds created
+before switching plans keep theirs; operators change one with
+`babel-admin set-plan <guild> <plan>` (cluster).
+
+To compare models before choosing one:
+
+```sh
+cargo run -p babel-engine --example sample_chat -- --models deploy/local/models.toml
+```
+
+A laptop has 16 GB or so shared by the model, the cluster and the build:
+stop model servers before building the desktop app or the whole workspace.
 
 ## Tests
 
@@ -260,11 +274,11 @@ cargo test -p babel-bergamot -- --ignored   # downloads three models
 |---|---|
 | `babel-lang` | normalization rules, viewer resolution |
 | `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike; standbys replaying a primary from a checkpoint; backups restoring |
-| `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what |
+| `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what (only operators set plans) |
 | `babel-account` | registration and sign-in; names are one mentionable word; tokens verify with the public key only |
 | `babel-directory` | the membership stream, and its trimming |
-| `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; OpenAI-compatible request shape; remote engine over HTTP |
-| `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming |
+| `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; plain prompts sharing their background across targets; models files; requests choosing a model; OpenAI-compatible and Anthropic request shapes (thinking turned off, cache markers); remote engine over HTTP |
+| `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming; spaces choosing a model; one catalog from several engines; a space sticking to one replica until it fails |
 | `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries |
 | `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart; split up over mutual TLS: people on different Edges chatting, a user's devices on two Edges staying in step, guilds moving between cells while people write |

@@ -6,20 +6,17 @@
 //!
 //! BabelChat's Edges and Message Cells call it, and so may other platforms
 //! with a tenant certificate; each tenant only sees its own spaces. It
-//! translates with the cluster's first engine, or an in-process mock when
-//! the cluster file lists none.
+//! translates with every engine of the cluster file (their models together
+//! are what spaces choose from), or an in-process mock when it lists none.
 
 use std::{sync::Arc, time::Duration};
 
 use babel_api_engine::types::Engine;
 use babel_api_translation_cell::types::Plan;
 use babel_common::{Identity, Role};
-use babel_engine::{
-    RemoteEngine,
-    mock::{MockBackend, MockConfig},
-};
+use babel_engine::{RemoteEngine, mock::MockConfig};
 use babel_net::{Node, NodeArgs, StoreArgs, policies};
-use babel_translation_cell::{TABLES, TranslationCell, TranslationCellConfig};
+use babel_translation_cell::{Engines, TABLES, TranslationCell, TranslationCellConfig};
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -55,30 +52,29 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let node = Node::load(&args.node, Role::TranslationCell)?;
 
-    let engine: Arc<dyn Engine> = match node.cluster.engine.first() {
-        Some(service) => {
-            let peer = Identity {
-                role: Role::Engine,
-                name: service.name.clone(),
-            };
-            tracing::info!(engine = %peer, "translating with");
-            Arc::new(RemoteEngine::with_client(
-                service.url.clone(),
-                node.http_client(&peer)?,
-            ))
-        }
-        None => Arc::new(babel_engine::Engine::new(Arc::new(MockBackend::new(
-            MockConfig {
-                latency: Duration::from_millis(args.mock_latency_ms),
-                ..MockConfig::default()
-            },
-        )))),
-    };
+    let mut engines: Vec<Arc<dyn Engine>> = Vec::new();
+    for service in &node.cluster.engine {
+        let peer = Identity {
+            role: Role::Engine,
+            name: service.name.clone(),
+        };
+        tracing::info!(engine = %peer, "translating with");
+        engines.push(Arc::new(RemoteEngine::with_client(
+            service.url.clone(),
+            node.http_client(&peer)?,
+        )));
+    }
+    if engines.is_empty() {
+        engines.push(Arc::new(babel_engine::Engine::mock(MockConfig {
+            latency: Duration::from_millis(args.mock_latency_ms),
+            ..MockConfig::default()
+        })));
+    }
 
     let store = node.open_store(&args.store, TABLES)?;
     let cell = TranslationCell::open(
         store.clone(),
-        engine,
+        Engines::new(engines),
         TranslationCellConfig {
             default_plan: match args.plan {
                 PlanArg::Free => Plan::Free,

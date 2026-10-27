@@ -47,8 +47,8 @@ ingest(message)                                      under the space's lock
 ```
 
 - **N to N.** Each message goes from its source language directly into every
-  LLM language of the space, in one engine call. No pivot through English, so
-  errors do not compound.
+  LLM language of the space, in one engine request. No pivot through
+  English, so errors do not compound.
 - **Free spaces** have no LLM languages: the record is `done` with no
   translations, but the event still carries `source_lang`, so every client
   starts on-device translation from the same detected language.
@@ -92,6 +92,32 @@ then call `put_policy`; the Translation Cell has no notion of roles.
 
 `normalize` and `resolve_viewer` exist for platforms that cannot run
 `babel-lang`; Rust callers normalize locally on a policy snapshot.
+
+Plans are set with `set_plan`, which only operators may call (`babel-admin
+set-plan`; billing later): a tenant cannot raise its own.
+
+## Models and engines
+
+A cell translates with every engine it is given (in a cluster, every
+`[[engine]]` of the cluster file). Each engine lists its models; together
+they are the cell's catalog, refreshed every minute:
+
+```
+engine-0  hy-mt2-1.8b, mock            catalog: hy-mt2-1.8b (default), mock,
+engine-1  claude-haiku-5-5, hy-mt2-1.8b         claude-haiku-5-5
+```
+
+- **Spaces choose a model** in their policy (`model`, from `list_models`);
+  none means the default, the first engine's first model. Free spaces have
+  no model to choose: `list_models` is empty for them.
+- **The choice is resolved when a request is sent**, not stored in jobs as
+  a fixed engine: a model no engine serves any more falls back to the
+  default instead of failing.
+- **Replicas.** Engines serving the same model share its requests by space:
+  a space always starts at the same replica (a stable hash of tenant and
+  space), so its prompt prefix stays in that replica's cache. When it is
+  unavailable the request moves to the next.
+- Digests and window summaries use the space's model too.
 
 ## Events
 

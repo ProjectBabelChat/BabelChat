@@ -2,32 +2,39 @@
 //!
 //! ```sh
 //! # llama-server, vLLM, Ollama ... listening on :8000
-//! babel-engine --backend openai --base-url http://127.0.0.1:8000/v1 --model hy-mt2
+//! babel-engine --backend openai --base-url http://127.0.0.1:8000/v1 --model hy-mt2 --style plain
 //! babel-server --engine-url http://127.0.0.1:7100
+//! ```
+//!
+//! Several models, local and hosted, from a models file (see
+//! `babel_engine::config`):
+//!
+//! ```sh
+//! babel-engine --models models.toml
 //! ```
 //!
 //! In a split deployment, `--name` makes it a service of the cluster: it
 //! serves over mutual TLS, to Translation Cells only.
 //!
 //! ```sh
-//! babel-engine --cluster cluster.toml --name engine-0 --backend openai ...
+//! babel-engine --cluster cluster.toml --name engine-0 --models models.toml
 //! ```
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::path::PathBuf;
 
 use babel_common::Role;
 use babel_engine::{
-    Backend, Engine,
-    mock::{MockBackend, MockConfig},
-    openai::{OpenAiCompatBackend, OpenAiCompatConfig},
+    Engine,
+    config::{self, BackendKind, ModelConfig},
+    prompt::PromptStyle,
 };
 use babel_net::{Node, NodeArgs, policies};
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, ValueEnum)]
-enum BackendKind {
-    Mock,
-    Openai,
+enum Style {
+    Json,
+    Plain,
 }
 
 #[derive(Parser)]
@@ -42,24 +49,50 @@ struct Args {
     /// This engine's name in the cluster file: serve over mutual TLS.
     #[arg(long, env = "BABEL_NAME")]
     name: Option<String>,
+    /// The models to serve. Without it, one model from the options below.
+    #[arg(long, env = "BABEL_MODELS", conflicts_with_all = ["backend", "base_url", "model", "api_key_env", "no_json_mode", "style"])]
+    models: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "mock")]
     backend: BackendKind,
     /// OpenAI-compatible base URL, including `/v1`.
     #[arg(long, default_value = "http://127.0.0.1:8000/v1")]
     base_url: String,
-    #[arg(long, default_value = "default")]
-    model: String,
+    /// The model's name at the server, also its ID.
+    #[arg(long)]
+    model: Option<String>,
     /// Environment variable holding the API key, if the server needs one.
     #[arg(long)]
     api_key_env: Option<String>,
     /// Do not request `response_format: json_object`.
     #[arg(long)]
     no_json_mode: bool,
-    /// Reach the model server through the egress proxy (`babel-egress`),
-    /// e.g. `http://10.8.0.9:3128`. Use it for model servers on the
-    /// internet, not for one on this machine.
+    /// `plain` for translation models such as Hy-MT2.
+    #[arg(long, value_enum, default_value = "json")]
+    style: Style,
+    /// Reach models on the internet through the egress proxy
+    /// (`babel-egress`), e.g. `http://10.8.0.9:3128`.
     #[arg(long, env = "BABEL_EGRESS_PROXY")]
     egress_proxy: Option<String>,
+}
+
+/// The single model the command-line options describe.
+fn model_from_args(args: &Args) -> ModelConfig {
+    let id = args.model.clone().unwrap_or_else(|| match args.backend {
+        BackendKind::Mock => "mock".into(),
+        _ => "default".into(),
+    });
+    let mut model = ModelConfig::new(id, args.backend);
+    model.base_url = Some(args.base_url.clone());
+    model.api_key_env = args.api_key_env.clone();
+    model.json_mode = !args.no_json_mode;
+    model.style = match args.style {
+        Style::Json => PromptStyle::Json,
+        Style::Plain => PromptStyle::Plain,
+    };
+    // A single model given on the command line is the one the operator
+    // pointed at; let `--egress-proxy` decide.
+    model.egress = Some(args.egress_proxy.is_some());
+    model
 }
 
 #[tokio::main]
@@ -67,23 +100,18 @@ async fn main() -> anyhow::Result<()> {
     babel_net::init_tracing();
     let args = Args::parse();
 
-    let backend: Arc<dyn Backend> = match args.backend {
-        BackendKind::Mock => Arc::new(MockBackend::new(MockConfig::default())),
-        BackendKind::Openai => Arc::new(OpenAiCompatBackend::new(OpenAiCompatConfig {
-            base_url: args.base_url,
-            api_key: args
-                .api_key_env
-                .map(std::env::var)
-                .transpose()
-                .map_err(|_| anyhow::anyhow!("API key variable is not set"))?,
-            model: args.model,
-            json_mode: !args.no_json_mode,
-            timeout: Duration::from_secs(60),
-            proxy: args.egress_proxy,
-        })?),
+    let configs = match &args.models {
+        Some(path) => config::load(path)?,
+        None => vec![model_from_args(&args)],
     };
-    tracing::info!(backend = ?backend.info(), "engine");
-    let engine = Engine::new(backend);
+    let models = configs
+        .iter()
+        .map(|model| model.build(args.egress_proxy.as_deref()))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for model in &models {
+        tracing::info!(id = %model.id, backend = model.backend.kind(), "serving model");
+    }
+    let engine = Engine::new(models);
 
     match args.name {
         Some(name) => {

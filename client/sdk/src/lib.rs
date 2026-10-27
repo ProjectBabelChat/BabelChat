@@ -38,7 +38,8 @@ pub use api::{Client, Error, Result};
 pub use babel_api_edge_client::types::{
     ApiError, Ban, Channel, ChannelKind, ChannelNotify, GuildView, Invite, LanguageAlias,
     LanguagePolicy, LanguagePolicyUpdate, LanguageView, Member, Message, MessageTranslation,
-    NotificationSettings, NotifyLevel, ReadState, RegionMode, Token, Translation, UserSettings,
+    NotificationSettings, NotifyLevel, ReadState, RegionMode, Token, Translation, TranslationModel,
+    UserSettings,
 };
 pub use device::{DeviceError, DeviceTranslator, MockDeviceTranslator};
 pub use display::{Display, Shown};

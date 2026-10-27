@@ -133,6 +133,9 @@ pub struct LanguagePolicy {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    /// What the LLM translates with, one of `get_models`. Null: the
+    /// default model.
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -237,6 +240,14 @@ pub struct LanguagePolicyUpdate {
     pub region_mode: RegionMode,
     pub aliases: Vec<LanguageAlias>,
     pub translate_regional_variants: bool,
+    pub model: Option<String>,
+}
+
+/// A model a guild can translate with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct TranslationModel {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -640,6 +651,26 @@ impl Guilds {
         request = request.bearer_auth(__token.into());
         request = request.header("Accept", "application/json");
         request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Models the guild may translate with; the first is the default.
+    pub async fn get_models(&self, __token: impl Into<String>, guild_id: String) -> Result<Vec<TranslationModel>, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.get(format!("{}/guilds/get_models", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap())]);
+        request = request.header("Accept", "application/json");
         let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
 
         match response.error_for_status_ref() {

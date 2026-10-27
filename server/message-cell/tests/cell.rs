@@ -12,7 +12,7 @@ use babel_api_message_cell::types::{
     ReadState,
 };
 use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
-use babel_engine::mock::{MockBackend, MockConfig};
+use babel_engine::mock::MockConfig;
 use babel_message_cell::MessageCell;
 use babel_store::{KvStore, MemStore};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
@@ -81,12 +81,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    let engine = Arc::new(babel_engine::Engine::new(Arc::new(MockBackend::new(
-        MockConfig {
-            latency: Duration::ZERO,
-            ..MockConfig::default()
-        },
-    ))));
+    let engine = Arc::new(babel_engine::Engine::mock(MockConfig {
+        latency: Duration::ZERO,
+        ..MockConfig::default()
+    }));
     let translation = TranslationCell::open(
         Arc::new(MemStore::new()),
         engine,

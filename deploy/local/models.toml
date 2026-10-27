@@ -1,0 +1,42 @@
+# Models for engine-0 of the local cluster: `BABEL_MODELS=models.toml run.sh`.
+# The first is the default; owners of paid guilds choose among them.
+# See server/engine/src/config.rs for every field.
+
+# Hy-MT2 1.8B, a translation model, served by llama.cpp: start it with
+# `llm.sh` first. About 3 s per message on an Intel iGPU.
+[[model]]
+id = "hy-mt2-1.8b"
+name = "Hy-MT2 1.8B (local)"
+backend = "openai"
+base_url = "http://127.0.0.1:8001/v1"
+style = "plain"
+[model.extra]
+# Tencent's recommended sampling for the 1.8B and 7B models.
+temperature = 0.7
+top_p = 0.6
+top_k = 20
+repeat_penalty = 1.05
+
+# Fake translations ("[ja-JP] original"), for trying model choice.
+[[model]]
+id = "mock"
+name = "Mock"
+backend = "mock"
+
+# A hosted model, reached through the egress proxy (run.sh starts one on
+# 127.0.0.1:3128; pass `--egress-proxy` through BABEL_EGRESS_PROXY):
+#
+# [[model]]
+# id = "claude-haiku-5-5"
+# name = "Claude Haiku 5.5"
+# backend = "anthropic"
+# api_key_env = "ANTHROPIC_API_KEY"
+# effort = "low"
+#
+# [[model]]
+# id = "gpt"
+# backend = "openai"
+# base_url = "https://api.openai.com/v1"
+# model = "<model name>"
+# api_key_env = "OPENAI_API_KEY"
+# max_completion_tokens = true

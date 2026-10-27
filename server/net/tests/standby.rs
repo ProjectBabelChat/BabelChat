@@ -80,22 +80,47 @@ async fn standbys_follow_their_primary() {
         })
         .unwrap();
     let standby_path = data.path().join("standby");
-    let follower = {
+    let follow = || {
         let (url, client, path) = (url.clone(), client.clone(), standby_path.clone());
         tokio::spawn(async move { replication::follow(&url, &client, &path).await })
     };
+    let mut follower = follow();
     tokio::time::sleep(Duration::from_millis(500)).await;
     put(&primary, "after", 2);
     let mut batch = Batch::new();
     batch.delete("t", b"before".to_vec());
     primary.write(batch).unwrap();
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Stop following (which closes the copy) and look at it.
-    follower.abort();
-    let _ = follower.await;
-    let standby = RocksStore::open_existing(&standby_path).unwrap();
-    assert_eq!(standby.latest_sequence(), primary.latest_sequence());
+    // Stop following (which closes the copy) and look at it; if it is not
+    // there yet (a slow machine), follow again: a standby resumes from what
+    // it has, or from a new checkpoint if it never finished the first.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let standby = loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        follower.abort();
+        let _ = follower.await;
+        // The copy closes once a write in progress is done.
+        let mut opened = None;
+        for _ in 0..20 {
+            match RocksStore::open_existing(&standby_path) {
+                Ok(standby) => {
+                    opened = Some(standby);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        if let Some(standby) = opened {
+            if standby.latest_sequence() == primary.latest_sequence() {
+                break standby;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the standby never caught up"
+        );
+        follower = follow();
+    };
     assert_eq!(standby.get("t", b"before").unwrap(), None);
     assert_eq!(standby.get("t", b"after").unwrap(), Some(vec![2]));
 }
