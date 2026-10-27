@@ -76,6 +76,17 @@ impl<T: ReceiveData> DataOffer<T> {
         self.mime_types.iter().any(|t| t == mime_type)
     }
 
+    /// The text type to read from a drag that carries text and no files.
+    pub(crate) fn dragged_text_mime_type(&self) -> Option<&str> {
+        if self.has_mime_type(FILE_LIST_MIME_TYPE) {
+            return None;
+        }
+        ALLOWED_TEXT_MIME_TYPES
+            .iter()
+            .copied()
+            .find(|allowed| self.has_mime_type(allowed))
+    }
+
     fn read_bytes(&self, connection: &Connection, mime_type: &str) -> Option<Vec<u8>> {
         let pipe = Pipe::new().unwrap();
         self.inner.receive_data(mime_type.to_string(), unsafe {

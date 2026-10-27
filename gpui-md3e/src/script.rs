@@ -1,9 +1,10 @@
 //! Scripted input, for checking an app without a person at the keyboard:
 //! `"move 400 300; down; wait 120; shot /tmp/a.png; up"`.
 //!
-//! Commands: `move X Y`, `down`, `up`, `click X Y`, `key <keystroke>` (one
-//! key), `type <text>` (one character at a time), `keydown`/`keyup
-//! <keystroke>`, `scroll <lines>`, `wait <ms>`, `shot <png>` and `quit`.
+//! Commands: `move X Y`, `down`, `up`, `click X Y [count]` (count 2 is a
+//! double click), `key <keystroke>` (one key), `type <text>` (one character
+//! at a time), `keydown`/`keyup <keystroke>`, `scroll <lines>`, `wait <ms>`,
+//! `shot <png>` and `quit`.
 //!
 //! Events are dispatched straight into the window, so nothing reaches other
 //! applications. `shot` runs `grim` to capture the screen, limited to
@@ -23,7 +24,7 @@ enum Command {
     Move(Point<gpui::Pixels>),
     Down,
     Up,
-    Click(Point<gpui::Pixels>),
+    Click(Point<gpui::Pixels>, usize),
     Key(Keystroke),
     Type(String),
     KeyDown(Keystroke),
@@ -51,7 +52,10 @@ fn parse(script: &str) -> Vec<Command> {
                 "move" => Command::Move(point(px(number()?), px(number()?))),
                 "down" => Command::Down,
                 "up" => Command::Up,
-                "click" => Command::Click(point(px(number()?), px(number()?))),
+                "click" => {
+                    let at = point(px(number()?), px(number()?));
+                    Command::Click(at, number().map_or(1, |count| count as usize))
+                }
                 "key" => Command::Key(keystroke(line)?),
                 "type" => Command::Type(line.split_once(' ')?.1.to_owned()),
                 "keydown" => Command::KeyDown(keystroke(line)?),
@@ -116,7 +120,7 @@ pub fn run(script: &str, window: AnyWindowHandle, cx: &mut App) {
                         click_count: 1,
                     }))
                 }
-                Command::Click(to) => {
+                Command::Click(to, count) => {
                     position = to;
                     let modifiers = Modifiers::default();
                     for event in [
@@ -129,7 +133,7 @@ pub fn run(script: &str, window: AnyWindowHandle, cx: &mut App) {
                             button: MouseButton::Left,
                             position,
                             modifiers,
-                            click_count: 1,
+                            click_count: count,
                             first_mouse: false,
                         }),
                     ] {
@@ -142,7 +146,7 @@ pub fn run(script: &str, window: AnyWindowHandle, cx: &mut App) {
                         button: MouseButton::Left,
                         position,
                         modifiers,
-                        click_count: 1,
+                        click_count: count,
                     }))
                 }
                 Command::Key(keystroke) => {

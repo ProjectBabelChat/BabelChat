@@ -8,6 +8,7 @@ mod loading_indicator;
 mod navigation_rail;
 mod pressable;
 mod progress;
+mod selectable_text;
 mod selection;
 mod shape_view;
 mod slider;
@@ -25,6 +26,9 @@ pub use loading_indicator::*;
 pub use navigation_rail::*;
 pub use pressable::SurfaceColors;
 pub use progress::*;
+pub use selectable_text::{
+    CopySelection, DragPreview, DraggedText, SelectableText, clear_selection, selected_text,
+};
 pub use selection::*;
 pub use shape_view::*;
 pub use slider::*;
@@ -35,4 +39,5 @@ pub use text_field::{TextField, TextFieldStyle};
 /// Installs key bindings used by gpui-md3e components.
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     text_field::bind_keys(cx);
+    selectable_text::bind_keys(cx);
 }

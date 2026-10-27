@@ -1,6 +1,6 @@
 use crate::{
     BackGestureEvent, Bounds, Capslock, Context, Empty, IntoElement, Keystroke, LongPressEvent,
-    Modifiers, Pixels, Point, Render, TouchDragEvent, Window, point, seal::Sealed,
+    Modifiers, Pixels, Point, Render, SharedString, TouchDragEvent, Window, point, seal::Sealed,
 };
 use smallvec::SmallVec;
 use std::{any::Any, fmt::Debug, ops::Deref, path::PathBuf};
@@ -727,6 +727,8 @@ impl ExternalPaths {
 pub enum ExternalDragPayload {
     /// Real on-disk paths, handed to the platform as an outbound file drag.
     Files(FileDragPaths),
+    /// Plain text, offered to other applications as UTF-8.
+    Text(SharedString),
 }
 
 /// Paths handed to the platform for a native file drag. Directory metadata is
@@ -753,6 +755,24 @@ impl Render for ExternalPaths {
     }
 }
 
+/// Text dragged in from another application, dropped like any dragged value.
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ExternalText(pub SharedString);
+
+impl ExternalText {
+    /// The dragged text.
+    pub fn text(&self) -> &SharedString {
+        &self.0
+    }
+}
+
+impl Render for ExternalText {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // the platform draws the drag
+        Empty
+    }
+}
+
 /// A file drop event from the platform, generated when files are dragged and dropped onto the window.
 #[derive(Debug, Clone)]
 pub enum FileDropEvent {
@@ -762,6 +782,13 @@ pub enum FileDropEvent {
         position: Point<Pixels>,
         /// The paths of the files that are being dragged.
         paths: ExternalPaths,
+    },
+    /// Text from another application has entered the window.
+    TextEntered {
+        /// The position of the mouse relative to the window.
+        position: Point<Pixels>,
+        /// The text being dragged.
+        text: ExternalText,
     },
     /// The files are being dragged over the window
     Pending {

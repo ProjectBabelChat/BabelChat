@@ -315,14 +315,20 @@ impl ChatView {
             div()
                 .md_type(TypeRole::BodyLarge, cx)
                 .text_color(colors.on_surface)
-                .child(body),
+                .child(SelectableText::new(
+                    SharedString::from(format!("message-text-{id}")),
+                    body,
+                )),
         );
         if settings.show_original && chat.display.is_translated() && !show_original {
             content = content.child(
                 div()
                     .md_type(TypeRole::BodySmall, cx)
                     .text_color(colors.on_surface_variant)
-                    .child(message.text.clone()),
+                    .child(SelectableText::new(
+                        SharedString::from(format!("message-original-{id}")),
+                        message.text.clone(),
+                    )),
             );
         }
         if let Some(meta) = self.translation_meta(&chat, show_original, cx) {

@@ -1,10 +1,10 @@
 use crate::{
     AnyWindowHandle, Bounds, DevicePixels, DispatchEventResult, DisplayId, GpuSpecs, HeadlessAtlas,
     Pixels, PlatformAtlas, PlatformDisplay, PlatformHeadlessRenderer, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene, Size,
-    TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets, WindowParams,
-    WindowVisibility,
+    PlatformInputHandler, PlatformWindow, Point, PromptButton, RequestFrameOptions, Scene,
+    SharedString, Size, TestDisplay, TestPlatform, TextInputConfiguration, TextInputStateChange,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowInsets,
+    WindowParams, WindowVisibility,
 };
 use gpui_util::ResultExt as _;
 #[cfg(any(test, feature = "test-support"))]
@@ -57,6 +57,7 @@ pub(crate) struct TestWindowState {
     scale_factor: f32,
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
+    external_drag_text: Vec<SharedString>,
     start_external_drag_result: bool,
 }
 
@@ -132,6 +133,7 @@ impl TestWindow {
             scale_factor: 2.0,
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
+            external_drag_text: Vec::new(),
             start_external_drag_result: false,
         })))
     }
@@ -298,6 +300,11 @@ impl TestWindow {
 
     pub fn external_drag_files(&self) -> Vec<(PathBuf, bool)> {
         self.0.lock().external_drag_files.clone()
+    }
+
+    /// Text handed to the platform by external drags.
+    pub fn external_drag_text(&self) -> Vec<SharedString> {
+        self.0.lock().external_drag_text.clone()
     }
 
     pub fn set_start_external_drag_result(&self, result: bool) {
@@ -598,6 +605,9 @@ impl PlatformWindow for TestWindow {
         match payload {
             crate::ExternalDragPayload::Files(paths) => {
                 state.external_drag_files.extend_from_slice(paths.entries());
+            }
+            crate::ExternalDragPayload::Text(text) => {
+                state.external_drag_text.push(text.clone());
             }
         }
         state.start_external_drag_result

@@ -75,6 +75,24 @@ server or this device translated it; "Show original" swaps the text in
 place. With the "also show the original" setting, the original is printed
 in small type under every translation.
 
+## Selecting, copying and dragging text
+
+Message text is `gpui_md3e::SelectableText`: drag to select (across wrapped
+lines), double-click for a word, triple-click for the whole message,
+Ctrl+C to copy. A selection can be dragged into the composer or any other
+text field, which inserts it where it is dropped; text dragged inside a
+field moves. One selection exists at a time, as on a web page; pressing
+anywhere else drops it. Copy works with the composer focused too: a field
+with nothing selected copies the message selection instead.
+
+Text travels between applications too. A text drag that leaves the window
+becomes a native drag (on Wayland, `wl_data_device` offering
+`text/plain;charset=utf-8`), and text dragged in from another program is
+accepted by the text fields. Text always leaves as a copy. Dragging back
+into the window it started from continues the original in-app drag, so a
+move inside one field stays a move. Native text drags are implemented for
+Wayland; on X11, Windows and macOS text drags stay inside the app.
+
 ## Reading and notifications
 
 The open channel is the session's focus only while the window is active:
@@ -121,4 +139,6 @@ screen in its own pixels, so convert with the window's origin and scale
 - The ban list and unbanning, and listing or revoking invites, from the
   UI (the SDK and `babel` have them).
 - Keyboard navigation between channels and guilds.
+- Selecting across several messages at once.
+- Native text drags on X11, Windows and macOS.
 - A tray icon and an unread count on the app icon.

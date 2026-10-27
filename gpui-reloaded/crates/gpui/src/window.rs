@@ -5731,6 +5731,26 @@ impl Window {
                         modifiers: Modifiers::default(),
                     })
                 }
+                FileDropEvent::TextEntered { position, text } => {
+                    self.mouse_position = position;
+                    let source_window = self.handle.window_id();
+                    // A drag of this window's own that left and came back
+                    // carries its original value, not the platform's text.
+                    if !cx.restore_platform_drag(source_window) && cx.active_drag.is_none() {
+                        cx.active_drag = Some(AnyDrag {
+                            value: Arc::new(text.clone()),
+                            view: cx.new(|_| text).into(),
+                            cursor_offset: position,
+                            cursor_style: None,
+                            external_payload_source: None,
+                        });
+                    }
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::default(),
+                    })
+                }
                 FileDropEvent::Pending { position } => {
                     self.mouse_position = position;
                     PlatformInput::MouseMove(MouseMoveEvent {

@@ -2211,7 +2211,11 @@ impl PlatformWindow for MacWindow {
     }
 
     fn start_external_drag(&self, payload: &ExternalDragPayload) -> bool {
-        let ExternalDragPayload::Files(paths) = payload;
+        let ExternalDragPayload::Files(paths) = payload else {
+            // Only files leave the window on macOS so far; other drags stay
+            // inside it.
+            return false;
+        };
         if paths.entries().is_empty() {
             log::warn!("start_external_drag declined: no paths");
             return false;

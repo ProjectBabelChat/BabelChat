@@ -492,6 +492,42 @@ where
         position: Point<Pixels>,
         paths: gpui::ExternalPaths,
     ) -> Option<(Window, PlatformInput)> {
+        self.complete_read(
+            generation,
+            data_offer,
+            window,
+            position,
+            FileDropEvent::Entered { position, paths },
+        )
+    }
+
+    fn complete_text_read(
+        &mut self,
+        generation: u64,
+        data_offer: DataOffer,
+        window: Window,
+        position: Point<Pixels>,
+        text: gpui::ExternalText,
+    ) -> Option<(Window, PlatformInput)> {
+        self.complete_read(
+            generation,
+            data_offer,
+            window,
+            position,
+            FileDropEvent::TextEntered { position, text },
+        )
+    }
+
+    /// Enters the drag once its offer was read, unless it left or dropped
+    /// while the read was in flight.
+    fn complete_read(
+        &mut self,
+        generation: u64,
+        data_offer: DataOffer,
+        window: Window,
+        position: Point<Pixels>,
+        entered: FileDropEvent,
+    ) -> Option<(Window, PlatformInput)> {
         if !self.is_uri_read_current(generation) {
             data_offer.destroy();
             return None;
@@ -500,10 +536,7 @@ where
         self.data_offer = Some(data_offer);
         self.window = Some(window.clone());
         self.position = position;
-        Some((
-            window,
-            PlatformInput::FileDrop(FileDropEvent::Entered { position, paths }),
-        ))
+        Some((window, PlatformInput::FileDrop(entered)))
     }
 }
 
@@ -676,22 +709,39 @@ impl WaylandClientStatePtr {
             return false;
         };
 
-        let ExternalDragPayload::Files(paths) = payload;
-        let uri_list = file_uri_list(paths);
-        if uri_list.is_empty() {
-            return false;
-        }
+        let (mime_types, actions, bytes): (&[&str], _, _) = match payload {
+            ExternalDragPayload::Files(paths) => {
+                let uri_list = file_uri_list(paths);
+                if uri_list.is_empty() {
+                    return false;
+                }
+                (
+                    &[FILE_LIST_MIME_TYPE],
+                    DndAction::Copy | DndAction::Move,
+                    uri_list.into_bytes(),
+                )
+            }
+            // Text is only ever copied out: the drag's source keeps it.
+            ExternalDragPayload::Text(text) => {
+                if text.is_empty() {
+                    return false;
+                }
+                (&TEXT_MIME_TYPES, DndAction::Copy, text.as_bytes().to_vec())
+            }
+        };
 
         let serial = state.serial_tracker.get(SerialKind::MousePress);
         let source =
             data_device_manager.create_data_source(&state.globals.qh, DataSourceKind::Drag);
-        source.offer(FILE_LIST_MIME_TYPE.to_string());
-        source.set_actions(DndAction::Copy | DndAction::Move);
+        for mime_type in mime_types {
+            source.offer(mime_type.to_string());
+        }
+        source.set_actions(actions);
         data_device.start_drag(Some(&source), surface, None, serial.as_raw());
 
         state.external_drag = Some(ExternalDrag {
             source,
-            bytes: uri_list.into_bytes(),
+            bytes,
             window,
         });
         true
@@ -2896,6 +2946,68 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
                     let Some(drag_window) = get_window(&mut state, &surface.id()) else {
                         return;
                     };
+                    let text_mime_type = state
+                        .data_offers
+                        .iter()
+                        .find(|offer| offer.inner.id() == data_offer.id())
+                        .and_then(|offer| offer.dragged_text_mime_type())
+                        .map(str::to_string);
+                    if let Some(mime_type) = text_mime_type {
+                        // Text from another application: read it, then let
+                        // the window treat it as a drag of `ExternalText`.
+                        let read_generation = state.drag.begin_uri_read();
+                        data_offer.set_actions(DndAction::Copy, DndAction::Copy);
+                        data_offer.accept(serial, Some(mime_type.clone()));
+                        let pipe = Pipe::new().unwrap();
+                        data_offer.receive(mime_type, unsafe {
+                            BorrowedFd::borrow_raw(pipe.write.as_raw_fd())
+                        });
+                        let fd = pipe.read;
+                        drop(pipe.write);
+
+                        let read_task = state.common.borrow().background_executor.spawn(async {
+                            let buffer = read_fd_with_timeout(fd, PIPE_READ_TIMEOUT)?;
+                            anyhow::Ok(String::from_utf8(buffer)?.replace("\r\n", "\n"))
+                        });
+                        let this = this.clone();
+                        state
+                            .common
+                            .borrow()
+                            .foreground_executor
+                            .clone()
+                            .spawn(async move {
+                                let text = match read_task.await {
+                                    Ok(text) if !text.is_empty() => text,
+                                    Ok(_) => {
+                                        data_offer.destroy();
+                                        return;
+                                    }
+                                    Err(err) => {
+                                        log::error!("error reading dragged text: {err:?}");
+                                        data_offer.destroy();
+                                        return;
+                                    }
+                                };
+                                let Some(client) = this.0.upgrade() else {
+                                    data_offer.destroy();
+                                    return;
+                                };
+                                let mut state = client.borrow_mut();
+                                let input = state.drag.complete_text_read(
+                                    read_generation,
+                                    data_offer,
+                                    drag_window,
+                                    Point::new(x.into(), y.into()),
+                                    gpui::ExternalText(text.into()),
+                                );
+                                drop(state);
+                                if let Some((drag_window, input)) = input {
+                                    drag_window.handle_input(input);
+                                }
+                            })
+                            .detach();
+                        return;
+                    }
                     let uri_read_generation = state.drag.begin_uri_read();
 
                     const ACTIONS: DndAction = DndAction::Copy;
@@ -3297,6 +3409,47 @@ mod tests {
         if let Some((window, PlatformInput::FileDrop(FileDropEvent::Entered { .. }))) = input {
             entered_windows.push(window);
         }
+    }
+
+    #[test]
+    fn dragged_text_enters_as_text() {
+        let mut drag = drag_state();
+        let data_offer = FakeDataOffer::new("A");
+        let generation = drag.begin_uri_read();
+        let input = drag.complete_text_read(
+            generation,
+            data_offer.clone(),
+            "window A",
+            Point::default(),
+            gpui::ExternalText("hello".into()),
+        );
+        let Some(("window A", PlatformInput::FileDrop(FileDropEvent::TextEntered { text, .. }))) =
+            input
+        else {
+            panic!("expected the text to enter window A, got {input:?}");
+        };
+        assert_eq!(text.text(), "hello");
+        assert!(!data_offer.destroyed.get());
+
+        drag.handle_drop();
+        assert!(data_offer.finished.get());
+    }
+
+    #[test]
+    fn leave_discards_pending_drag_text_read() {
+        let mut drag = drag_state();
+        let data_offer = FakeDataOffer::new("A");
+        let generation = drag.begin_uri_read();
+        drag.handle_leave();
+        let input = drag.complete_text_read(
+            generation,
+            data_offer.clone(),
+            "window A",
+            Point::default(),
+            gpui::ExternalText("late".into()),
+        );
+        assert!(input.is_none());
+        assert!(data_offer.destroyed.get());
     }
 
     #[test]

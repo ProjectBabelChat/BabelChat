@@ -8,13 +8,15 @@ use std::{ops::Range, rc::Rc, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, InteractiveElement,
-    IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Point, Render, ShapedLine, SharedString, Style, Styled as _, Task,
-    TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, px, relative, size,
+    Entity, EntityInputHandler, ExternalText, FocusHandle, Focusable, Font, GlobalElementId, Hsla,
+    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ShapedLine,
+    SharedString, StatefulInteractiveElement as _, Style, Styled as _, Task, TextRun,
+    UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
+use super::DraggedText;
 use crate::{
     ActiveTheme as _, Icon, StyledExt as _, icon,
     motion::{MotionToken, animate},
@@ -113,6 +115,8 @@ pub struct TextField {
     marked_range: Option<Range<usize>>,
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    /// The font and size the line was last shaped with.
+    last_font: Option<(Font, Pixels)>,
     is_selecting: bool,
     cursor_visible: bool,
     /// Whether the field was focused at the last render; the caret only
@@ -155,6 +159,7 @@ impl TextField {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_font: None,
             is_selecting: false,
             cursor_visible: true,
             was_focused: false,
@@ -325,13 +330,113 @@ impl TextField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.is_selecting = true;
+        super::clear_selection(cx);
         window.focus(&self.focus_handle, cx);
-        if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), window, cx);
-        } else {
-            self.move_to(self.index_for_mouse_position(event.position), window, cx)
+        let ix = self.index_for_mouse_position(event.position);
+        match event.click_count {
+            2 => {
+                let word = self.word_at(ix);
+                self.move_to(word.start, window, cx);
+                self.select_to(word.end, window, cx);
+            }
+            n if n >= 3 => {
+                self.move_to(0, window, cx);
+                self.select_to(self.content.len(), window, cx);
+            }
+            _ if event.modifiers.shift => {
+                self.is_selecting = true;
+                self.select_to(ix, window, cx);
+            }
+            // A press on the selection may start dragging it; the drag
+            // handle over the selection takes care of that.
+            _ if self.drag_handle().is_some()
+                && self.selected_range.start < ix
+                && ix < self.selected_range.end => {}
+            _ => {
+                self.is_selecting = true;
+                self.move_to(ix, window, cx)
+            }
         }
+    }
+
+    /// The word (or run of punctuation or space) around `ix`.
+    fn word_at(&self, ix: usize) -> Range<usize> {
+        self.content
+            .split_word_bound_indices()
+            .map(|(start, word)| start..start + word.len())
+            .find(|range| range.contains(&ix))
+            .or_else(|| {
+                self.content
+                    .split_word_bound_indices()
+                    .next_back()
+                    .map(|(start, word)| start..start + word.len())
+            })
+            .unwrap_or(0..0)
+    }
+
+    /// Where the selection can be grabbed and dragged, in the line's
+    /// coordinates (before scrolling): its left and right edges.
+    fn drag_handle(&self) -> Option<(Pixels, Pixels)> {
+        if self.masked || self.selected_range.is_empty() || self.marked_range.is_some() {
+            return None;
+        }
+        let line = self.last_layout.as_ref()?;
+        if line.text != self.content {
+            return None;
+        }
+        Some((
+            line.x_for_index(self.selected_range.start),
+            line.x_for_index(self.selected_range.end),
+        ))
+    }
+
+    /// Inserts dropped text where it was dropped. Text dragged from this
+    /// field moves; text from anywhere else is copied in.
+    fn drop_text(&mut self, dragged: &DraggedText, window: &mut Window, cx: &mut Context<Self>) {
+        let mut ix = self.index_for_mouse_position(window.mouse_position());
+        let text = dragged.text.replace(['\n', '\r'], " ");
+        if let Some((source, range)) = &dragged.source
+            && *source == cx.entity_id()
+        {
+            if ix >= range.start && ix <= range.end {
+                return;
+            }
+            let moved = self.content[range.clone()].to_string();
+            self.content =
+                (self.content[..range.start].to_owned() + &self.content[range.end..]).into();
+            if ix > range.end {
+                ix -= range.len();
+            }
+            self.content = (self.content[..ix].to_owned() + &moved + &self.content[ix..]).into();
+            self.selected_range = ix..ix + moved.len();
+        } else {
+            self.content = (self.content[..ix].to_owned() + &text + &self.content[ix..]).into();
+            self.selected_range = ix..ix + text.len();
+        }
+        self.selection_reversed = false;
+        self.marked_range = None;
+        window.focus(&self.focus_handle, cx);
+        window.notify_text_input_changed(&self.focus_handle);
+        cx.notify();
+    }
+
+    /// The shaped line for the current text: the last painted one, or a new
+    /// one when the text changed since (the platform asks for character
+    /// positions between an edit and the next frame).
+    fn current_line(&self, window: &Window) -> Option<ShapedLine> {
+        let display = self.display_text();
+        if let Some(line) = &self.last_layout
+            && line.text == display
+        {
+            return Some(line.clone());
+        }
+        let (font, size) = self.last_font.clone()?;
+        let run = TextRun {
+            len: display.len(),
+            font,
+            ..Default::default()
+        };
+        Some(window.text_system().shape_line(display, size, &[run], None))
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
@@ -360,6 +465,9 @@ impl TextField {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
+        } else if self.selected_range.is_empty() {
+            // Nothing selected here: copy what is selected on the page.
+            super::selectable_text::copy_selection(cx);
         }
     }
 
@@ -396,12 +504,6 @@ impl TextField {
         else {
             return 0;
         };
-        if position.y < bounds.top() {
-            return 0;
-        }
-        if position.y > bounds.bottom() {
-            return self.content.len();
-        }
         self.content_offset(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x))
     }
 
@@ -613,13 +715,10 @@ impl EntityInputHandler for TextField {
         &mut self,
         range_utf16: Range<usize>,
         bounds: Bounds<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
-        if last_layout.text != self.display_text() {
-            return None;
-        }
+        let last_layout = self.current_line(window)?;
         let range = self.range_from_utf16(&range_utf16);
         let left = bounds.left() - self.scroll_x;
         Some(Bounds::from_corners(
@@ -649,14 +748,11 @@ impl EntityInputHandler for TextField {
     fn character_index_for_point(
         &mut self,
         point: Point<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
-        let last_layout = self.last_layout.as_ref()?;
-        if last_layout.text != self.display_text() {
-            return None;
-        }
+        let last_layout = self.current_line(window)?;
         let index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
         Some(self.offset_to_utf16(self.content_offset(index)))
     }
@@ -688,6 +784,10 @@ impl Render for TextField {
         if focused != self.was_focused {
             self.was_focused = focused;
             self.cursor_visible = true;
+            if focused {
+                // Move the input method's candidate window to this field.
+                window.invalidate_character_coordinates();
+            }
         }
         let has_text = !self.content.is_empty() || self.marked_range.is_some();
         let error = self.error.is_some();
@@ -745,13 +845,14 @@ impl Render for TextField {
             16.0
         };
         let surface = self.surface.unwrap_or(c.surface);
+        let drop_target = c.secondary_container;
 
         let line_style = LineStyle {
             text: body,
             color: c.on_surface,
             placeholder: c.on_surface_variant,
             caret: accent,
-            selection: c.primary.opacity(0.3),
+            selection: c.primary.opacity(0.32),
             show_placeholder: float_t > 0.9,
         };
 
@@ -777,6 +878,12 @@ impl Render for TextField {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_drop(cx.listener(Self::drop_text))
+            .drag_over::<DraggedText>(move |style, _, _, _| style.bg(drop_target))
+            .on_drop(cx.listener(|this, text: &ExternalText, window, cx| {
+                this.drop_text(&DraggedText::new(text.text().clone()), window, cx)
+            }))
+            .drag_over::<ExternalText>(move |style, _, _, _| style.bg(drop_target))
             .relative()
             .w_full()
             .h(px(56.0));
@@ -849,21 +956,47 @@ impl Render for TextField {
             field = field.child(label_el.child(label));
         }
         let trailing_pad = if self.trailing.is_some() { 52.0 } else { 16.0 };
-        field = field.child(
-            div()
-                .absolute()
-                .left(px(leading_pad))
-                .right(px(trailing_pad))
-                .top(px(text_top))
-                .h(body.line_height)
-                .overflow_hidden()
-                .md_type_style(body, cx)
-                .child(TextLine {
-                    field: cx.entity(),
-                    style: line_style,
-                    focused,
-                }),
-        );
+        let mut text_area = div()
+            .absolute()
+            .left(px(leading_pad))
+            .right(px(trailing_pad))
+            .top(px(text_top))
+            .h(body.line_height)
+            .overflow_hidden()
+            .md_type_style(body, cx)
+            .child(TextLine {
+                field: cx.entity(),
+                style: line_style,
+                focused,
+            });
+        if let Some((start_x, end_x)) = self.drag_handle() {
+            // The selection can be dragged out (or elsewhere in the field);
+            // a click on it without a drag places the caret.
+            let range = self.selected_range.clone();
+            let dragged = DraggedText {
+                text: self.content[range.clone()].to_string().into(),
+                source: Some((cx.entity_id(), range)),
+            };
+            text_area = text_area.child(
+                div()
+                    .id("drag-selection")
+                    .absolute()
+                    .top_0()
+                    .h_full()
+                    .left(start_x - self.scroll_x)
+                    .w(end_x - start_x)
+                    .cursor(CursorStyle::Arrow)
+                    .on_drag(dragged, |dragged, _, _, cx| {
+                        super::selectable_text::drag_preview(dragged.text.clone(), cx)
+                    })
+                    .external_drag_payload(super::selectable_text::external_payload)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let ix = this.index_for_mouse_position(window.mouse_position());
+                        this.move_to(ix, window, cx);
+                    })),
+            );
+        }
+        field = field.child(text_area);
 
         let supporting = self.error.clone().or(self.supporting.clone());
         let mut root = div().flex().flex_col().gap_1().w_full().child(field);
@@ -890,6 +1023,7 @@ struct TextLine {
 
 struct LinePrepaint {
     line: Option<ShapedLine>,
+    font: Font,
     caret: Option<gpui::PaintQuad>,
     selection: Option<gpui::PaintQuad>,
     scroll_x: Pixels,
@@ -947,6 +1081,7 @@ impl Element for TextLine {
             .as_ref()
             .map(|marked| field.display_offset(marked.start)..field.display_offset(marked.end));
         let font = cx.md().typography.font(self.style.text);
+        let line_font = font.clone();
 
         let (display, color) = match (&field.placeholder, content.is_empty()) {
             (Some(placeholder), true) if self.style.show_placeholder => {
@@ -1030,6 +1165,7 @@ impl Element for TextLine {
         };
         LinePrepaint {
             line: Some(line),
+            font: line_font,
             caret,
             selection,
             scroll_x,
@@ -1059,6 +1195,8 @@ impl Element for TextLine {
             return;
         };
         let scroll_x = prepaint.scroll_x;
+        let font = prepaint.font.clone();
+        let size = self.style.text.size;
         let _ = line.paint(
             point(bounds.left() - scroll_x, bounds.top()),
             self.style.text.line_height,
@@ -1078,6 +1216,54 @@ impl Element for TextLine {
             field.last_layout = Some(line);
             field.last_bounds = Some(bounds);
             field.scroll_x = scroll_x;
+            field.last_font = Some((font, size));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        Bounds, EntityInputHandler as _, ExternalText, FileDropEvent, TestAppContext, point, px,
+        size,
+    };
+
+    use super::TextField;
+    use crate::theme::SchemeConfig;
+
+    /// Input methods ask where the composition is right after changing it,
+    /// before the next frame; the answer must follow the new text.
+    #[gpui::test]
+    fn composition_is_located_before_the_next_frame(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(SchemeConfig::default(), cx));
+        let (field, cx) = cx.add_window_view(|_, cx| TextField::new(cx));
+        let element = Bounds::new(point(px(100.0), px(50.0)), size(px(400.0), px(24.0)));
+        cx.update(|window, cx| {
+            field.update(cx, |field, cx| {
+                field.replace_and_mark_text_in_range(None, "にほんご", None, window, cx);
+                let start = field.bounds_for_range(0..0, element, window, cx);
+                let end = field.bounds_for_range(4..4, element, window, cx);
+                let (start, end) = (start.expect("start"), end.expect("end"));
+                assert_eq!(start.origin.x, px(100.0));
+                assert!(end.origin.x > start.origin.x);
+                assert_eq!(start.origin.y, px(50.0));
+            });
+        });
+    }
+
+    /// Text dragged in from another application arrives as the platform's
+    /// drop events and lands in the field under the pointer.
+    #[gpui::test]
+    fn text_from_other_applications_drops_in(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(SchemeConfig::default(), cx));
+        let (field, cx) = cx.add_window_view(|_, cx| TextField::new(cx));
+        let position = point(px(40.0), px(28.0));
+        cx.simulate_event(FileDropEvent::TextEntered {
+            position,
+            text: ExternalText("こんにちは".into()),
+        });
+        cx.simulate_event(FileDropEvent::Submit { position });
+        let text = field.read_with(cx, |field, _| field.text().clone());
+        assert_eq!(text, "こんにちは");
     }
 }

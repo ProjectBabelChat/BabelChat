@@ -61,7 +61,8 @@ Apps with their own assets can serve `Md3eAssets::get(path)` from their
 | `Switch`, `Checkbox`, `RadioButton` | handle growth, drawn check mark, springing dot |
 | `Slider` | M3E handle with gap, value bubble, steps and stop indicators |
 | `Chip` | assist, filter (animated check), input, suggestion |
-| `TextField` | filled/outlined, floating label, IME composition, submit, masked (passwords), scrolls to the caret |
+| `TextField` | filled/outlined, floating label, IME composition (the candidate window follows the caret), submit, masked (passwords), scrolls to the caret, double/triple click selects a word/all, drag the selection to move it, accepts dropped text, also from other applications |
+| `SelectableText` | read-only text the reader selects with the mouse (drag, double and triple click), copies (Ctrl+C) and drags into a text field or, on Wayland, into other applications |
 | `NavigationRail` | collapsed ↔ expanded with continuous item reflow |
 | `Card`, `ListItem`, `Toolbar`, `Snackbar` | including segmented (grouped) list items |
 | `ShapeView` | any library shape, morphing on hover |
@@ -76,7 +77,7 @@ MD3E_PAGE=3 MD3E_SCRIPT="move 474 335; down; wait 90; shot /tmp/press.png; up; q
   cargo run -p md3e-gallery
 ```
 
-Commands: `move X Y`, `down`, `up`, `click X Y`, `key <keystroke>`,
+Commands: `move X Y`, `down`, `up`, `click X Y [count]`, `key <keystroke>`,
 `type <text>`, `scroll <lines>`, `wait <ms>`, `shot <png>` (runs `grim`),
 `quit`. Events are dispatched into the gallery window only. The driver is
 `gpui_md3e::script`, so apps built on gpui-md3e can script themselves the
