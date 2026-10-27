@@ -2,7 +2,7 @@
 //!
 //! | Service | Callers |
 //! |---|---|
-//! | Account | Edges |
+//! | Account | Edges; operators (sign-up codes) |
 //! | Directory | Edges (placement, memberships to list and watch); Message Cells (memberships to record); operators (moving guilds, reading placements) |
 //! | Message Cell | Edges; the Directory (creating and moving guilds) |
 //! | Translation Cell | Edges, Message Cells, tenants (other platforms, each in its own spaces); operators (setting plans) |
@@ -15,7 +15,10 @@ use babel_common::Role;
 use crate::Policy;
 
 pub fn account() -> Policy {
-    Policy::roles(&[Role::Edge])
+    Policy::new(|caller, path| match path {
+        "/account/create_signup_code" => caller.role == Role::Admin,
+        _ => caller.role == Role::Edge,
+    })
 }
 
 pub fn directory() -> Policy {
@@ -83,6 +86,15 @@ mod tests {
         assert!(!directory.allows(&caller(Role::Edge), "/directory/move_guild"));
         assert!(!directory.allows(&caller(Role::Admin), "/directory/create_guild"));
         assert!(!directory.allows(&caller(Role::Edge), "/directory/add_membership"));
+    }
+
+    #[test]
+    fn only_operators_make_sign_up_codes() {
+        let account = account();
+        assert!(account.allows(&caller(Role::Edge), "/account/register"));
+        assert!(!account.allows(&caller(Role::Edge), "/account/create_signup_code"));
+        assert!(account.allows(&caller(Role::Admin), "/account/create_signup_code"));
+        assert!(!account.allows(&caller(Role::Admin), "/account/login"));
     }
 
     #[test]

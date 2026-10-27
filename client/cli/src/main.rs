@@ -60,11 +60,21 @@ enum Command {
         /// The language you read, e.g. ja-JP. Defaults to the system's.
         #[arg(long)]
         locale: Option<String>,
+        /// The code the server's operators gave you, if it takes new
+        /// accounts by invitation only.
+        #[arg(long, env = "BABEL_SIGNUP_CODE")]
+        signup_code: Option<String>,
     },
     /// Sign in to an existing account and save the sign-in.
     Login { name: String },
     /// Forget the saved sign-in.
     Logout,
+    /// Change the password of the saved sign-in. Signs your other devices
+    /// out. The current password is read from BABEL_PASSWORD or prompted
+    /// for, the new one from BABEL_NEW_PASSWORD or prompted for.
+    Password,
+    /// Sign out every other device of the saved sign-in.
+    SignoutOthers,
     /// Chat (the default).
     Chat,
 }
@@ -86,11 +96,21 @@ async fn main() -> anyhow::Result<()> {
     let dir = args.config_dir.clone().unwrap_or_else(profile::default_dir);
 
     let (client, name) = match args.command.unwrap_or(Command::Chat) {
-        Command::Register { name, locale } => {
+        Command::Register {
+            name,
+            locale,
+            signup_code,
+        } => {
             let locale = locale.unwrap_or_else(profile::system_locale);
-            let client = Client::register(&args.server, &name, &password(true)?, &locale)
-                .await
-                .context("could not register")?;
+            let client = Client::register(
+                &args.server,
+                &name,
+                &password(true)?,
+                &locale,
+                signup_code.as_deref(),
+            )
+            .await
+            .context("could not register")?;
             (client, name)
         }
         Command::Login { name } => {
@@ -104,6 +124,37 @@ async fn main() -> anyhow::Result<()> {
                 println!("Signed out ({}).", args.profile);
             }
             return Ok(());
+        }
+        command @ (Command::Password | Command::SignoutOthers) => {
+            let Some(saved) = profile::load(&dir, &args.profile)? else {
+                bail!("not signed in: run `babel login <name>` first");
+            };
+            let client = Client::with_token(&saved.server, saved.token)?;
+            if matches!(command, Command::Password) {
+                let current = password(false)?;
+                let new = match std::env::var("BABEL_NEW_PASSWORD") {
+                    Ok(new) => new,
+                    Err(_) => {
+                        let new = rpassword::prompt_password("new password: ")?;
+                        if rpassword::prompt_password("again: ")? != new {
+                            bail!("the passwords differ");
+                        }
+                        new
+                    }
+                };
+                client
+                    .change_password(&current, &new)
+                    .await
+                    .context("could not change the password")?;
+                println!("Password changed; your other devices are signed out.");
+            } else {
+                client
+                    .sign_out_others()
+                    .await
+                    .context("could not sign the other devices out")?;
+                println!("Your other devices are signed out.");
+            }
+            (client, saved.name)
         }
         Command::Chat => {
             let Some(saved) = profile::load(&dir, &args.profile)? else {
@@ -140,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
         &Profile {
             server: client.server().to_string(),
             name: name.clone(),
-            token: client.token().clone(),
+            token: client.token(),
         },
     )?;
     println!(

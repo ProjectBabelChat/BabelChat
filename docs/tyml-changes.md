@@ -108,3 +108,18 @@ No TYML changes. Choosing a model per space needed:
 | A field added to types that are stored (`SpacePolicy.model`, `TranslateRequest.model` in queued jobs) | Optional fields (`model: string?`): records written before read as null, which means "the default model" |
 | An engine listing several models | `EngineInfo { models: [ModelInfo] }`, replacing its two fields; nothing outside the repository calls the Engine API yet |
 | A request naming a model the engine does not serve | One more `EngineError` variant, `unknown_model` |
+
+## Phase 6 (running it for real)
+
+No TYML changes. An open server's account basics needed:
+
+| Need | How |
+|---|---|
+| A sign-up code in registrations | An optional field (`signup_code: string?`) in both `Registration` types: clients that send none still work where sign-ups are open |
+| Changing the password, signing other devices out | Functions returning a new `Token` for the device asking (`change_password`, `sign_out_others`), in the Account API and the Edge's `Me` |
+| Making sign-up codes (operators only) | `create_signup_code`, kept from Edges by the service's policy like other operator functions |
+| Edges refusing revoked tokens without calling the Account service per request | A long-polled stream like the Directory's (`watch_revocations` with `Revocation` and `RevocationBatch`); no `trimmed` field, since revocations only matter while the tokens they revoke would live |
+| Telling clients why a sign-up failed | Two more variants in `AccountError` and the Edge's `ApiError`: `signups_closed`, `invalid_signup_code` |
+
+Health checks are a hand-written route next to the generated ones, like
+replication and the WebSocket gateway.

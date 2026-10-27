@@ -22,6 +22,8 @@ type Registration {
     password: string
     /// BCP 47, e.g. "ja-JP".
     locale: string
+    /// Needed when the server takes new accounts by invitation only.
+    signup_code: string?
 }
 
 type Credentials {
@@ -35,6 +37,11 @@ type Token {
     /// As registered; sign-in ignores case.
     name: string
     expires_at: int
+}
+
+type PasswordChange {
+    password: string
+    new_password: string
 }
 
 type UserSettings {
@@ -346,6 +353,11 @@ enum ApiError {
     "invalid_credentials"
     "rate_limited"
     "unavailable"
+    /// The server takes no new accounts.
+    "signups_closed"
+    /// The server takes new accounts by invitation, and the code is
+    /// missing, expired or used up.
+    "invalid_signup_code"
 }
 
 interface Auth {
@@ -359,6 +371,15 @@ interface Me {
     authed function get_settings(@claim: Claim) -> UserSettings throws ApiError
 
     authed function put_settings(@claim: Claim, @body: UserSettings) -> UserSettings throws ApiError
+
+    /// Signs the user's other devices out, like `sign_out_others`. A wrong
+    /// current password is `invalid_credentials`.
+    authed function change_password(@claim: Claim, @body: PasswordChange) -> Token throws ApiError
+
+    /// Every other token of the user stops working and the user's sessions
+    /// end; the answer is a new token for this device (its own session ends
+    /// too: connect again with the new token).
+    authed function sign_out_others(@claim: Claim) -> Token throws ApiError
 }
 
 interface Guilds {

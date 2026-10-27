@@ -23,6 +23,7 @@ impl Client {
                 name: name.into(),
                 password: "correct horse battery".into(),
                 locale: locale.into(),
+                signup_code: None,
             })
             .await
             .unwrap();
@@ -347,7 +348,7 @@ async fn sdk_sessions_survive_a_server_restart() {
         ..SessionConfig::default()
     };
     let connect = async |name: &str, locale: &str| {
-        Client::register(&url, name, "correct horse battery", locale)
+        Client::register(&url, name, "correct horse battery", locale, None)
             .await
             .unwrap()
             .connect_with(Arc::new(MockDeviceTranslator::default()), config.clone())

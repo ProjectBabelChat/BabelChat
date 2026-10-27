@@ -64,6 +64,13 @@ Passwords are hashed with Argon2. Tokens are signed with Ed25519 (EdDSA) by
 the Account service, which alone holds the private key; Edges verify with
 the public key, so a compromised Edge cannot mint tokens.
 
+| Threat | Countermeasure |
+|---|---|
+| A stolen token, or a device left signed in | The user signs the other devices out (or changes the password): every token issued until then is revoked. Edges follow the Account service's stream of revocations and refuse them at once, still without calling it per request, and end their sessions. A revocation is kept a token lifetime (seven days), after which the tokens it covers have expired anyway |
+| Guessing the current password through `change_password` | It is rate-limited like other writes, per user |
+| Strangers filling an open server | Sign-ups by invitation: codes from operators, with uses and expiry (`--signups invite`), or none at all |
+| An Edge started while the Account service is down | It accepts revoked tokens until it has read the revocations once (it retries every second) |
+
 ## Data handled by the translation side
 
 The engine stores nothing. Translation Cells keep original text only in

@@ -151,6 +151,11 @@ next to it (`<profile>.cache.json`). Every app on the machine shares them:
 a profile signed in from the terminal client opens in the desktop app, and
 the other way round.
 
+A token changes when the user signs the other devices out or changes the
+password (`Client::sign_out_others`, `Client::change_password`): apps save
+the new one. The session carries on with it by itself; a session refused
+while its token was being replaced retries instead of signing out.
+
 ## Unread channels and notifications
 
 The server keeps, per member and channel, a read marker and the number of

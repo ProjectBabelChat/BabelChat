@@ -3,9 +3,10 @@
 use std::{sync::Arc, time::Duration};
 
 use babel_api_edge_client::types::{
-    ApiError, Auth, Credentials, Gateway, Guilds, Me, Messages, Registration, ThrowsOrOtherError,
-    Token,
+    ApiError, Auth, Credentials, Gateway, Guilds, Me, Messages, PasswordChange, Registration,
+    ThrowsOrOtherError, Token,
 };
+use parking_lot::RwLock;
 
 use crate::{DeviceTranslator, Session, SessionConfig};
 
@@ -51,7 +52,14 @@ pub struct Client {
 struct Inner {
     server: String,
     http: reqwest::Client,
-    token: Token,
+    user_id: String,
+    user_name: String,
+    /// Replaced when the user signs other devices out or changes the
+    /// password.
+    token: RwLock<Token>,
+    /// Held while the token is being replaced, so that a session refused
+    /// with the old one waits for the new one instead of signing out.
+    renewing: tokio::sync::Mutex<()>,
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -68,8 +76,16 @@ fn server_url(server: &str) -> String {
 
 impl Client {
     /// Creates an account. `locale` is a BCP 47 tag such as "ja-JP": the
-    /// language this user reads and usually writes.
-    pub async fn register(server: &str, name: &str, password: &str, locale: &str) -> Result<Self> {
+    /// language this user reads and usually writes. Servers that take new
+    /// accounts by invitation only want a `signup_code`
+    /// (`invalid_signup_code` without one).
+    pub async fn register(
+        server: &str,
+        name: &str,
+        password: &str,
+        locale: &str,
+        signup_code: Option<&str>,
+    ) -> Result<Self> {
         let server = server_url(server);
         let http = http()?;
         let token = Auth {
@@ -80,6 +96,10 @@ impl Client {
             name: name.to_string(),
             password: password.to_string(),
             locale: locale.to_string(),
+            signup_code: signup_code
+                .map(str::trim)
+                .filter(|code| !code.is_empty())
+                .map(str::to_string),
         })
         .await?;
         Ok(Self::new(server, http, token))
@@ -110,7 +130,10 @@ impl Client {
             inner: Arc::new(Inner {
                 server,
                 http,
-                token,
+                user_id: token.user_id.clone(),
+                user_name: token.name.clone(),
+                token: RwLock::new(token),
+                renewing: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -119,17 +142,55 @@ impl Client {
         &self.inner.server
     }
 
-    /// Save this to sign in again without a password.
-    pub fn token(&self) -> &Token {
-        &self.inner.token
+    /// Save this to sign in again without a password. It changes when the
+    /// user signs other devices out or changes the password: save it again
+    /// then.
+    pub fn token(&self) -> Token {
+        self.inner.token.read().clone()
     }
 
     pub fn user_id(&self) -> &str {
-        &self.inner.token.user_id
+        &self.inner.user_id
     }
 
     pub fn user_name(&self) -> &str {
-        &self.inner.token.name
+        &self.inner.user_name
+    }
+
+    /// Signs every other device of the user out: their tokens stop working
+    /// and their sessions end. This client carries on with a new token
+    /// (returned, to be saved); its sessions reconnect by themselves.
+    pub async fn sign_out_others(&self) -> Result<Token> {
+        let _renewing = self.inner.renewing.lock().await;
+        let token = self.me().sign_out_others(self.jwt()).await?;
+        *self.inner.token.write() = token.clone();
+        Ok(token)
+    }
+
+    /// Changes the password, which signs the other devices out like
+    /// [`Self::sign_out_others`]. A wrong `password` is
+    /// `Api(InvalidCredentials)`.
+    pub async fn change_password(&self, password: &str, new_password: &str) -> Result<Token> {
+        let _renewing = self.inner.renewing.lock().await;
+        let token = self
+            .me()
+            .change_password(
+                self.jwt(),
+                PasswordChange {
+                    password: password.to_string(),
+                    new_password: new_password.to_string(),
+                },
+            )
+            .await?;
+        *self.inner.token.write() = token.clone();
+        Ok(token)
+    }
+
+    /// After a request was refused with `jwt`: waits for a token being
+    /// replaced, and tells whether there is a newer one to retry with.
+    pub(crate) async fn renewed_since(&self, jwt: &str) -> bool {
+        let _renewing = self.inner.renewing.lock().await;
+        self.jwt() != jwt
     }
 
     /// Opens a live session. `translator` translates on this device when
@@ -147,7 +208,7 @@ impl Client {
     }
 
     pub(crate) fn jwt(&self) -> String {
-        self.inner.token.jwt.clone()
+        self.inner.token.read().jwt.clone()
     }
 
     pub(crate) fn me(&self) -> Me {

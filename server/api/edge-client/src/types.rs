@@ -12,6 +12,8 @@ pub struct Registration {
     pub password: String,
     /// BCP 47, e.g. "ja-JP".
     pub locale: String,
+    /// Needed when the server takes new accounts by invitation only.
+    pub signup_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -45,6 +47,13 @@ pub enum ApiError {
     RateLimited,
     #[serde(rename = "unavailable")]
     Unavailable,
+    /// The server takes no new accounts.
+    #[serde(rename = "signups_closed")]
+    SignupsClosed,
+    /// The server takes new accounts by invitation, and the code is
+    /// missing, expired or used up.
+    #[serde(rename = "invalid_signup_code")]
+    InvalidSignupCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -59,6 +68,12 @@ pub struct UserSettings {
     /// Translate on device even languages a guild does not declare.
     pub translate_outside_set: bool,
     pub show_original: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PasswordChange {
+    pub password: String,
+    pub new_password: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -480,6 +495,48 @@ impl Me {
         request = request.bearer_auth(__token.into());
         request = request.header("Accept", "application/json");
         request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Signs the user's other devices out, like `sign_out_others`. A wrong
+    /// current password is `invalid_credentials`.
+    pub async fn change_password(&self, __token: impl Into<String>, __body: PasswordChange) -> Result<Token, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/me/change_password", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Every other token of the user stops working and the user's sessions
+    /// end; the answer is a new token for this device (its own session ends
+    /// too: connect again with the new token).
+    pub async fn sign_out_others(&self, __token: impl Into<String>) -> Result<Token, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/me/sign_out_others", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.header("Accept", "application/json");
         let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
 
         match response.error_for_status_ref() {

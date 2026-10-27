@@ -160,6 +160,11 @@ chooses what notifies you. Owners `/kick` and `/ban` members; `/leave`,
 offline) do what they say. Each profile keeps a cache next to its sign-in,
 so the next start shows the last messages at once, offline too.
 
+`babel password` changes the password and `babel signout-others` signs the
+profile's other devices out (both keep this one signed in). On a server
+that takes accounts by invitation, `register` needs `--signup-code`
+(`BABEL_SIGNUP_CODE`).
+
 | Option | Environment | Default |
 |---|---|---|
 | `--server` | `BABEL_SERVER` | `http://127.0.0.1:7000` (used by `register` and `login`) |
@@ -170,6 +175,7 @@ so the next start shows the last messages at once, offline too.
 | `--device` | `BABEL_DEVICE` | `bergamot` (real models) or `mock` |
 | `--models-dir` | `BABEL_MODELS_DIR` | `~/.cache/babelchat/models` |
 | password | `BABEL_PASSWORD` | prompted |
+| new password (`babel password`) | `BABEL_NEW_PASSWORD` | prompted |
 
 Without a terminal, input can be piped; the client exits at end of input:
 
@@ -268,21 +274,22 @@ cargo test -p babel-lang -p babel-store -p babel-common -p babel-engine \
   -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli \
   -p babel-bergamot -p babel-desktop -p gpui-md3e -p babel-net
 cargo test -p babel-bergamot -- --ignored   # downloads three models
+nix build .#checks.x86_64-linux.cluster      # the NixOS module, on two VMs
 ```
 
 | Crate | What the tests show |
 |---|---|
 | `babel-lang` | normalization rules, viewer resolution |
 | `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike; standbys replaying a primary from a checkpoint; backups restoring |
-| `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what (only operators set plans) |
-| `babel-account` | registration and sign-in; names are one mentionable word; tokens verify with the public key only |
+| `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what (only operators set plans and make sign-up codes) |
+| `babel-account` | registration and sign-in; names are one mentionable word; tokens verify with the public key only; sign-ups by invitation or closed; signing out other devices and changing the password revoke older tokens, in a stream that survives restarts |
 | `babel-directory` | the membership stream, and its trimming |
 | `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; plain prompts sharing their background across targets; models files; requests choosing a model; OpenAI-compatible and Anthropic request shapes (thinking turned off, cache markers); remote engine over HTTP |
 | `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming; spaces choosing a model; one catalog from several engines; a space sticking to one replica until it fails |
 | `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries |
 | `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart; split up over mutual TLS: people on different Edges chatting, a user's devices on two Edges staying in step, guilds moving between cells while people write |
-| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling |
+| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling; signing the other devices out (they are signed out, this one carries on live) and changing the password |
 | `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
 | `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks |
 | `babel-desktop` | channel order, avatars, the UI's words in both languages; the screens themselves are checked by scripted runs (`BABEL_SCRIPT`) |

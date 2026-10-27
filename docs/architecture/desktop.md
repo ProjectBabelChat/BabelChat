@@ -23,11 +23,11 @@ source of truth, and the app remembers only what is on screen.
 | Module | What |
 |---|---|
 | `app.rs` | The root view: sign-in, connecting, then the chat. Saves and forgets sign-ins. |
-| `sign_in.rs` | Sign in or create an account (server, name, password, the language you read). |
+| `sign_in.rs` | Sign in or create an account (server, name, password, the language you read, a sign-up code on invitation-only servers). |
 | `chat/mod.rs` | The chat screen's state: selection, the message list, composer, toasts; SDK updates and notifications. |
 | `chat/sidebar.rs` | Guild rail with unread dots and mention badges, channel list, user panel, guild menu, member list. |
 | `chat/messages.rs` | Channel header, messages (grouping, replies, mentions, translation line), composer. |
-| `chat/dialogs.rs` | Add a guild (create or join), invite, create a channel, languages, notifications, settings, confirmations. |
+| `chat/dialogs.rs` | Add a guild (create or join), invite, create a channel, languages, notifications, settings, the password, confirmations. |
 | `i18n.rs` | The UI's own words in English and Japanese, and language names. |
 | `runtime.rs` | The Tokio runtime beside GPUI, the app's configuration, SDK errors in words. |
 | `widgets.rs` | Avatars, badges, the dialog frame. |
@@ -40,7 +40,8 @@ the original on request; unread markers and mention counts per channel and
 guild; notification levels per guild and channel; invite people; leave;
 kick and ban (owners); choose the guild's languages and, in paid guilds,
 the model the server translates with (owners); change the language they
-read and their display settings; sign out.
+read and their display settings; change their password; sign their other
+devices out; sign out.
 
 ## Two runtimes
 

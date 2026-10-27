@@ -19,8 +19,9 @@ babel-common.workspace = true
 babel-lang.workspace = true
 babel-net.workspace = true
 babel-store.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 jsonwebtoken.workspace = true
+parking_lot.workspace = true
 rand = { workspace = true, features = ["thread_rng"] }
 ring = "0.17"
 serde = { workspace = true, features = ["derive"] }

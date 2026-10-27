@@ -4,6 +4,8 @@ pub struct Registration {
     pub password: String,
     /// BCP 47, e.g. "ja-JP".
     pub locale: String,
+    /// Needed when the server takes new accounts by invitation only.
+    pub signup_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -37,6 +39,13 @@ pub enum ApiError {
     RateLimited,
     #[serde(rename = "unavailable")]
     Unavailable,
+    /// The server takes no new accounts.
+    #[serde(rename = "signups_closed")]
+    SignupsClosed,
+    /// The server takes new accounts by invitation, and the code is
+    /// missing, expired or used up.
+    #[serde(rename = "invalid_signup_code")]
+    InvalidSignupCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -60,6 +69,12 @@ pub struct UserSettings {
     /// Translate on device even languages a guild does not declare.
     pub translate_outside_set: bool,
     pub show_original: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct PasswordChange {
+    pub password: String,
+    pub new_password: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -442,6 +457,13 @@ pub trait Auth: Send + Sync + 'static {
 pub trait Me: Send + Sync + 'static {
     async fn get_settings(&self, claim: Claim) -> Result<UserSettings, ApiError>;
     async fn put_settings(&self, claim: Claim, body: UserSettings) -> Result<UserSettings, ApiError>;
+    /// Signs the user's other devices out, like `sign_out_others`. A wrong
+    /// current password is `invalid_credentials`.
+    async fn change_password(&self, claim: Claim, body: PasswordChange) -> Result<Token, ApiError>;
+    /// Every other token of the user stops working and the user's sessions
+    /// end; the answer is a new token for this device (its own session ends
+    /// too: connect again with the new token).
+    async fn sign_out_others(&self, claim: Claim) -> Result<Token, ApiError>;
 }
 
 #[async_trait]

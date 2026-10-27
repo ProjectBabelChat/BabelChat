@@ -14,6 +14,8 @@ type Registration {
     password: string
     /// BCP 47, e.g. "ja-JP".
     locale: string
+    /// Needed when sign-ups are by invitation only.
+    signup_code: string?
 }
 
 type Credentials {
@@ -39,6 +41,41 @@ type UserSettings {
     show_original: bool
 }
 
+type PasswordChange {
+    password: string
+    new_password: string
+}
+
+/// Lets people create accounts while sign-ups are by invitation only.
+/// Operators make them (`babel-admin signup-code`).
+type NewSignupCode {
+    /// How many accounts it may create.
+    uses: int
+    /// How long it stays valid.
+    hours: int
+}
+
+type SignupCode {
+    code: string
+    uses_left: int
+    expires_at: int
+}
+
+/// Tokens of `user_id` issued before `not_before` (ms) are no longer valid:
+/// the user signed out their other devices or changed their password.
+type Revocation {
+    user_id: string
+    not_before: int
+    /// Position in the stream of revocations.
+    version: int
+}
+
+type RevocationBatch {
+    revocations: [Revocation]
+    /// Pass as `after` to the next watch.
+    version: int
+}
+
 type User {
     id: string
     name: string
@@ -49,6 +86,11 @@ enum AccountError {
     "invalid_credentials"
     "invalid_request"
     "not_found"
+    /// Sign-ups are closed.
+    "signups_closed"
+    /// Sign-ups are by invitation, and the code is missing, expired or
+    /// used up.
+    "invalid_signup_code"
     /// The Account service could not be reached.
     "unavailable"
 }
@@ -65,4 +107,20 @@ interface Account {
     function get_settings(user_id: string) -> UserSettings throws AccountError
 
     function put_settings(user_id: string, @body: UserSettings) -> UserSettings throws AccountError
+
+    /// Signs the user's other devices out, like `sign_out_others`.
+    function change_password(user_id: string, @body: PasswordChange) -> Token throws AccountError
+
+    /// Revokes every token of the user and returns a new one for the
+    /// device asking.
+    function sign_out_others(user_id: string) -> Token throws AccountError
+
+    /// Operators only.
+    function create_signup_code(@body: NewSignupCode) -> SignupCode throws AccountError
+
+    /// Long poll: revocations after version `after`; from 0, all of those
+    /// that still matter (older ones only concern tokens that have expired).
+    /// Edges follow it and refuse revoked tokens.
+    #[kind = "get"]
+    function watch_revocations(after: int, wait_ms: int) -> RevocationBatch throws AccountError
 }

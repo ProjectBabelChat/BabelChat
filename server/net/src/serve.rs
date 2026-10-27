@@ -39,6 +39,10 @@ impl Policy {
     }
 }
 
+/// Answers `ok` to any service or operator of the cluster while the service
+/// runs (`babel-admin health`).
+pub const HEALTH: &str = "/health";
+
 /// Serves `router` on `listener` until the process ends.
 pub async fn serve(
     router: Router,
@@ -81,8 +85,13 @@ pub async fn serve(
             let service = hyper::service::service_fn(move |request: Request<Incoming>| {
                 let router = router.clone();
                 let caller = caller.clone();
-                let allowed = policy.allows(&caller, request.uri().path());
+                let path = request.uri().path();
+                let health = path == HEALTH;
+                let allowed = health || policy.allows(&caller, path);
                 async move {
+                    if health {
+                        return Ok::<_, Infallible>("ok\n".into_response());
+                    }
                     if !allowed {
                         tracing::warn!(%caller, path = request.uri().path(), "refused a call");
                         return Ok::<_, Infallible>(StatusCode::FORBIDDEN.into_response());

@@ -129,16 +129,33 @@ Translation runs on real models, and guilds choose which:
 
 ## Phase 6 — running it for real
 
-BabelChat on real servers, open to people:
+BabelChat on real servers, open to people.
 
-- Deployment: one-VPS and multi-machine examples, systemd units (or a Nix
-  module), HTTPS for clients in front of the Edges, the desktop app on an
-  `https://` server.
-- Operations: health checks, metrics, structured logs; certificate
-  rotation; moving a guild's Translation Cell space; automatic failover and
-  fencing; a replicated Directory.
-- An open server's basics: closing or inviting sign-ups, password changes,
-  signing out other devices.
+Done so far:
+
+- Deployment on NixOS (`deploy/nixos`, `nix/module.nix`): one description
+  of the cluster, the machines and which service runs on which, for any
+  placement from one machine per service to everything on one. Each
+  machine gets WireGuard to the others, a firewall opening services on
+  WireGuard only, hardened systemd units with their certificates as
+  credentials, standbys, llama.cpp for a local model, and Caddy with
+  Let's Encrypt in front of its Edges. `deploy.sh` makes the keys and
+  certificates, installs NixOS over a provider's Debian (nixos-anywhere),
+  and builds, copies and activates, keeping secrets out of the Nix store.
+  An eight-machine example (`deploy/vultr`); the module tested on virtual
+  machines.
+- An open server's basics: sign-ups open, by invitation (codes from
+  operators) or closed; password changes; signing out other devices, whose
+  tokens every Edge refuses at once (a stream of revocations, like
+  placements).
+- Health checks (`babel-admin health`), logs as JSON lines.
+
+Next:
+
+- Running the eight machines; the desktop app on an `https://` server.
+- Operations: metrics; certificate rotation; moving a guild's Translation
+  Cell space; automatic failover and fencing; a replicated Directory;
+  machines without Nix (plain systemd units).
 - Translation from real usage: window and summary sizes tuned with real
   numbers; reference channels (owner-chosen descriptions) as context.
 - Translation Cell as a standalone, self-hostable product for other

@@ -34,6 +34,7 @@ pub struct SignIn {
     name: Entity<TextField>,
     password: Entity<TextField>,
     locale: Entity<TextField>,
+    signup_code: Entity<TextField>,
     busy: bool,
     error: Option<String>,
     /// A saved sign-in could not connect: offer to try it again.
@@ -97,6 +98,13 @@ impl SignIn {
                 .leading_icon(Icon::Translate)
                 .on_submit(submit.clone())
         });
+        let signup_code = cx.new(|cx| {
+            TextField::new(cx)
+                .label(t.signup_code)
+                .supporting_text(t.signup_code_hint)
+                .leading_icon(Icon::Mail)
+                .on_submit(submit.clone())
+        });
         server_field.update(cx, |field, cx| field.set_text(server, window, cx));
         locale.update(cx, |field, cx| field.set_text(system_locale, window, cx));
         let has_name = saved_name.is_some();
@@ -112,6 +120,7 @@ impl SignIn {
             name,
             password,
             locale,
+            signup_code,
             busy: false,
             error,
             can_retry,
@@ -126,6 +135,7 @@ impl SignIn {
         let name = self.name.read(cx).text().trim().to_string();
         let password = self.password.read(cx).text().to_string();
         let locale = self.locale.read(cx).text().trim().to_string();
+        let signup_code = self.signup_code.read(cx).text().trim().to_string();
         if server.is_empty() || name.is_empty() || password.is_empty() {
             self.error = Some(self.t.invalid_request.to_string());
             cx.notify();
@@ -138,7 +148,8 @@ impl SignIn {
             let name = name.clone();
             async move {
                 if register {
-                    Client::register(&server, &name, &password, &locale).await
+                    let code = Some(signup_code.as_str()).filter(|code| !code.is_empty());
+                    Client::register(&server, &name, &password, &locale, code).await
                 } else {
                     Client::login(&server, &name, &password).await
                 }
@@ -229,7 +240,9 @@ impl Render for SignIn {
             .child(self.name.clone())
             .child(self.password.clone());
         if register {
-            form = form.child(self.locale.clone());
+            form = form
+                .child(self.locale.clone())
+                .child(self.signup_code.clone());
         }
         if let Some(error) = &self.error {
             form = form.child(

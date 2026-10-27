@@ -1,12 +1,15 @@
 //! Chat basics through the SDK: notifications and unread markers, leaving
-//! and removing members, the cache, and both event transports.
+//! and removing members, the cache, both event transports, and signing other
+//! devices out.
 
 mod common;
 
+use std::sync::Arc;
+
 use babel_api_translation_cell::types::Plan;
 use babel_sdk::{
-    ApiError, Client, Error, GuildChange, NotificationSettings, NotifyLevel, NotifyReason,
-    SessionConfig, Transport, Unread, Update,
+    ApiError, Client, Error, GuildChange, MockDeviceTranslator, NotificationSettings, NotifyLevel,
+    NotifyReason, SessionConfig, Transport, Unread, Update,
 };
 use common::{JAPANESE, PASSWORD, connect, guild, server, sign_in, user};
 
@@ -177,7 +180,7 @@ async fn sessions_start_from_their_cache_even_offline() {
         cache: Some(dir.path().join("alice.json")),
         ..SessionConfig::default()
     };
-    let client = Client::register(&server.url, "alice", PASSWORD, "ja-JP")
+    let client = Client::register(&server.url, "alice", PASSWORD, "ja-JP", None)
         .await
         .unwrap();
     let mut alice = connect(&client, config.clone()).await;
@@ -205,7 +208,7 @@ async fn sessions_start_from_their_cache_even_offline() {
     // Offline, the cache is all there is.
     server.task.abort();
     let _ = server.task.await;
-    let client = Client::with_token(client.server(), client.token().clone()).unwrap();
+    let client = Client::with_token(client.server(), client.token()).unwrap();
     let mut alice = connect(&client, config).await;
     assert_eq!(alice.session.messages(&channel).len(), 2);
     alice
@@ -217,7 +220,7 @@ async fn sessions_start_from_their_cache_even_offline() {
 async fn events_arrive_by_websocket_or_long_polling() {
     let server = server(Plan::Paid3).await;
     let mut alice = user(&server, "alice", "ja-JP").await;
-    let client = Client::register(&server.url, "bob", PASSWORD, "en-US")
+    let client = Client::register(&server.url, "bob", PASSWORD, "en-US", None)
         .await
         .unwrap();
     let mut bob = connect(
@@ -239,4 +242,78 @@ async fn events_arrive_by_websocket_or_long_polling() {
 
     assert!(alice.session.uses_websocket());
     assert!(!bob.session.uses_websocket());
+}
+
+#[tokio::test]
+async fn signing_out_the_other_devices() {
+    let server = server(Plan::Paid3).await;
+    let laptop = Client::register(&server.url, "alice", PASSWORD, "ja-JP", None)
+        .await
+        .unwrap();
+    let mut on_laptop = connect(&laptop, SessionConfig::default()).await;
+    let phone = Client::login(&server.url, "alice", PASSWORD).await.unwrap();
+    let mut on_phone = connect(
+        &phone,
+        SessionConfig {
+            transport: Transport::LongPoll,
+            ..SessionConfig::default()
+        },
+    )
+    .await;
+    let mut bob = user(&server, "bob", "en-US").await;
+    let channel = guild(
+        &mut on_laptop,
+        &mut [&mut bob],
+        &["ja", "en"],
+        &["ja", "en"],
+    )
+    .await;
+
+    let old = laptop.token();
+    let token = laptop.sign_out_others().await.unwrap();
+    assert_ne!(token.jwt, old.jwt);
+    assert_eq!(laptop.token().jwt, token.jwt);
+    on_phone
+        .next(|update| matches!(update, Update::SignedOut).then_some(()))
+        .await;
+    assert_eq!(
+        Client::with_token(&server.url, phone.token())
+            .unwrap()
+            .connect(Arc::new(MockDeviceTranslator::default()))
+            .await
+            .err(),
+        Some(Error::Unauthorized)
+    );
+
+    // The laptop carries on with its new token, live.
+    let sent = bob.session.send(&channel, "Still there?").await.unwrap();
+    on_laptop.settled(&channel, &sent.message.id).await;
+    on_laptop.session.send(&channel, "Yes").await.unwrap();
+
+    // Changing the password signs out the others too, and wants the
+    // current one.
+    let phone = Client::login(&server.url, "alice", PASSWORD).await.unwrap();
+    let mut on_phone = connect(&phone, SessionConfig::default()).await;
+    assert_eq!(
+        laptop
+            .change_password("wrong password", "battery staple")
+            .await
+            .err(),
+        Some(Error::Api(ApiError::InvalidCredentials))
+    );
+    laptop
+        .change_password(PASSWORD, "battery staple")
+        .await
+        .unwrap();
+    on_phone
+        .next(|update| matches!(update, Update::SignedOut).then_some(()))
+        .await;
+    assert!(Client::login(&server.url, "alice", PASSWORD).await.is_err());
+    assert!(
+        Client::login(&server.url, "alice", "battery staple")
+            .await
+            .is_ok()
+    );
+    let sent = bob.session.send(&channel, "And now?").await.unwrap();
+    on_laptop.settled(&channel, &sent.message.id).await;
 }

@@ -278,6 +278,19 @@ impl Sessions {
         ids.len()
     }
 
+    /// Drops every session of `user_id`: their tokens were revoked.
+    pub fn drop_user(&self, user_id: &str) -> usize {
+        let ids = self
+            .sessions
+            .lock()
+            .iter()
+            .filter(|(_, session)| session.user_id == user_id)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        self.remove(&ids);
+        ids.len()
+    }
+
     /// Drops sessions that stopped polling.
     pub fn sweep(&self) {
         let idle = self
@@ -300,6 +313,8 @@ impl Sessions {
                         ids.remove(id);
                     }
                 }
+                // Wake its poll or socket, which finds it gone.
+                self.signals.publish(id, i64::MAX);
             }
         }
     }

@@ -36,6 +36,9 @@ pub enum ChatEvent {
     /// `expired`: the server rejected the token; otherwise the user signed
     /// out.
     SignedOut { expired: bool },
+    /// The user signed the other devices out or changed the password:
+    /// save the new token.
+    TokenRenewed { token: babel_sdk::Token },
 }
 
 /// What Enter does with the composer's text.

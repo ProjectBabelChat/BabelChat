@@ -248,7 +248,7 @@ pub fn session_config() -> SessionConfig {
 }
 
 pub async fn connect(url: &str, name: &str, locale: &str) -> Session {
-    Client::register(url, name, "correct horse battery", locale)
+    Client::register(url, name, "correct horse battery", locale, None)
         .await
         .unwrap()
         .connect_with(Arc::new(MockDeviceTranslator::default()), session_config())

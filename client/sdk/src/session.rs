@@ -813,6 +813,7 @@ impl Shared {
         let mut offline = false;
         let mut websocket = self.config.transport != Transport::LongPoll;
         loop {
+            let jwt = self.client.jwt();
             let result = match &mut session {
                 None => match self.reconnect().await {
                     Ok(ready) => {
@@ -863,6 +864,9 @@ impl Shared {
             };
             match result {
                 Ok(()) => backoff = self.config.retry_min,
+                // This device signed the others out (or changed the password)
+                // meanwhile: the Edge ended its session too.
+                Err(Error::Unauthorized) if self.client.renewed_since(&jwt).await => session = None,
                 Err(Error::Unauthorized) => {
                     self.emit(Update::SignedOut);
                     return;

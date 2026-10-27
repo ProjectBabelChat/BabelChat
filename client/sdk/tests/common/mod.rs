@@ -48,7 +48,7 @@ pub struct User {
 }
 
 pub async fn user(server: &Server, name: &str, locale: &str) -> User {
-    let client = Client::register(&server.url, name, PASSWORD, locale)
+    let client = Client::register(&server.url, name, PASSWORD, locale, None)
         .await
         .unwrap();
     connect(&client, SessionConfig::default()).await

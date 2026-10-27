@@ -49,6 +49,17 @@ pub fn account_error(error: AccountError) -> public::ApiError {
         AccountError::InvalidRequest => public::ApiError::InvalidRequest,
         AccountError::NotFound => public::ApiError::NotFound,
         AccountError::Unavailable => public::ApiError::Unavailable,
+        AccountError::SignupsClosed => public::ApiError::SignupsClosed,
+        AccountError::InvalidSignupCode => public::ApiError::InvalidSignupCode,
+    }
+}
+
+pub fn token(token: babel_api_account::types::Token) -> public::Token {
+    public::Token {
+        jwt: token.jwt,
+        user_id: token.user_id,
+        name: token.name,
+        expires_at: token.expires_at,
     }
 }
 

@@ -1,5 +1,5 @@
 //! Dialogs: adding a guild, inviting, channels, languages, notifications,
-//! settings and confirmations.
+//! settings, the password and confirmations.
 
 use babel_sdk::{ChannelNotify, LanguagePolicyUpdate, NotifyLevel, TranslationModel, UserSettings};
 use gpui::Focusable;
@@ -63,6 +63,13 @@ pub enum Dialog {
         busy: bool,
         error: Option<String>,
     },
+    Password {
+        current: Entity<TextField>,
+        new: Entity<TextField>,
+        again: Entity<TextField>,
+        busy: bool,
+        error: Option<String>,
+    },
     Confirm {
         title: String,
         body: String,
@@ -86,6 +93,7 @@ pub enum Confirm {
         channel_id: String,
         message_id: String,
     },
+    SignOutOthers,
 }
 
 fn field(label: &str, cx: &mut Context<ChatView>) -> Entity<TextField> {
@@ -242,6 +250,44 @@ impl Dialog {
         }
     }
 
+    pub fn password(chat: &ChatView, window: &mut Window, cx: &mut Context<ChatView>) -> Self {
+        let t = chat.t();
+        let submit = submit(cx);
+        let masked = |label: &'static str, cx: &mut Context<ChatView>| {
+            let submit = submit.clone();
+            cx.new(|cx| {
+                TextField::new(cx)
+                    .label(label)
+                    .masked(true)
+                    .leading_icon(Icon::Lock)
+                    .on_submit(submit)
+            })
+        };
+        let current = masked(t.current_password, cx);
+        let new = masked(t.new_password, cx);
+        let again = masked(t.new_password_again, cx);
+        window.focus(&current.focus_handle(cx), cx);
+        Dialog::Password {
+            current,
+            new,
+            again,
+            busy: false,
+            error: None,
+        }
+    }
+
+    pub fn sign_out_others(chat: &ChatView, _: &mut Window, _: &mut Context<ChatView>) -> Self {
+        let t = chat.t();
+        Dialog::Confirm {
+            title: t.sign_out_others.to_string(),
+            body: t.sign_out_others_confirm.to_string(),
+            action_label: t.sign_out_others,
+            action: Confirm::SignOutOthers,
+            busy: false,
+            error: None,
+        }
+    }
+
     pub fn leave(chat: &ChatView, _: &mut Window, _: &mut Context<ChatView>) -> Self {
         let t = chat.t();
         let guild = chat.current_guild();
@@ -309,6 +355,7 @@ fn set_status(dialog: &mut Option<Dialog>, now_busy: bool, failure: Option<Strin
         | Some(Dialog::CreateChannel { busy, error, .. })
         | Some(Dialog::Languages { busy, error, .. })
         | Some(Dialog::Settings { busy, error, .. })
+        | Some(Dialog::Password { busy, error, .. })
         | Some(Dialog::Confirm { busy, error, .. }) => (busy, error),
         _ => return,
     };
@@ -364,9 +411,15 @@ impl ChatView {
                     Err(failure) => {
                         let joining =
                             matches!(this.dialog, Some(Dialog::AddGuild { join: true, .. }));
+                        let password = matches!(this.dialog, Some(Dialog::Password { .. }));
                         let text = match failure {
                             babel_sdk::Error::Api(babel_sdk::ApiError::NotFound) if joining => {
                                 this.t().invite_invalid.to_string()
+                            }
+                            babel_sdk::Error::Api(babel_sdk::ApiError::InvalidCredentials)
+                                if password =>
+                            {
+                                this.t().wrong_current_password.to_string()
                             }
                             failure => describe(&failure, this.t()),
                         };
@@ -537,6 +590,32 @@ impl ChatView {
                     cx,
                 );
             }
+            Dialog::Password {
+                current,
+                new,
+                again,
+                ..
+            } => {
+                let current = current.read(cx).text().to_string();
+                let new = new.read(cx).text().to_string();
+                if new != again.read(cx).text().as_ref() {
+                    let text = self.t().passwords_differ.to_string();
+                    set_status(&mut self.dialog, false, Some(text));
+                    cx.notify();
+                    return;
+                }
+                let client = session.client().clone();
+                self.run_dialog(
+                    async move { client.change_password(&current, &new).await },
+                    |this, token, _, cx| {
+                        cx.emit(super::ChatEvent::TokenRenewed { token });
+                        let text = this.t().password_changed;
+                        this.show_toast(text.to_string(), None, cx);
+                    },
+                    window,
+                    cx,
+                );
+            }
             Dialog::Confirm { action, .. } => match action {
                 Confirm::Leave { guild_id } => {
                     let guild_id = guild_id.clone();
@@ -568,6 +647,19 @@ impl ChatView {
                     self.run_dialog(
                         async move { session.delete(&channel_id, &message_id).await },
                         |_, _, _, _| {},
+                        window,
+                        cx,
+                    );
+                }
+                Confirm::SignOutOthers => {
+                    let client = session.client().clone();
+                    self.run_dialog(
+                        async move { client.sign_out_others().await },
+                        |this, token, _, cx| {
+                            cx.emit(super::ChatEvent::TokenRenewed { token });
+                            let text = this.t().signed_out_others;
+                            this.show_toast(text.to_string(), None, cx);
+                        },
                         window,
                         cx,
                     );
@@ -634,6 +726,7 @@ impl ChatView {
                             | Some(Dialog::CreateChannel { busy: true, .. })
                             | Some(Dialog::Languages { busy: true, .. })
                             | Some(Dialog::Settings { busy: true, .. })
+                            | Some(Dialog::Password { busy: true, .. })
                             | Some(Dialog::Confirm { busy: true, .. })
                     );
                     if !busy {
@@ -1216,12 +1309,62 @@ impl ChatView {
                         *translate_outside_set,
                         cx,
                     ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                Button::new("change-password", t.change_password)
+                                    .style(ButtonStyle::Outlined)
+                                    .icon(Icon::Lock)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.dialog = Some(Dialog::password(this, window, cx));
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("sign-out-others", t.sign_out_others)
+                                    .style(ButtonStyle::Outlined)
+                                    .icon(Icon::Logout)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.dialog =
+                                            Some(Dialog::sign_out_others(this, window, cx));
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
                     .children(error_line(error, cx));
                 widgets::dialog(
                     "settings",
                     t.settings,
                     body,
                     vec![cancel(t.cancel, cx), confirm(t.save, *busy, cx)],
+                    dismiss,
+                    cx,
+                )
+            }
+            Dialog::Password {
+                current,
+                new,
+                again,
+                busy,
+                error,
+            } => {
+                let body = div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(current.clone())
+                    .child(new.clone())
+                    .child(again.clone())
+                    .children(error_line(error, cx));
+                widgets::dialog(
+                    "password",
+                    t.change_password,
+                    body,
+                    vec![cancel(t.cancel, cx), confirm(t.change_password, *busy, cx)],
                     dismiss,
                     cx,
                 )

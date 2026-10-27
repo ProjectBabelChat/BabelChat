@@ -50,6 +50,8 @@ pub fn describe(error: &Error, t: &Strings) -> String {
             ApiError::InvalidCredentials => t.wrong_password,
             ApiError::RateLimited => t.rate_limited,
             ApiError::Unavailable => t.unavailable,
+            ApiError::SignupsClosed => t.signups_closed,
+            ApiError::InvalidSignupCode => t.invalid_signup_code,
         }
         .to_string(),
         Error::Unauthorized => t.session_expired.to_string(),

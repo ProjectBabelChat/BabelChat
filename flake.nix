@@ -3,10 +3,19 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Disk layouts for installing servers (deploy/nixos).
+    disko = {
+      url = "github:nix-community/disko";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      disko,
+    }:
     let
       lib = nixpkgs.lib;
       systems = [
@@ -17,6 +26,34 @@
       pkgsFor = system: import nixpkgs { inherit system; };
     in
     {
+      # The server binaries.
+      packages = forAllSystems (
+        system:
+        let
+          server = (pkgsFor system).callPackage ./nix/package.nix { };
+        in
+        {
+          inherit server;
+          default = server;
+        }
+      );
+
+      # services.babelchat: the services a machine runs, from a description
+      # of the whole cluster (nix/module.nix).
+      nixosModules.default =
+        { pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.babelchat.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.server;
+        };
+
+      # Two machines in virtual machines: WireGuard, mutual TLS, sign-ups by
+      # invitation, a standby (`nix build .#checks.x86_64-linux.cluster`).
+      checks.x86_64-linux.cluster = import ./nix/test.nix {
+        pkgs = pkgsFor "x86_64-linux";
+        package = self.packages.x86_64-linux.server;
+      };
+
       devShells = forAllSystems (
         system:
         let

@@ -49,6 +49,9 @@ struct Args {
     /// This engine's name in the cluster file: serve over mutual TLS.
     #[arg(long, env = "BABEL_NAME")]
     name: Option<String>,
+    /// Where the certificates are, instead of the cluster file's `pki`.
+    #[arg(long, env = "BABEL_PKI")]
+    pki: Option<PathBuf>,
     /// The models to serve. Without it, one model from the options below.
     #[arg(long, env = "BABEL_MODELS", conflicts_with_all = ["backend", "base_url", "model", "api_key_env", "no_json_mode", "style"])]
     models: Option<PathBuf>,
@@ -119,6 +122,7 @@ async fn main() -> anyhow::Result<()> {
                 &NodeArgs {
                     cluster: args.cluster,
                     name,
+                    pki: args.pki,
                 },
                 Role::Engine,
             )?;

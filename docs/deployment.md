@@ -102,11 +102,75 @@ babel-message-cell --cluster cluster.toml --name message-cell-0 \
 |---|---|---|
 | `--cluster` (`BABEL_CLUSTER`) | all | `cluster.toml` |
 | `--name` (`BABEL_NAME`) | all | — |
+| `--pki` (`BABEL_PKI`) | all, `babel-admin` | the cluster file's `pki` |
+| `--signups` (`BABEL_SIGNUPS`): `open`, `invite`, `closed` | the Account service | `open` |
 | `--data` | storing services | `data/<name>` |
 | `--backup-dir`, `--backup-every-mins`, `--backup-keep` | storing services | no backups; 15; 96 |
 | `--plan`, `--daily-budget`, `--mock-latency-ms` | Translation Cells | `free`; none; 300 |
 | `--writes-per-second`, `--write-burst` | Edges | 5; 20 |
 | `--models` (`BABEL_MODELS`), or `--backend`, `--base-url`, `--model`, `--style` for one model; `--egress-proxy` | engines | one mock model |
+
+Every service logs to standard error, as text, or as one JSON object per
+line with `BABEL_LOG_FORMAT=json` (`RUST_LOG` filters as usual).
+
+## On NixOS machines
+
+`deploy/nixos` deploys a cluster to NixOS machines from one description,
+`deploy/<name>/cluster.nix`: the machines, and which service runs on which.
+`deploy/vultr/cluster.nix` is a production-like example on eight virtual
+machines; any provider of KVM machines with one disk works the same.
+
+```nix
+cluster = {
+  machines.core = { address = "203.0.113.2"; wireguardAddress = "10.8.0.2"; };
+  # ...
+  account = { machine = "core"; standby = "spare"; signups = "invite"; };
+  messageCells.message-cell-0 = { machine = "cell-a"; standby = "cell-b"; };
+  edges.edge-0.machine = "edge-a";   # https://edge-0.<address>.sslip.io
+  # ...
+};
+```
+
+From it, the NixOS module (`nix/module.nix`, also the flake's
+`nixosModules.default`) gives every machine the same cluster file, a
+WireGuard interface to the others, a firewall that opens each service's
+port on WireGuard only, and a hardened systemd unit (`babelchat-<name>`)
+per service, standby (`babelchat-standby-<name>`) and local model placed on
+it; machines with Edges get Caddy, with a Let's Encrypt certificate for
+each Edge's host name (`sslip.io` names need no DNS). Services listen on
+fixed ports (account 7101, directory 7102, message-cell-N 7110+N,
+translation-cell-N 7120+N, engine-N 7140+N, edge-N 7000+N), so any of them
+can share a machine: putting several on one is naming the same `machine`.
+
+```sh
+deploy/nixos/deploy.sh init                # WireGuard keys, CA, certificates
+deploy/nixos/deploy.sh install core        # Debian -> NixOS (erases the disk)
+deploy/nixos/deploy.sh switch              # build here, copy, activate: all machines
+deploy/nixos/deploy.sh admin health        # babel-admin on the operator's machine
+deploy/nixos/deploy.sh admin signup-code --uses 5
+deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f
+```
+
+`BABEL_DEPLOYMENT` picks another deployment directory. Everything is built
+on the machine running `deploy.sh` (machines download the rest from the
+NixOS cache); machines need nothing but SSH as root. Secrets stay out of
+the Nix store: `init` makes them in `deploy/<name>/secrets/` (ignored by
+git; back it up, it holds the CA's key), and `install` and `switch` copy to
+each machine only what its services need, into `/var/lib/babelchat-secrets`,
+where systemd hands each service its own certificate. A change of
+certificates restarts the machine's services.
+
+Data lives in `/var/lib/babelchat/<name>` (a standby keeps its copy at the
+same path on its machine) and backups in `/var/lib/babelchat-backups/<name>`.
+Failing over to a standby: power the primary off, stop
+`babelchat-standby-<name>` on the standby's machine, set the service's
+`machine` to that machine (and `standby` to another, or `null`), and
+`switch` every machine. Moving a service that keeps data, in general, is
+the same with its data copied over first (a standby, or a restored backup).
+
+`nix build .#checks.x86_64-linux.cluster` runs the module on two virtual
+machines: WireGuard, mutual TLS, closed ports, sign-ups by invitation, a
+standby, revoked tokens.
 
 ## Certificates
 
@@ -266,6 +330,27 @@ Moving spreads load (new guilds go to the least loaded cell, but guilds
 grow), empties a cell before it is retired, and blurs which guilds share a
 cell. See [Message Cell › Moving a guild](architecture/message-cell.md#moving-a-guild).
 
+## Accounts
+
+The Account service takes new accounts from anyone, from people with a
+sign-up code, or from nobody (`--signups`). Operators make codes:
+
+```sh
+babel-admin --cluster cluster.toml --name ops signup-code --uses 5 --hours 48
+```
+
+Users change their password and sign their other devices out from the
+apps. Both revoke the user's other tokens: the Account service records the
+revocation, Edges follow the stream of revocations (as they follow
+placements) and refuse those tokens from then on, and end their sessions.
+
+## Health
+
+Every internal service answers `GET /health` to any certificate of the
+cluster, and Edges answer it in plain HTTP (for load balancers).
+`babel-admin health` asks every service of the cluster file and fails if
+one does not answer.
+
 ## Logs and retention
 
 Guild logs, space logs and the Directory's membership stream keep an hour:
@@ -278,4 +363,6 @@ further behind drops the sessions concerned, and their clients reload.
 - Automatic failover, fencing of a returning primary, replicated Directory.
 - Certificate rotation and revocation.
 - PostgreSQL for the (closed) Account service.
-- TLS for clients served by Edges themselves.
+- TLS for clients served by Edges themselves (Caddy does it in front).
+- Metrics.
+- Sign-up control in `babel-server` (it takes everyone).

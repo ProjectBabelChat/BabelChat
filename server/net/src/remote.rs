@@ -76,6 +76,10 @@ mod account {
         fn get_user(user_id: String) -> User;
         fn get_settings(user_id: String) -> UserSettings;
         fn put_settings(body: UserSettings, user_id: String) -> UserSettings;
+        fn change_password(body: PasswordChange, user_id: String) -> Token;
+        fn sign_out_others(user_id: String) -> Token;
+        fn create_signup_code(body: NewSignupCode) -> SignupCode;
+        fn watch_revocations(after: i64, wait_ms: i64) -> RevocationBatch;
     }
 }
 

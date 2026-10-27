@@ -42,7 +42,7 @@ struct Terminal {
 
 impl Terminal {
     async fn open(url: &str, name: &str, locale: &str) -> Self {
-        let client = Client::register(url, name, "correct horse battery", locale)
+        let client = Client::register(url, name, "correct horse battery", locale, None)
             .await
             .unwrap();
         let session = client

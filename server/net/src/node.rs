@@ -28,6 +28,10 @@ pub struct NodeArgs {
     /// This service's name in the cluster file.
     #[arg(long, env = "BABEL_NAME")]
     pub name: String,
+    /// Where this service's certificates are, instead of the cluster file's
+    /// `pki` (systemd's credentials directory, for instance).
+    #[arg(long, env = "BABEL_PKI")]
+    pub pki: Option<PathBuf>,
 }
 
 /// Command-line options of services that keep data.
@@ -68,7 +72,10 @@ impl Node {
     /// Loads whichever service the cluster lists as `args.name` (a standby
     /// copies any of them).
     pub fn load_any(args: &NodeArgs) -> anyhow::Result<Self> {
-        let cluster = Cluster::load(&args.cluster)?;
+        let mut cluster = Cluster::load(&args.cluster)?;
+        if let Some(pki) = &args.pki {
+            cluster.pki = pki.clone();
+        }
         let Some((identity, service)) = cluster.find(&args.name) else {
             bail!(
                 "{} lists no service {:?}",
@@ -203,12 +210,21 @@ impl Node {
     }
 }
 
-/// Logs to stderr, `info` unless `RUST_LOG` says otherwise.
+/// Logs to stderr, `info` unless `RUST_LOG` says otherwise. With
+/// `BABEL_LOG_FORMAT=json`, one JSON object per line (for journald and log
+/// collectors) instead of text.
 pub fn init_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    use std::io::IsTerminal;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal());
+    if std::env::var("BABEL_LOG_FORMAT").is_ok_and(|format| format == "json") {
+        builder.json().flatten_event(true).init();
+    } else {
+        builder.init();
+    }
 }

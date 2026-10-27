@@ -135,10 +135,12 @@ async fn updates(
 /// Streams a fresh checkpoint: per file, `name_len: u16`, the name,
 /// `size: u64`, the bytes; a zero `name_len` ends it.
 async fn checkpoint(State(store): State<Arc<RocksStore>>) -> Response {
-    // Next to the store, so the checkpoint can hard-link its files.
+    // Within the store's directory: on its file system, so the checkpoint
+    // hard-links its files, and where the service may write (a systemd
+    // state directory). RocksDB ignores directories it did not make.
     let dir = store
         .path()
-        .with_extension(format!("checkpoint-{}", babel_common::random_id()));
+        .join(format!(".checkpoint-{}", babel_common::random_id()));
     let path = dir.clone();
     let made = tokio::task::spawn_blocking(move || store.checkpoint(&path)).await;
     if !matches!(made, Ok(Ok(()))) {
@@ -250,7 +252,10 @@ pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow:
     let url = url.trim_end_matches('/');
     if !data.join("CURRENT").exists() {
         tracing::info!(%url, "copying a checkpoint of the primary");
-        let partial = data.with_extension("partial");
+        // Within `data`, which may be the only place the standby can write
+        // (a systemd state directory): an interrupted copy leaves no
+        // CURRENT and starts over.
+        let partial = data.join(".checkpoint");
         let _ = tokio::fs::remove_dir_all(&partial).await;
         tokio::fs::create_dir_all(&partial).await?;
         let response = client
@@ -260,12 +265,19 @@ pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow:
             .await?
             .error_for_status()?;
         receive_files(response, &partial).await?;
-        if data.exists() {
-            tokio::fs::remove_dir(data)
-                .await
-                .with_context(|| format!("{} is in the way", data.display()))?;
+        let mut files = tokio::fs::read_dir(&partial).await?;
+        let mut current = None;
+        while let Some(file) = files.next_entry().await? {
+            // CURRENT last: it is what makes the copy a store.
+            if file.file_name() == "CURRENT" {
+                current = Some(file.path());
+                continue;
+            }
+            tokio::fs::rename(file.path(), data.join(file.file_name())).await?;
         }
-        tokio::fs::rename(&partial, data).await?;
+        let current = current.context("the checkpoint has no CURRENT")?;
+        tokio::fs::rename(current, data.join("CURRENT")).await?;
+        tokio::fs::remove_dir(&partial).await?;
     }
 
     let store = Arc::new(RocksStore::open_existing(data)?);

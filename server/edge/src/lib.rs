@@ -75,6 +75,8 @@ struct Inner {
     policies: RwLock<HashMap<String, SpacePolicy>>,
     sessions: Sessions,
     followed: Mutex<HashSet<String>>,
+    /// User -> tokens issued before this (ms) are revoked.
+    revoked: RwLock<HashMap<String, i64>>,
 }
 
 const SETTINGS_TTL: Duration = Duration::from_secs(60);
@@ -125,6 +127,7 @@ impl Edge {
             policies: RwLock::default(),
             sessions: Sessions::default(),
             followed: Mutex::default(),
+            revoked: RwLock::default(),
         });
 
         let sweeper = Arc::downgrade(&inner);
@@ -136,14 +139,16 @@ impl Edge {
             }
         });
         tokio::spawn(follow_memberships(Arc::downgrade(&inner)));
+        tokio::spawn(follow_revocations(Arc::downgrade(&inner)));
 
         Self { inner }
     }
 
     /// Routes served next to the generated API: the WebSocket gateway
-    /// (`GET /gateway/ws`).
+    /// (`GET /gateway/ws`), and `GET /health` for load balancers (`ok` while
+    /// the Edge runs).
     pub fn websocket_router(&self) -> axum::Router {
-        websocket::router(self.clone())
+        websocket::router(self.clone()).route("/health", axum::routing::get(async || "ok\n"))
     }
 }
 
@@ -172,6 +177,37 @@ async fn follow_memberships(inner: Weak<Inner>) {
                 }
                 for change in batch.changes.into_iter().filter(|change| change.joined) {
                     tokio::spawn(inner.clone().joined(change.user_id, change.guild_id));
+                }
+                cursor = batch.version;
+            }
+            Err(_) => tokio::time::sleep(RETRY).await,
+        }
+    }
+}
+
+/// Follows the Account service's revocations: tokens a user revoked (signing
+/// out other devices, changing the password) stop working here, and the
+/// user's sessions end. Starts from the beginning, which holds every
+/// revocation of tokens that have not expired. Until the first answer
+/// arrives (the Account service is down when the Edge starts), revoked
+/// tokens still work.
+async fn follow_revocations(inner: Weak<Inner>) {
+    let mut cursor = 0;
+    loop {
+        let Some(account) = inner.upgrade().map(|inner| inner.cluster.account.clone()) else {
+            return;
+        };
+        match account.watch_revocations(cursor, FOLLOW_WAIT_MS).await {
+            Ok(batch) => {
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                for revocation in batch.revocations {
+                    let mut revoked = inner.revoked.write();
+                    let not_before = revoked.entry(revocation.user_id.clone()).or_default();
+                    *not_before = (*not_before).max(revocation.not_before);
+                    drop(revoked);
+                    inner.sessions.drop_user(&revocation.user_id);
                 }
                 cursor = batch.version;
             }
@@ -684,9 +720,21 @@ impl Inner {
 
 impl babel_api_edge::types::JwtValidator for Edge {
     fn validate<T: serde::de::DeserializeOwned>(&self, token: &str) -> Result<T, ()> {
-        jsonwebtoken::decode::<T>(token, &self.inner.decoding_key, &self.inner.validation)
-            .map(|data| data.claims)
-            .map_err(|_| ())
+        let claims = jsonwebtoken::decode::<serde_json::Value>(
+            token,
+            &self.inner.decoding_key,
+            &self.inner.validation,
+        )
+        .map_err(|_| ())?
+        .claims;
+        let user = claims["sub"].as_str().ok_or(())?;
+        let issued_at = claims["iat"].as_i64().ok_or(())?;
+        if let Some(not_before) = self.inner.revoked.read().get(user)
+            && issued_at.saturating_mul(1000) < *not_before
+        {
+            return Err(());
+        }
+        serde_json::from_value(claims).map_err(|_| ())
     }
 }
 
@@ -701,15 +749,11 @@ impl public::Auth for Edge {
                 name: body.name,
                 password: body.password,
                 locale: body.locale,
+                signup_code: body.signup_code,
             })
             .await
             .map_err(convert::account_error)?;
-        Ok(public::Token {
-            jwt: token.jwt,
-            user_id: token.user_id,
-            name: token.name,
-            expires_at: token.expires_at,
-        })
+        Ok(convert::token(token))
     }
 
     async fn login(&self, body: public::Credentials) -> ApiResult<public::Token> {
@@ -723,12 +767,7 @@ impl public::Auth for Edge {
             })
             .await
             .map_err(convert::account_error)?;
-        Ok(public::Token {
-            jwt: token.jwt,
-            user_id: token.user_id,
-            name: token.name,
-            expires_at: token.expires_at,
-        })
+        Ok(convert::token(token))
     }
 }
 
@@ -762,6 +801,40 @@ impl public::Me for Edge {
             .insert(claim.sub.clone(), (body.clone(), Instant::now()));
         self.inner.sessions.update_settings(&claim.sub, &body);
         Ok(body)
+    }
+
+    async fn change_password(
+        &self,
+        claim: Claim,
+        body: public::PasswordChange,
+    ) -> ApiResult<public::Token> {
+        self.inner.write_allowed(&claim)?;
+        let token = self
+            .inner
+            .cluster
+            .account
+            .change_password(
+                babel_api_account::types::PasswordChange {
+                    password: body.password,
+                    new_password: body.new_password,
+                },
+                claim.sub,
+            )
+            .await
+            .map_err(convert::account_error)?;
+        Ok(convert::token(token))
+    }
+
+    async fn sign_out_others(&self, claim: Claim) -> ApiResult<public::Token> {
+        self.inner.write_allowed(&claim)?;
+        let token = self
+            .inner
+            .cluster
+            .account
+            .sign_out_others(claim.sub)
+            .await
+            .map_err(convert::account_error)?;
+        Ok(convert::token(token))
     }
 }
 

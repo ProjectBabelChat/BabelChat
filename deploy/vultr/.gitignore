@@ -1,0 +1,3 @@
+# The CA's key, every service's key, WireGuard keys: back them up, never
+# commit them.
+secrets/

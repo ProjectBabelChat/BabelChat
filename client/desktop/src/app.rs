@@ -101,7 +101,7 @@ impl BabelApp {
                     let saved = Profile {
                         server: client.server().to_string(),
                         name: name.clone(),
-                        token: client.token().clone(),
+                        token: client.token(),
                     };
                     if let Err(error) = profile::save(&config.dir, &config.profile, &saved) {
                         eprintln!("babelchat: could not save the sign-in: {error}");
@@ -144,6 +144,15 @@ impl BabelApp {
                     // its cache and stops.
                     let error = expired.then(|| t.session_expired.to_string());
                     this.show_sign_in(error, false, window, cx);
+                }
+                ChatEvent::TokenRenewed { token } => {
+                    let config = cx.global::<Config>();
+                    if let Ok(Some(mut saved)) = profile::load(&config.dir, &config.profile) {
+                        saved.token = token.clone();
+                        if let Err(error) = profile::save(&config.dir, &config.profile, &saved) {
+                            eprintln!("babelchat: could not save the sign-in: {error}");
+                        }
+                    }
                 }
             },
         ));

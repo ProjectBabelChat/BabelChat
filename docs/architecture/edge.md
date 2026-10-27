@@ -10,7 +10,7 @@ removed or replaced while traffic flows.
 
 | | How |
 |---|---|
-| Authentication | JWTs (EdDSA) verified locally with the Account service's public key; no call on the request path |
+| Authentication | JWTs (EdDSA) verified locally with the Account service's public key; no call on the request path. Revoked tokens (the user signed other devices out) are refused: the Edge follows the Account service's revocations and ends the sessions concerned (`follow_revocations`) |
 | Rate limiting | Token bucket per user on writes, acks included (`RateLimiter`) |
 | Placement | Resolves guild → cells from its copy of the Directory's table ([placement](#placement)) |
 | Joining answers | e.g. `get_messages` = Message Cell history + Translation Cell translations for the reader |

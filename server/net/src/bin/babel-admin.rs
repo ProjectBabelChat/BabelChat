@@ -5,18 +5,21 @@
 //! babel-admin --cluster cluster.toml --name ops placements
 //! babel-admin --cluster cluster.toml --name ops move-guild <guild id> message-cell-1
 //! babel-admin --cluster cluster.toml --name ops set-plan <guild id> paid1
+//! babel-admin --cluster cluster.toml --name ops signup-code --uses 5 --hours 48
+//! babel-admin --cluster cluster.toml --name ops health
 //! babel-admin restore --backup-dir /backups/message-cell-0 --data data/message-cell-0
 //! ```
 
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
+use babel_api_account::types::{Account, NewSignupCode};
 use babel_api_directory::types::Directory;
 use babel_api_translation_cell::types::{Plan, TranslationCell};
 use babel_common::{Identity, Role};
 use babel_net::{
     config::Cluster,
-    remote::{RemoteDirectory, RemoteTranslationCell},
+    remote::{RemoteAccount, RemoteDirectory, RemoteTranslationCell},
     tls::Credentials,
 };
 use babel_store::RocksStore;
@@ -31,6 +34,10 @@ struct Args {
     /// The operator's certificate (`pki/<name>.crt`, role `admin`).
     #[arg(long, env = "BABEL_ADMIN", default_value = "admin")]
     name: String,
+    /// Where the operator's certificate is, instead of the cluster file's
+    /// `pki`.
+    #[arg(long, env = "BABEL_PKI")]
+    pki: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -53,6 +60,19 @@ enum Command {
     /// Sets a guild's plan: how many languages it may declare and how many
     /// the LLM translates. Languages that no longer fit are dropped.
     SetPlan { guild: String, plan: PlanArg },
+    /// Makes a code that lets people create accounts while sign-ups are by
+    /// invitation (`babel-account --signups invite`).
+    SignupCode {
+        /// How many accounts it may create.
+        #[arg(long, default_value_t = 1)]
+        uses: i64,
+        /// How long it stays valid.
+        #[arg(long, default_value_t = 72)]
+        hours: i64,
+    },
+    /// Asks every service of the cluster file whether it runs. Fails if one
+    /// does not answer.
+    Health,
     /// Puts the newest backup back into an empty data directory. The
     /// service must be stopped.
     Restore {
@@ -65,7 +85,10 @@ enum Command {
 
 /// The operator's credentials.
 fn operator(args: &Args) -> anyhow::Result<(Cluster, Credentials)> {
-    let cluster = Cluster::load(&args.cluster)?;
+    let mut cluster = Cluster::load(&args.cluster)?;
+    if let Some(pki) = &args.pki {
+        cluster.pki = pki.clone();
+    }
     let credentials = Credentials::load(
         &cluster.ca_path(),
         &cluster.cert_path(&args.name),
@@ -168,6 +191,65 @@ async fn main() -> anyhow::Result<()> {
                 "{guild}: {:?}, languages {:?}, LLM languages {:?}",
                 policy.plan, policy.languages, policy.llm_languages
             );
+        }
+        Command::SignupCode { uses, hours } => {
+            let (cluster, credentials) = operator(&args)?;
+            let peer = Identity {
+                role: Role::Account,
+                name: cluster.account.name.clone(),
+            };
+            let client = credentials.http_client(&peer)?;
+            let code = RemoteAccount::new(peer, cluster.account.url, client)
+                .create_signup_code(NewSignupCode {
+                    uses: *uses,
+                    hours: *hours,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("making a code failed: {error:?}"))?;
+            println!(
+                "{}  ({} uses, valid for {hours} hours)",
+                code.code, code.uses_left
+            );
+        }
+        Command::Health => {
+            let (cluster, credentials) = operator(&args)?;
+            let mut down = 0;
+            for (role, service) in cluster.services() {
+                let peer = Identity {
+                    role,
+                    name: service.name.clone(),
+                };
+                // Edges serve clients in plain HTTP; the others want the
+                // operator's certificate.
+                let client = if role == Role::Edge {
+                    reqwest::Client::new()
+                } else {
+                    credentials.http_client(&peer)?
+                };
+                let started = std::time::Instant::now();
+                let answer = client
+                    .get(format!("{}/health", service.url.trim_end_matches('/')))
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send()
+                    .await;
+                let state = match answer {
+                    Ok(response) if response.status().is_success() => {
+                        format!("ok ({} ms)", started.elapsed().as_millis())
+                    }
+                    Ok(response) => {
+                        down += 1;
+                        format!("answered {}", response.status())
+                    }
+                    Err(error) => {
+                        down += 1;
+                        format!("unreachable: {error}")
+                    }
+                };
+                println!("{:<24} {:<32} {state}", service.name, service.url);
+            }
+            if down > 0 {
+                bail!("{down} of the services did not answer");
+            }
         }
         Command::Restore { backup_dir, data } => {
             if data.exists() && std::fs::read_dir(data)?.next().is_some() {
