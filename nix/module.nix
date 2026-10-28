@@ -98,6 +98,11 @@ let
         type = types.str;
         description = "WireGuard public key (the deploy tool fills it in).";
       };
+      cutOff = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Lost: no other machine talks to it over WireGuard, so if it comes back with an old system it cannot act as the primary of a service that moved (`deploy.sh failover --primary-lost`). Reinstall it before using it again.";
+      };
     };
   };
 
@@ -525,6 +530,8 @@ let
     name = "babelchat-${service.name}";
     value = {
       description = "BabelChat ${service.kind} ${service.name}";
+      # Services read the cluster file when they start.
+      restartTriggers = [ clusterFile ];
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [
@@ -557,6 +564,7 @@ let
     name = "babelchat-standby-${service.name}";
     value = {
       description = "BabelChat standby of ${service.name}";
+      restartTriggers = [ clusterFile ];
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [
@@ -662,7 +670,7 @@ let
     };
   };
 
-  others = lib.filterAttrs (name: _: name != cfg.machine) cluster.machines;
+  others = lib.filterAttrs (name: machine: name != cfg.machine && !machine.cutOff) cluster.machines;
 
   # ---- Monitoring --------------------------------------------------------
 
@@ -693,7 +701,9 @@ let
         role = "standby";
       }
     ) (lib.filter (service: service.stores && service.standby != null) (lib.attrValues services));
-  machineTargets = lib.mapAttrsToList (name: _: target name nodeExporterPort { }) cluster.machines;
+  machineTargets = lib.mapAttrsToList (name: _: target name nodeExporterPort { }) (
+    lib.filterAttrs (_: machine: !machine.cutOff) cluster.machines
+  );
 
   # Shown in Grafana ("Firing alerts") and Prometheus; nothing sends them
   # anywhere yet.

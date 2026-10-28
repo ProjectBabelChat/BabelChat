@@ -28,11 +28,43 @@ let
       file = secrets + "/wireguard/${name}.pub";
     in
     if builtins.pathExists file then lib.removeSuffix "\n" (builtins.readFile file) else "";
+
+  # What `deploy.sh failover` changed, over cluster.nix: where services
+  # that keep data run now ({ "<service>": { machine, standby } }), and the
+  # machines lost on the way (cut off from the others).
+  placementFile = /. + deployment + "/placement.json";
+  placement = {
+    services = { };
+    cutOff = [ ];
+  }
+  // lib.optionalAttrs (builtins.pathExists placementFile) (
+    builtins.fromJSON (builtins.readFile placementFile)
+  );
+  place = name: service: service // (placement.services.${name} or { });
+
   cluster = description.cluster // {
     machines = lib.mapAttrs (
-      name: machine: machine // { wireguardKey = publicKey name; }
+      name: machine:
+      machine
+      // {
+        wireguardKey = publicKey name;
+        cutOff = lib.elem name placement.cutOff;
+      }
     ) description.cluster.machines;
+    account = place "account" description.cluster.account;
+    directory = place "directory" description.cluster.directory;
+    messageCells = lib.mapAttrs place description.cluster.messageCells;
+    translationCells = lib.mapAttrs place description.cluster.translationCells;
   };
+
+  # Every service that keeps data, with its machine and standby.
+  stores = [
+    (cluster.account // { name = "account"; })
+    (cluster.directory // { name = "directory"; })
+  ]
+  ++ lib.mapAttrsToList (name: service: service // { inherit name; }) (
+    cluster.messageCells // cluster.translationCells
+  );
 
   nixos =
     name:
@@ -63,14 +95,27 @@ in
     if cluster ? monitoring && cluster.monitoring != null then cluster.monitoring.machine else "";
 
   # One line per machine for deploy.sh: name, public address, then the
-  # files of secrets/ it needs.
+  # files of secrets/ it needs. Machines cut off are left out.
   inventory = lib.concatMapStrings (
     name:
     let
       babelchat = machines.${name}.config.services.babelchat;
     in
     "${name} ${cluster.machines.${name}.address} ${lib.concatStringsSep " " babelchat.secretFiles}\n"
-  ) (lib.attrNames machines);
+  ) (lib.attrNames (lib.filterAttrs (_: machine: !machine.cutOff) cluster.machines));
+
+  # One line per service that keeps data: name, machine, standby (or -).
+  stores = lib.concatMapStrings (
+    service:
+    "${service.name} ${service.machine} ${
+      if service.standby or null == null then "-" else service.standby
+    }\n"
+  ) stores;
+
+  # Every machine's public address, cut off or not.
+  addresses = lib.concatStrings (
+    lib.mapAttrsToList (name: machine: "${name} ${machine.address}\n") cluster.machines
+  );
 
   # The cluster file, for making the certificates.
   clusterFile = any.config.environment.etc."babelchat/cluster.toml".source;

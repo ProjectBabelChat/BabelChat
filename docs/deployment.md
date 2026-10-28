@@ -151,6 +151,7 @@ deploy/nixos/deploy.sh admin health        # babel-admin on the operator's machi
 deploy/nixos/deploy.sh admin signup-code --uses 5
 deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f
 deploy/nixos/deploy.sh dashboard           # Grafana at http://localhost:3000, through SSH
+deploy/nixos/deploy.sh failover cell-a       # standbys take over its services (below)
 ```
 
 `BABEL_DEPLOYMENT` picks another deployment directory. Everything is built
@@ -164,11 +165,47 @@ certificates restarts the machine's services.
 
 Data lives in `/var/lib/babelchat/<name>` (a standby keeps its copy at the
 same path on its machine) and backups in `/var/lib/babelchat-backups/<name>`.
-Failing over to a standby: power the primary off, stop
-`babelchat-standby-<name>` on the standby's machine, set the service's
-`machine` to that machine (and `standby` to another, or `null`), and
-`switch` every machine. Moving a service that keeps data, in general, is
-the same with its data copied over first (a standby, or a restored backup).
+A change of the cluster file restarts every service that reads it.
+
+### Failing over
+
+```sh
+deploy/nixos/deploy.sh failover message-cell-0             # its standby takes over
+deploy/nixos/deploy.sh failover cell-a                     # every primary on cell-a
+deploy/nixos/deploy.sh failover cell-a --primary-lost      # cell-a is gone
+```
+
+`failover` moves services that keep data (or every one a machine is the
+primary of) to their standbys' machines:
+
+1. it builds every machine for the new placement first, while nothing has
+   changed;
+2. it stops the old primary; with `--primary-lost` (the machine does not
+   answer, or should not be trusted), it cuts that machine off instead:
+   every other machine drops it from WireGuard at once, and for good once
+   switched, so that if it still runs, or comes back with its old system,
+   calls to it fail rather than reaching a second primary;
+3. the standby stops copying, the service starts on its data on that
+   machine, and every other machine switches at once, restarting its
+   services with the new cluster file;
+4. the old primary's data is put aside (`/var/lib/babelchat-retired`) and
+   its machine becomes the new standby, copying from a checkpoint; a lost
+   one leaves the service without a standby.
+
+The move is recorded in `deploy/<name>/placement.json`, which overrides
+`cluster.nix` for the services and machines it names: commit it with the
+rest, and fold it into `cluster.nix` when convenient (then delete it).
+`deploy.sh install` on a cut-off machine erases it and lets it back in
+(after `switch`); give services a standby on it again in `placement.json`
+or `cluster.nix`.
+
+Writes the old primary acknowledged but its standby had not copied yet are
+lost: those of its last moment. On the eight-machine example, services
+were unavailable for 6 to 10 seconds, and no acknowledged message was
+lost, planned or with a primary declared lost while it still ran.
+
+Moving a service that keeps data anywhere else is changing its `machine`
+with its data copied over first (a standby, or a restored backup).
 
 `nix build .#checks.x86_64-linux.cluster` runs the module on two virtual
 machines: WireGuard, mutual TLS, closed ports, sign-ups by invitation, a
@@ -283,7 +320,8 @@ Account service. The primary keeps six hours of log for standbys that fell
 behind; one further behind stops and asks to start over from an empty
 directory.
 
-Failing over, by hand:
+Failing over, by hand (on NixOS, `deploy.sh failover` does it: see
+[Failing over](#failing-over)):
 
 1. Make sure the primary is down for good (power it off): two primaries
    would diverge.
@@ -401,7 +439,8 @@ further behind drops the sessions concerned, and their clients reload.
 ## Not yet
 
 - Moving a guild's Translation Cell space.
-- Automatic failover, fencing of a returning primary, replicated Directory.
+- Automatic failover (noticing a lost primary and failing over without an
+  operator); a replicated Directory.
 - Certificate rotation and revocation.
 - Sending alerts (to e-mail, chat or a phone).
 - PostgreSQL for the (closed) Account service.
