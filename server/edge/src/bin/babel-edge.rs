@@ -31,7 +31,13 @@ async fn main() -> anyhow::Result<()> {
     babel_net::init_tracing();
     let args = Args::parse();
     let node = Node::load(&args.node, Role::Edge)?;
-    let token_key = std::fs::read(node.cluster.token_public_key_path())?;
+    // Several while the key is being replaced (babel_net::pki).
+    let token_keys = babel_net::pki::pem_blocks(&std::fs::read_to_string(
+        node.cluster.token_public_key_path(),
+    )?)
+    .iter()
+    .map(|pem| DecodingKey::from_ed_pem(pem.as_bytes()))
+    .collect::<Result<Vec<_>, _>>()?;
 
     let edge = Edge::start(
         Cluster {
@@ -41,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
             translation_cells: node.translation_cells()?,
         },
         EdgeConfig {
-            token_key: DecodingKey::from_ed_pem(&token_key)?,
+            token_keys,
             writes_per_second: args.writes_per_second,
             write_burst: args.write_burst,
         },

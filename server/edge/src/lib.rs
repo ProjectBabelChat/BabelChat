@@ -51,9 +51,10 @@ pub struct Cluster {
 }
 
 pub struct EdgeConfig {
-    /// The Account service's public key: Edges verify tokens but cannot
-    /// sign them.
-    pub token_key: DecodingKey,
+    /// The Account service's public keys: Edges verify tokens but cannot
+    /// sign them. Several while the key is being replaced: tokens of any
+    /// are accepted.
+    pub token_keys: Vec<DecodingKey>,
     /// Sustained writes (messages, guilds, channels) per user per second.
     pub writes_per_second: f64,
     pub write_burst: f64,
@@ -68,7 +69,7 @@ struct Inner {
     cluster: Cluster,
     placements: Arc<Placements>,
     normalizer: Normalizer,
-    decoding_key: DecodingKey,
+    decoding_keys: Vec<DecodingKey>,
     validation: Validation,
     limiter: RateLimiter,
     settings: Mutex<HashMap<String, (public::UserSettings, Instant)>>,
@@ -116,7 +117,7 @@ impl Edge {
             cluster,
             placements,
             normalizer: Normalizer::new(),
-            decoding_key: config.token_key,
+            decoding_keys: config.token_keys,
             validation: Validation::new(Algorithm::EdDSA),
             limiter: RateLimiter {
                 per_second: config.writes_per_second,
@@ -721,13 +722,15 @@ impl Inner {
 
 impl babel_api_edge::types::JwtValidator for Edge {
     fn validate<T: serde::de::DeserializeOwned>(&self, token: &str) -> Result<T, ()> {
-        let claims = jsonwebtoken::decode::<serde_json::Value>(
-            token,
-            &self.inner.decoding_key,
-            &self.inner.validation,
-        )
-        .map_err(|_| ())?
-        .claims;
+        let claims = self
+            .inner
+            .decoding_keys
+            .iter()
+            .find_map(|key| {
+                jsonwebtoken::decode::<serde_json::Value>(token, key, &self.inner.validation).ok()
+            })
+            .ok_or(())?
+            .claims;
         let user = claims["sub"].as_str().ok_or(())?;
         let issued_at = claims["iat"].as_i64().ok_or(())?;
         if let Some(not_before) = self.inner.revoked.read().get(user)

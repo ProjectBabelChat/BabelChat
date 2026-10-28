@@ -148,5 +148,9 @@
 
     # Prometheus and Grafana: `deploy.sh dashboard`.
     monitoring.machine = "core";
+
+    # Every store's backups, copied every 15 minutes (`deploy.sh restore
+    # <service> --from-copy`): on a machine holding no store or standby.
+    backupCopies.machine = "llm";
   };
 }

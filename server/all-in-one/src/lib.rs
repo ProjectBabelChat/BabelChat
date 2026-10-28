@@ -124,7 +124,7 @@ impl Server {
                 translation_cells,
             },
             EdgeConfig {
-                token_key,
+                token_keys: vec![token_key],
                 writes_per_second: 5.0,
                 write_burst: 20.0,
             },

@@ -9,6 +9,13 @@
 #   deploy/nixos/deploy.sh dashboard            # Grafana at http://localhost:3000
 #   deploy/nixos/deploy.sh failover <service|machine>… [--primary-lost]
 #                                               # standbys take over
+#   deploy/nixos/deploy.sh restore <service> [--from-copy]
+#                                               # back to its newest backup
+#   deploy/nixos/deploy.sh certificates         # what is trusted, and until when
+#   deploy/nixos/deploy.sh renew [--within-days <n>]
+#                                               # certificates expiring soon (90)
+#   deploy/nixos/deploy.sh rotate ca | token-key [--finish]
+#                                               # replace the CA or the token key
 #   deploy/nixos/deploy.sh ssh <machine> [<command>…]
 #
 # BABEL_DEPLOYMENT picks the deployment directory (deploy/vultr by default).
@@ -157,7 +164,7 @@ install_machine() {
 
 # Activates <name>'s system: $2 if built already (build_all).
 switch_machine() {
-  local name=$1 toplevel=${2:-} address staging digest
+  local name=$1 toplevel=${2:-} address staging digest wireguard
   address=$(address_of "$name")
   if [ -z "$toplevel" ]; then
     say "Building $name"
@@ -170,7 +177,10 @@ switch_machine() {
   staging=$(mktemp -d)
   trap 'rm -rf "$staging"; trap - RETURN' RETURN
   stage_secrets "$name" "$staging/secrets"
-  digest=$(cd "$staging/secrets" && find . -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+  # Certificates and keys, and WireGuard's key apart: a new certificate
+  # restarts services, not the network.
+  digest=$(cd "$staging/secrets" && find . -type f ! -name wireguard.key | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+  wireguard=$(sha256sum <"$staging/secrets/wireguard.key" | cut -d' ' -f1)
   say "Activating $name"
   tar -C "$staging" -cf - secrets | ssh "${ssh_options[@]}" "root@$address" "
     set -e
@@ -179,16 +189,21 @@ switch_machine() {
     tar -xf - -C /var/lib/babelchat-secrets.new --strip-components=1
     chmod 700 /var/lib/babelchat-secrets.new
     old=\$(cat /var/lib/babelchat-secrets/.digest 2>/dev/null || true)
+    old_wireguard=\$(cat /var/lib/babelchat-secrets/.wireguard-digest 2>/dev/null || true)
     echo $digest >/var/lib/babelchat-secrets.new/.digest
+    echo $wireguard >/var/lib/babelchat-secrets.new/.wireguard-digest
     rm -rf /var/lib/babelchat-secrets.old
     if [ -d /var/lib/babelchat-secrets ]; then mv /var/lib/babelchat-secrets /var/lib/babelchat-secrets.old; fi
     mv /var/lib/babelchat-secrets.new /var/lib/babelchat-secrets
     rm -rf /var/lib/babelchat-secrets.old
     nix-env -p /nix/var/nix/profiles/system --set $toplevel
     $toplevel/bin/switch-to-configuration switch
+    if [ \"\$old_wireguard\" != $wireguard ]; then
+      systemctl restart 'wireguard-*.service' || true
+    fi
     # Services read their certificates when they start.
     if [ \"\$old\" != $digest ]; then
-      systemctl restart 'wireguard-*.service' 'babelchat-*.service' || true
+      systemctl restart 'babelchat-*.service' || true
     fi
   "
 }
@@ -368,6 +383,174 @@ switch_each() {
   return $failed
 }
 
+# Puts a service that keeps data back as it was at its newest backup, on
+# its machine: from that machine's backups or, with --from-copy, from the
+# newest copy on the backupCopies machine (for a machine that lost them:
+# reinstalled, or newly placed). Writes since that backup are lost; the
+# data the service had is put aside. Its standby starts over from a
+# checkpoint.
+restore() {
+  local usage="usage: deploy.sh restore <service> [--from-copy]"
+  local name='' from_copy='' arg machine='' standby copies source
+  for arg in "$@"; do
+    case $arg in
+      --from-copy) from_copy=1 ;;
+      -*) echo "$usage" >&2; exit 1 ;;
+      *)
+        [ -z "$name" ] || { echo "$usage" >&2; exit 1; }
+        name=$arg
+        ;;
+    esac
+  done
+  [ -n "$name" ] || { echo "$usage" >&2; exit 1; }
+  read -r _ machine standby < <(evaluate stores | awk -v name="$name" '$1 == name') || true
+  if [ -z "$machine" ]; then
+    echo "$name is not a service that keeps data" >&2
+    exit 1
+  fi
+  load_inventory
+  local on_machine=(ssh "${ssh_options[@]}" "root@$(address_of "$machine")")
+  local backups=/var/lib/private/babelchat-backups/$name
+
+  if [ -n "$from_copy" ]; then
+    copies=$(evaluate backupCopies)
+    [ -n "$copies" ] || { echo "no backupCopies in $deployment/cluster.nix" >&2; exit 1; }
+    local on_copies=(ssh "${ssh_options[@]}" "root@$(address_of "$copies")")
+    # Not fetched again meanwhile.
+    "${on_copies[@]}" "systemctl stop babelchat-backup-copy.timer babelchat-backup-copy.service"
+    # One copy per machine the service ran on: the one with the newest
+    # backup.
+    source=$("${on_copies[@]}" "cd /var/lib/babelchat-backup-copies/$name 2>/dev/null &&
+      stat -c '%Y %n' */meta/[0-9]* 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2 | cut -d/ -f1" || true)
+    backups=/var/lib/babelchat-restore/$name
+    if [ -z "$source" ]; then
+      echo "no copy of $name's backups on $copies" >&2
+    else
+      say "Copying $name's backups (made on $source) from $copies to $machine"
+    fi
+    if [ -z "$source" ] || ! "${on_copies[@]}" "tar -C /var/lib/babelchat-backup-copies/$name/$source -cf - ." |
+      "${on_machine[@]}" "rm -rf $backups && mkdir -p -m 700 /var/lib/babelchat-restore && mkdir $backups && tar -C $backups -xf -"; then
+      "${on_copies[@]}" "systemctl start babelchat-backup-copy.timer"
+      exit 1
+    fi
+    "${on_copies[@]}" "systemctl start babelchat-backup-copy.timer"
+  fi
+
+  # A standby going on would take the restored primary's writes for the
+  # ones it has (they are numbered alike).
+  if [ "$standby" != - ]; then
+    say "Stopping $name's standby on $standby"
+    ssh "${ssh_options[@]}" "root@$(address_of "$standby")" "systemctl stop babelchat-standby-$name"
+  fi
+  say "Restoring $name on $machine"
+  if ! "${on_machine[@]}" "
+    set -e
+    package=\$(grep -o '^ExecStart=/nix/store/[^/]*' /etc/systemd/system/babelchat-$name.service | cut -d= -f2)
+    systemctl stop babelchat-$name
+    if [ -e /var/lib/private/babelchat/$name ]; then
+      mkdir -p /var/lib/babelchat-retired
+      mv /var/lib/private/babelchat/$name /var/lib/babelchat-retired/$name-\$(date +%Y%m%d-%H%M%S)
+    fi
+    \$package/bin/babel-admin restore --backup-dir $backups --data /var/lib/private/babelchat/$name
+    rm -rf /var/lib/babelchat-restore
+    systemctl start babelchat-$name
+  "; then
+    echo "restoring failed: $name is stopped, what it had put aside in /var/lib/babelchat-retired on $machine" >&2
+    exit 1
+  fi
+  if [ "$standby" != - ]; then
+    say "Starting $name's standby on $standby over"
+    ssh "${ssh_options[@]}" "root@$(address_of "$standby")" "
+      set -e
+      if [ -e /var/lib/private/babelchat/$name ]; then
+        mkdir -p /var/lib/babelchat-retired
+        mv /var/lib/private/babelchat/$name /var/lib/babelchat-retired/$name-\$(date +%Y%m%d-%H%M%S)
+      fi
+      systemctl start babelchat-standby-$name
+    "
+  fi
+  say "$name is back as of its newest backup; what it had is in /var/lib/babelchat-retired on $machine"
+}
+
+# babel-pki on the deployment's certificates.
+babel_pki=
+pki() {
+  [ -n "$babel_pki" ] || babel_pki=$(build package)/bin/babel-pki
+  "$babel_pki" "$@" --dir "$secrets/pki"
+}
+
+# Activates every machine, one after another, with what one build made.
+switch_all() {
+  local built machine toplevel
+  load_inventory
+  say "Building every machine"
+  built=$(build_all $(inventory | awk '{ print $1 }'))
+  while read -r machine toplevel; do
+    switch_machine "$machine" "$toplevel" </dev/null
+  done <<<"$built"
+}
+
+renew() {
+  local renewed
+  renewed=$(pki renew "$@")
+  if [ -z "$renewed" ]; then
+    say "Nothing to renew"
+    return
+  fi
+  printf '%s\n' "$renewed"
+  switch_all
+  say "Renewed: back up $secrets"
+}
+
+# Replaces the CA, or the key user tokens are signed with, in steps, every
+# machine switched after each: nothing stops trusting what another still
+# uses. Run again after an interruption, it goes on.
+rotate() {
+  local usage="usage: deploy.sh rotate ca | token-key [--finish]"
+  case ${1:-} in
+    ca)
+      if [ "$(grep -c 'BEGIN CERTIFICATE' "$secrets/pki/ca.crt")" -lt 2 ]; then
+        pki new-ca
+      fi
+      say "1/3: every machine trusts the old CA and the new one"
+      switch_all
+      say "2/3: every certificate from the new CA"
+      pki renew
+      switch_all
+      say "3/3: only the new CA trusted"
+      pki drop-old-cas
+      switch_all
+      say "The CA is replaced; certificates of the old one are refused. Back up $secrets"
+      ;;
+    token-key)
+      if [ "${2:-}" = --finish ]; then
+        pki drop-old-token-keys
+        switch_all
+        say "Only tokens of the new key are accepted. Back up $secrets"
+        return
+      fi
+      [ $# -eq 1 ] || { echo "$usage" >&2; exit 1; }
+      if [ ! -f "$secrets/pki/token.next.key" ] &&
+        [ "$(grep -c 'BEGIN PUBLIC KEY' "$secrets/pki/token.pub")" -lt 2 ]; then
+        pki new-token-key
+      fi
+      say "1/2: Edges accept tokens of either key"
+      switch_all
+      if [ -f "$secrets/pki/token.next.key" ]; then
+        pki use-new-token-key
+      fi
+      say "2/2: tokens are signed with the new key"
+      switch_all
+      say "Tokens of the old key last a week. Then (or now, if it leaked, signing everyone out): deploy.sh rotate token-key --finish"
+      say "Back up $secrets"
+      ;;
+    *)
+      echo "$usage" >&2
+      exit 1
+      ;;
+  esac
+}
+
 command=${1:-}
 shift || true
 case $command in
@@ -388,6 +571,18 @@ case $command in
   failover)
     failover "$@"
     ;;
+  restore)
+    restore "$@"
+    ;;
+  certificates)
+    pki status
+    ;;
+  renew)
+    renew "$@"
+    ;;
+  rotate)
+    rotate "$@"
+    ;;
   admin)
     operator=$(evaluate operator)
     ssh "${ssh_options[@]}" "root@$(address_of "$operator")" babel-admin "$@"
@@ -405,7 +600,7 @@ case $command in
     ssh "${ssh_options[@]}" "root@$(address_of "$name")" "$@"
     ;;
   *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

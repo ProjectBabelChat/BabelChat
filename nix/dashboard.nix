@@ -235,11 +235,21 @@ in
       queries = one "time() - babel_standby_last_contact_timestamp_seconds" "{{service}} on {{machine}}";
     })
     (panel {
-      title = "Since the last backup";
+      title = "Since the last backup, and its copy";
       x = 16;
       y = 41;
       unit = "s";
-      queries = one "time() - babel_backup_last_success_timestamp_seconds" "{{service}}";
+      queries = [
+        {
+          expr = "time() - babel_backup_last_success_timestamp_seconds";
+          legend = "{{service}}";
+        }
+        {
+          expr = "time() - babel_backup_copy_last_success_timestamp_seconds";
+          legend = "{{service}} copied";
+          ref = "B";
+        }
+      ];
     })
     (panel {
       title = "Outbox: deliveries and retries per second";
@@ -295,6 +305,14 @@ in
       y = 66;
       unit = "Bps";
       queries = one ''sum by (machine) (rate(node_network_transmit_bytes_total{device!="lo"}[5m]))'' "{{machine}}";
+    })
+    (panel {
+      title = "Until certificates expire";
+      description = "`deploy.sh renew` issues those expiring within 90 days again.";
+      x = 16;
+      y = 66;
+      unit = "s";
+      queries = one "min by (service) (babel_certificate_expiry_timestamp_seconds) - time()" "{{service}}";
     })
   ];
 }

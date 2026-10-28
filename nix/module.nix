@@ -79,7 +79,7 @@ let
     backups = mkOption {
       type = types.bool;
       default = true;
-      description = "Back the store up every 15 minutes (on the same disk; the standby is the copy elsewhere).";
+      description = "Back the store up every 15 minutes, on its machine (and to `backupCopies`).";
     };
   };
 
@@ -286,6 +286,11 @@ let
             };
           }
         );
+      };
+      backupCopies = mkOption {
+        default = null;
+        description = "A machine keeping a copy of every store's backups, fetched every 15 minutes over WireGuard: what is left when a store's machine and its standby are both lost. Best on a machine holding neither.";
+        type = types.nullOr (types.submodule { options = placed; });
       };
       acmeEmail = mkOption {
         type = types.nullOr types.str;
@@ -672,6 +677,52 @@ let
 
   others = lib.filterAttrs (name: machine: name != cfg.machine && !machine.cutOff) cluster.machines;
 
+  # ---- Copies of backups -------------------------------------------------
+
+  # Machines with backups lend them, read-only, to the backupCopies machine
+  # (rsync's daemon, on WireGuard only). It fetches each service's from the
+  # service's machine into <service>/<machine>: after a failover, the copy
+  # of the old machine's backups stays as it was.
+  backedUp = lib.filter (service: service.stores && service.backups) (lib.attrValues services);
+  lendsBackups =
+    cluster.backupCopies != null && lib.any (service: service.machine == cfg.machine) backedUp;
+  copiesHere = cluster.backupCopies != null && cluster.backupCopies.machine == cfg.machine;
+  copiesDir = "/var/lib/babelchat-backup-copies";
+  # Read by node_exporter (its textfile collector).
+  textfileDir = "/var/lib/babelchat-metrics";
+
+  copyScript = pkgs.writeShellScript "babelchat-backup-copy" ''
+    set -u
+    copy() {
+      local name=$1 machine=$2 address=$3 status=0
+      mkdir -p ${copiesDir}/$name/$machine
+      # Changed files are put in place together at the end: a copy cut
+      # short holds no backup without its files.
+      ${pkgs.rsync}/bin/rsync -rt --delete --delay-updates --contimeout=10 --timeout=60 \
+        rsync://$address/babelchat-backups/$name/ ${copiesDir}/$name/$machine/ || status=$?
+      # 24: files vanished on the way (an old backup purged meanwhile).
+      if [ $status -ne 0 ] && [ $status -ne 24 ]; then
+        echo "copying the backups of $name from $machine failed ($status)" >&2
+        return
+      fi
+      echo "babel_backup_copy_last_success_timestamp_seconds{service=\"$name\"} $(date +%s)" \
+        >${textfileDir}/$name.prom.new
+      mv ${textfileDir}/$name.prom.new ${textfileDir}/$name.prom
+    }
+    ${lib.concatMapStrings (
+      service: "copy ${service.name} ${service.machine} ${wgAddress service.machine}\n"
+    ) backedUp}
+    # Services no longer in the cluster.
+    keep=" ${lib.concatMapStringsSep " " (service: service.name) backedUp} "
+    for file in ${textfileDir}/*.prom; do
+      [ -e "$file" ] || continue
+      case $keep in
+        *" $(basename "$file" .prom) "*) ;;
+        *) rm -f "$file" ;;
+      esac
+    done
+  '';
+
   # ---- Monitoring --------------------------------------------------------
 
   nodeExporterPort = 9100;
@@ -736,6 +787,12 @@ let
           )
           (alert "BackupFailing" "increase(babel_backup_failures_total[1h]) > 0" "0m"
             "Backing {{ $labels.service }} up failed"
+          )
+          (alert "BackupCopyStale" "time() - babel_backup_copy_last_success_timestamp_seconds > 3600" "5m"
+            "The backups of {{ $labels.service }} have not been copied for an hour"
+          )
+          (alert "CertificateExpiring" "babel_certificate_expiry_timestamp_seconds - time() < 30 * 86400" "1h"
+            "The certificate of {{ $labels.service }} expires within 30 days: deploy.sh renew"
           )
           (alert "OutboxStuck" "rate(babel_outbox_retries_total[5m]) > 0.5" "10m"
             "{{ $labels.service }} cannot deliver guild events"
@@ -877,7 +934,13 @@ in
       ''
     );
 
-    systemd.tmpfiles.rules = [ "d ${cfg.secretsDir} 0700 root root -" ];
+    systemd.tmpfiles.rules = [
+      "d ${cfg.secretsDir} 0700 root root -"
+    ]
+    ++ lib.optionals copiesHere [
+      "d ${copiesDir} 0700 root root -"
+      "d ${textfileDir} 0755 root root -"
+    ];
 
     networking.wireguard.interfaces.${cluster.wireguard.interface} = {
       ips = [ "${wgAddress cfg.machine}/${toString cluster.wireguard.prefixLength}" ];
@@ -901,7 +964,8 @@ in
         map (service: service.port) here
         ++ map metricsPort (here ++ standbysHere)
         ++ [ nodeExporterPort ]
-        ++ lib.optional egressHere cluster.egress.port;
+        ++ lib.optional egressHere cluster.egress.port
+        ++ lib.optional lendsBackups 873;
     };
 
     systemd.services =
@@ -913,7 +977,55 @@ in
       )
       // lib.optionalAttrs monitoringHere {
         grafana.serviceConfig.LoadCredential = [ "secret_key:${cfg.secretsDir}/grafana.key" ];
+      }
+      // lib.optionalAttrs copiesHere {
+        babelchat-backup-copy = {
+          description = "Copy every store's backups here";
+          after = [ "wireguard-${cluster.wireguard.interface}.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = copyScript;
+            ProtectSystem = "strict";
+            ReadWritePaths = [
+              copiesDir
+              textfileDir
+            ];
+            ProtectHome = true;
+            PrivateTmp = true;
+            PrivateDevices = true;
+            NoNewPrivileges = true;
+          };
+        };
       };
+
+    systemd.timers.babelchat-backup-copy = mkIf copiesHere {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "5min";
+        OnUnitActiveSec = "15min";
+      };
+    };
+
+    services.rsyncd = mkIf lendsBackups {
+      enable = true;
+      settings = {
+        # As root, to read every service's own; for the backupCopies
+        # machine only, on WireGuard only (the firewall).
+        globalSection = {
+          uid = "root";
+          gid = "root";
+          "use chroot" = true;
+          "hosts allow" = wgAddress cluster.backupCopies.machine;
+          "hosts deny" = "*";
+          "reverse lookup" = false;
+        };
+        sections.babelchat-backups = {
+          path = "/var/lib/private/babelchat-backups";
+          "read only" = true;
+          list = false;
+        };
+      };
+    };
 
     services.prometheus = lib.mkMerge [
       {
@@ -923,6 +1035,7 @@ in
           listenAddress = "0.0.0.0";
           port = nodeExporterPort;
           enabledCollectors = [ "systemd" ];
+          extraFlags = lib.optional copiesHere "--collector.textfile.directory=${textfileDir}";
         };
       }
       (mkIf monitoringHere {

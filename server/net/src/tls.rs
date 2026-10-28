@@ -62,6 +62,9 @@ fn provider() -> Arc<CryptoProvider> {
 /// A service's certificate, its key and the cluster CA, read from PEM files.
 pub struct Credentials {
     pub identity: Identity,
+    /// When the certificate stops being accepted (Unix seconds): its own
+    /// end, or its CA's if sooner.
+    pub expires: i64,
     chain: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
     roots: Arc<RootCertStore>,
@@ -71,6 +74,7 @@ impl Clone for Credentials {
     fn clone(&self) -> Self {
         Self {
             identity: self.identity.clone(),
+            expires: self.expires,
             chain: self.chain.clone(),
             key: self.key.clone_key(),
             roots: self.roots.clone(),
@@ -81,10 +85,13 @@ impl Clone for Credentials {
 impl Credentials {
     pub fn load(ca: &Path, cert: &Path, key: &Path) -> anyhow::Result<Self> {
         let mut roots = RootCertStore::empty();
+        let mut cas = Vec::new();
         for cert in CertificateDer::pem_file_iter(ca)
             .with_context(|| format!("reading {}", ca.display()))?
         {
-            roots.add(cert?)?;
+            let cert = cert?;
+            cas.push(cert.clone());
+            roots.add(cert)?;
         }
         let chain = CertificateDer::pem_file_iter(cert)
             .with_context(|| format!("reading {}", cert.display()))?
@@ -95,8 +102,11 @@ impl Credentials {
             .first()
             .and_then(identity_of)
             .ok_or_else(|| anyhow!("{} names no BabelChat service", cert.display()))?;
+        let expires =
+            expiry(&chain[0], &cas).with_context(|| format!("reading {}", cert.display()))?;
         Ok(Self {
             identity,
+            expires,
             chain,
             key,
             roots: Arc::new(roots),
@@ -152,6 +162,30 @@ impl Credentials {
             .no_proxy()
             .build()?)
     }
+}
+
+/// When `cert` stops being accepted: its end, or its CA's (among `cas`)
+/// if sooner.
+fn expiry(cert: &CertificateDer<'_>, cas: &[CertificateDer<'_>]) -> anyhow::Result<i64> {
+    let parse = |der: &[u8]| {
+        x509_parser::parse_x509_certificate(der)
+            .map(|(_, cert)| {
+                (
+                    cert.subject().as_raw().to_vec(),
+                    cert.issuer().as_raw().to_vec(),
+                    cert.validity().not_after.timestamp(),
+                )
+            })
+            .map_err(|error| anyhow!("not a certificate: {error}"))
+    };
+    let (_, issuer, mut expires) = parse(cert)?;
+    for ca in cas {
+        let (subject, _, ca_expires) = parse(ca)?;
+        if subject == issuer {
+            expires = expires.min(ca_expires);
+        }
+    }
+    Ok(expires)
 }
 
 /// Verifies a server certificate against the cluster CA and the identity

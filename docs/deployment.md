@@ -106,7 +106,7 @@ babel-message-cell --cluster cluster.toml --name message-cell-0 \
 | `--metrics` (`BABEL_METRICS`): an address | all, standbys | no metrics served |
 | `--signups` (`BABEL_SIGNUPS`): `open`, `invite`, `closed` | the Account service | `open` |
 | `--data` | storing services | `data/<name>` |
-| `--backup-dir`, `--backup-every-mins`, `--backup-keep` | storing services | no backups; 15; 96 |
+| `--backup-dir`, `--backup-every-mins` (`BABEL_BACKUP_EVERY_MINS`), `--backup-keep` | storing services | no backups; 15; 96 |
 | `--plan`, `--daily-budget`, `--mock-latency-ms` | Translation Cells | `free`; none; 300 |
 | `--writes-per-second`, `--write-burst` | Edges | 5; 20 |
 | `--models` (`BABEL_MODELS`), or `--backend`, `--base-url`, `--model`, `--style` for one model; `--egress-proxy` | engines | one mock model |
@@ -152,6 +152,11 @@ deploy/nixos/deploy.sh admin signup-code --uses 5
 deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f
 deploy/nixos/deploy.sh dashboard           # Grafana at http://localhost:3000, through SSH
 deploy/nixos/deploy.sh failover cell-a       # standbys take over its services (below)
+deploy/nixos/deploy.sh restore message-cell-0  # back to its newest backup (below)
+deploy/nixos/deploy.sh certificates          # who for, which CA, until when
+deploy/nixos/deploy.sh renew                 # those expiring within 90 days, handed out
+deploy/nixos/deploy.sh rotate ca             # a new CA, in three steps (below)
+deploy/nixos/deploy.sh rotate token-key      # a new token key; `--finish` a week later
 ```
 
 `BABEL_DEPLOYMENT` picks another deployment directory. Everything is built
@@ -161,10 +166,18 @@ the Nix store: `init` makes them in `deploy/<name>/secrets/` (ignored by
 git; back it up, it holds the CA's key), and `install` and `switch` copy to
 each machine only what its services need, into `/var/lib/babelchat-secrets`,
 where systemd hands each service its own certificate. A change of
-certificates restarts the machine's services.
+certificates restarts the machine's services (of its WireGuard key,
+WireGuard). `renew` and `rotate` change the certificates in `secrets/` and
+switch every machine, one after another, after each step (see
+Certificates); run again after an interruption, they go on.
+On the eight-machine example, `rotate ca` took 5 minutes and `rotate
+token-key` 3, every call through both Edges answering meanwhile (tokens
+from before included), and certificates of the old CA refused after.
 
 Data lives in `/var/lib/babelchat/<name>` (a standby keeps its copy at the
-same path on its machine) and backups in `/var/lib/babelchat-backups/<name>`.
+same path on its machine) and backups in `/var/lib/babelchat-backups/<name>`
+(every 15 minutes, the last 24 hours), copied to `backupCopies.machine`
+when set (below).
 A change of the cluster file restarts every service that reads it.
 
 ### Failing over
@@ -204,12 +217,47 @@ lost: those of its last moment. On the eight-machine example, services
 were unavailable for 6 to 10 seconds, and no acknowledged message was
 lost, planned or with a primary declared lost while it still ran.
 
+### Backups on another machine, and restoring
+
+```sh
+deploy/nixos/deploy.sh restore message-cell-0              # from its machine's backups
+deploy/nixos/deploy.sh restore message-cell-0 --from-copy  # from backupCopies.machine
+```
+
+A standby covers a lost machine. Backups cover what a standby copies too
+(a mistake, a bug writing nonsense) and losing a machine with its standby.
+With `backupCopies.machine` set, that machine fetches every store's backups
+every 15 minutes over WireGuard (from rsync's daemon on each store's
+machine: read-only, for that machine alone) into
+`/var/lib/babelchat-backup-copies/<service>/<machine>`: one copy per
+machine the service ran on, so a failover leaves the copy of the old
+machine's backups alone (remove old ones by hand).
+`babel_backup_copy_last_success_timestamp_seconds` and the
+`BackupCopyStale` alert tell when copying stops. Pick a machine holding no
+store or standby; better still, one with another provider or in another
+region.
+
+`restore` stops the service's standby, puts the service's data aside
+(`/var/lib/babelchat-retired`), restores the newest backup into its place
+(the service's machine's own, or with `--from-copy` the newest copy,
+carried over through the machine running `deploy.sh`), starts the service,
+and has the standby start over from a checkpoint. Writes since that backup
+are lost, up to 15 minutes of them, and other stores are not taken back
+with it: a guild created since may be listed by the Directory, for
+instance. To bring back a service whose machine and standby are both lost,
+reinstall the machine (or place the service on another one), `switch`
+(the service starts empty), then `restore <service> --from-copy`.
+On the eight-machine example, restoring a Message Cell from the copy (a
+small one, 1 MB of backups) took 5 seconds, the messages up to the backup
+back and its standby following again at once.
+
 Moving a service that keeps data anywhere else is changing its `machine`
 with its data copied over first (a standby, or a restored backup).
 
 `nix build .#checks.x86_64-linux.cluster` runs the module on two virtual
 machines: WireGuard, mutual TLS, closed ports, sign-ups by invitation, a
-standby, revoked tokens, metrics collected and shown.
+standby, backups copied and restored, revoked tokens, metrics collected and
+shown.
 
 ## Certificates
 
@@ -217,6 +265,8 @@ standby, revoked tokens, metrics collected and shown.
 babel-pki cluster --cluster cluster.toml           # CA, token keys, one cert per service
 babel-pki issue --dir pki --role admin --name ops  # an operator
 babel-pki issue --dir pki --role tenant --name acme  # a platform using a Translation Cell
+babel-pki status --dir pki                         # who for, which CA, until when
+babel-pki renew --dir pki                          # again, those expiring within 90 days
 ```
 
 | File | Goes to |
@@ -226,14 +276,33 @@ babel-pki issue --dir pki --role tenant --name acme  # a platform using a Transl
 | `<name>.crt`, `<name>.key` | the machine running `<name>` (and its standby) |
 | `token.pub` | Edges |
 | `token.key` | the Account service only |
+| `token.next.key` | nowhere yet (while the token key is replaced) |
 
 A service's certificate names it (`babel://message-cell/message-cell-0`).
 Callers check that name, not the host name: certificates need no addresses,
 and a service can move to another machine (or its standby take over)
 without new certificates. User tokens are signed with Ed25519 by the Account
 service; Edges only hold the public key, so a compromised Edge cannot mint
-tokens. Certificates last two years; there is no revocation yet, so a lost
-key means a new CA.
+tokens.
+
+Certificates last two years, the CA ten; every service reports when its
+own stops being accepted (`babel_certificate_expiry_timestamp_seconds`),
+and on NixOS an alert fires 30 days before. Services read their
+certificates when they start: renew, hand out the new files, restart.
+
+The CA and the token key are replaced without stopping anything, in steps,
+each handed out everywhere before the next, so that nothing stops trusting
+what another still uses:
+
+| | CA | Token key |
+|---|---|---|
+| 1 | `new-ca`: `ca.crt` holds the new CA, which signs from now on, then the old one; both trusted | `new-token-key`: `token.next.key`, and its public key added to `token.pub`; Edges accept tokens of either |
+| 2 | `renew`: certificates the old CA signed issued again | `use-new-token-key`: the Account service signs with it |
+| 3 | `drop-old-cas`: only the new CA trusted | `drop-old-token-keys`, once tokens of the old key expired (a week) |
+
+There is no revocation of one certificate: for a leaked key, replace the
+CA (certificates of the old one are refused once step 3 is out), or the
+token key, finishing at once (everyone signs in again).
 
 ## The private network
 
@@ -301,7 +370,12 @@ babel-admin restore --backup-dir /mnt/backups/message-cell-0 --data /var/lib/bab
 ```
 
 restores the newest backup into an empty data directory, with the service
-stopped.
+stopped. Its standbys start over from an empty data directory: going on,
+they would take the restored store's writes for the ones they hold.
+
+On NixOS, `deploy.sh restore` does all of it, and another machine can
+keep copies of every store's backups (see "Backups on another machine,
+and restoring").
 
 ## Standbys
 
@@ -425,9 +499,9 @@ deploy/nixos/deploy.sh dashboard   # http://localhost:3000 (Grafana), :9090 (Pro
 ```
 
 Alert rules (`nix/module.nix`) watch for targets down, failed units,
-standbys out of touch or far behind, stale or failing backups, a stuck
-outbox, server errors, failing or slow translations, full disks and low
-memory. Firing alerts show on the dashboard and in Prometheus; nothing
+standbys out of touch or far behind, stale or failing backups or copies,
+a stuck outbox, server errors, failing or slow translations, full disks
+and low memory. Firing alerts show on the dashboard and in Prometheus; nothing
 sends them anywhere yet.
 
 ## Logs and retention
@@ -441,7 +515,7 @@ further behind drops the sessions concerned, and their clients reload.
 - Moving a guild's Translation Cell space.
 - Automatic failover (noticing a lost primary and failing over without an
   operator); a replicated Directory.
-- Certificate rotation and revocation.
+- Revoking one certificate (replacing the CA revokes them all).
 - Sending alerts (to e-mail, chat or a phone).
 - PostgreSQL for the (closed) Account service.
 - TLS for clients served by Edges themselves (Caddy does it in front).

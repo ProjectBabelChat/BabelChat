@@ -93,6 +93,8 @@ in
   operator = cluster.operator.machine;
   monitoring =
     if cluster ? monitoring && cluster.monitoring != null then cluster.monitoring.machine else "";
+  backupCopies =
+    if cluster ? backupCopies && cluster.backupCopies != null then cluster.backupCopies.machine else "";
 
   # One line per machine for deploy.sh: name, public address, then the
   # files of secrets/ it needs. Machines cut off are left out.

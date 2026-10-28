@@ -159,6 +159,14 @@ Done so far:
   it becomes the new standby). Drilled on the eight machines, planned
   and with a machine lost: 6 to 10 seconds unavailable, no acknowledged
   message lost.
+- Backups on another machine: one machine fetches every store's backups
+  over WireGuard every 15 minutes; `deploy.sh restore <service>
+  [--from-copy]` puts a service back as of its newest backup, its standby
+  starting over.
+- Certificates renewed and the CA and the token key replaced without
+  stopping anything (`deploy.sh renew`, `rotate ca`, `rotate token-key`):
+  both old and new trusted until everything has the new; an alert 30
+  days before a certificate expires.
 - Running it: the eight machines on Vultr, installed and updated with
   `deploy.sh`, chatting over HTTPS with translations from Hy-MT2 on a CPU.
 - Measured on a rented GPU (NVIDIA A16): what one GPU translates per
@@ -167,8 +175,8 @@ Done so far:
 Next:
 
 - The desktop app on an `https://` server; GPU engines in the NixOS module.
-- Operations: automatic failover; backups on another machine; certificate
-  rotation; sending alerts; moving a guild's Translation Cell space; a
+- Operations: automatic failover; sending alerts; backups in another
+  region (object storage); moving a guild's Translation Cell space; a
   replicated Directory; machines without Nix (plain systemd units).
 - Translation from real usage: window and summary sizes tuned with real
   numbers; reference channels (owner-chosen descriptions) as context.

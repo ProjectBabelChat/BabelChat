@@ -48,7 +48,7 @@ pub struct StoreArgs {
     #[arg(long)]
     pub backup_dir: Option<PathBuf>,
     /// Minutes between backups.
-    #[arg(long, default_value_t = 15)]
+    #[arg(long, env = "BABEL_BACKUP_EVERY_MINS", default_value_t = 15)]
     pub backup_every_mins: u64,
     /// Backups kept.
     #[arg(long, default_value_t = 96)]
@@ -97,6 +97,8 @@ impl Node {
         if let Some(address) = &args.metrics {
             crate::prometheus::serve(address)?;
         }
+        metrics::gauge!("babel_certificate_expiry_timestamp_seconds")
+            .set(credentials.expires as f64);
         Ok(Self {
             cluster,
             identity,

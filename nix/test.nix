@@ -1,7 +1,8 @@
 # The NixOS module on two virtual machines: services finding each other
 # over WireGuard and mutual TLS, ports closed outside WireGuard, sign-ups by
-# invitation, a standby following its primary, signing other devices out,
-# Prometheus collecting every service and Grafana showing them.
+# invitation, a standby following its primary, backups copied to another
+# machine, signing other devices out, Prometheus collecting every service
+# and Grafana showing them.
 #
 #   nix build .#checks.x86_64-linux.cluster
 { pkgs, package }:
@@ -72,6 +73,7 @@ let
       };
       operator.machine = "core";
       monitoring.machine = "core";
+      backupCopies.machine = "edge";
     };
 
   node =
@@ -98,6 +100,10 @@ let
         pkgs.jq
       ];
       virtualisation.memorySize = if name == "core" then 2048 else 1536;
+      # A backup a minute after starting, not 15.
+      systemd.services = lib.optionalAttrs (name == "core") {
+        babelchat-message-cell-0.environment.BABEL_BACKUP_EVERY_MINS = "1";
+      };
     };
 in
 pkgs.testers.runNixOSTest {
@@ -154,6 +160,19 @@ pkgs.testers.runNixOSTest {
               "journalctl -u babelchat-standby-message-cell-0 | grep -q 'following the primary'"
           )
 
+      with subtest("backups are copied to another machine, and restore"):
+          core.wait_until_succeeds("test -f /var/lib/private/babelchat-backups/message-cell-0/meta/1", timeout=180)
+          # For the copies machine only, on WireGuard only.
+          core.fail("${pkgs.rsync}/bin/rsync --contimeout=5 rsync://10.8.0.2/babelchat-backups/message-cell-0/")
+          edge.fail("${pkgs.rsync}/bin/rsync --contimeout=5 rsync://${nodes.core.networking.primaryIPAddress}/babelchat-backups/message-cell-0/")
+          edge.succeed("systemctl start babelchat-backup-copy.service")
+          edge.succeed("test -f /var/lib/babelchat-backup-copies/message-cell-0/core/meta/1")
+          edge.succeed(
+              "${package}/bin/babel-admin restore"
+              " --backup-dir /var/lib/babelchat-backup-copies/message-cell-0/core --data /tmp/restored"
+          )
+          edge.succeed("test -f /tmp/restored/CURRENT")
+
       with subtest("signing the other devices out revokes their tokens"):
           other = api("auth/login", {"name": "alice", "password": "correct horse"})["jwt"]
           fresh = api("me/sign_out_others", {}, other)["jwt"]
@@ -179,6 +198,18 @@ pkgs.testers.runNixOSTest {
               " --data-urlencode 'query=babel_requests_total{service=\"edge-0\", route=\"/messages/send_message\"}'"
               " | jq -e '.data.result | length > 0'",
               timeout=60,
+          )
+          core.wait_until_succeeds(
+              "curl -sfG http://127.0.0.1:9090/api/v1/query"
+              " --data-urlencode 'query=babel_backup_copy_last_success_timestamp_seconds{service=\"message-cell-0\"}'"
+              " | jq -e '.data.result | length > 0'",
+              timeout=60,
+          )
+          # Certificates of two years, the CA's of ten.
+          core.succeed(
+              "curl -sfG http://127.0.0.1:9090/api/v1/query"
+              " --data-urlencode 'query=min(babel_certificate_expiry_timestamp_seconds) - time() > 700 * 86400'"
+              " | jq -e '.data.result | length == 1'"
           )
           core.wait_until_succeeds(
               "curl -sfG http://127.0.0.1:9090/api/v1/query"

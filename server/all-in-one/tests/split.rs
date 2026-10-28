@@ -215,7 +215,7 @@ pub async fn start(edges: usize) -> SplitCluster {
                 translation_cells: internal.translation_cells(name),
             },
             EdgeConfig {
-                token_key: jsonwebtoken::DecodingKey::from_ed_der(&token_key),
+                token_keys: vec![jsonwebtoken::DecodingKey::from_ed_der(&token_key)],
                 writes_per_second: 100.0,
                 write_burst: 100.0,
             },
