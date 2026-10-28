@@ -251,6 +251,7 @@ impl Inner {
         if self.limiter.allow(&claim.sub) {
             Ok(())
         } else {
+            metrics::counter!("babel_edge_rate_limited_total").increment(1);
             Err(ApiError::RateLimited)
         }
     }

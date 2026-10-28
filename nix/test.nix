@@ -1,6 +1,7 @@
 # The NixOS module on two virtual machines: services finding each other
 # over WireGuard and mutual TLS, ports closed outside WireGuard, sign-ups by
-# invitation, a standby following its primary, signing other devices out.
+# invitation, a standby following its primary, signing other devices out,
+# Prometheus collecting every service and Grafana showing them.
 #
 #   nix build .#checks.x86_64-linux.cluster
 { pkgs, package }:
@@ -70,6 +71,7 @@ let
         https = false;
       };
       operator.machine = "core";
+      monitoring.machine = "core";
     };
 
   node =
@@ -88,13 +90,14 @@ let
         mkdir -p /var/lib/babelchat-secrets/pki
         cp ${pki}/pki/* /var/lib/babelchat-secrets/pki/
         echo ${privateKey} > /var/lib/babelchat-secrets/wireguard.key
+        echo test-only > /var/lib/babelchat-secrets/grafana.key
         chmod -R u+w,go-rwx /var/lib/babelchat-secrets
       '';
       environment.systemPackages = [
         pkgs.curl
         pkgs.jq
       ];
-      virtualisation.memorySize = 1536;
+      virtualisation.memorySize = if name == "core" then 2048 else 1536;
     };
 in
 pkgs.testers.runNixOSTest {
@@ -160,5 +163,48 @@ pkgs.testers.runNixOSTest {
           edge.succeed(
               f"curl -sf -H 'authorization: Bearer {fresh}' http://127.0.0.1:7000/me/get_settings"
           )
+
+      with subtest("Prometheus collects every service, standby and machine"):
+          core.wait_for_unit("prometheus.service")
+          edge.succeed("curl -sf http://10.8.0.11:9110/metrics | grep -q babel_standby_behind")
+          edge.fail("curl -s --max-time 3 http://${nodes.core.networking.primaryIPAddress}:9101/metrics")
+          # 5 services, 1 standby, 2 machines.
+          core.wait_until_succeeds(
+              "curl -sfG http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=count(up == 1)'"
+              " | jq -e '.data.result[0].value[1] == \"8\"'",
+              timeout=120,
+          )
+          core.wait_until_succeeds(
+              "curl -sfG http://127.0.0.1:9090/api/v1/query"
+              " --data-urlencode 'query=babel_requests_total{service=\"edge-0\", route=\"/messages/send_message\"}'"
+              " | jq -e '.data.result | length > 0'",
+              timeout=60,
+          )
+          core.wait_until_succeeds(
+              "curl -sfG http://127.0.0.1:9090/api/v1/query"
+              " --data-urlencode 'query=babel_translation_messages_total'"
+              " | jq -e '.data.result | length > 0'",
+              timeout=60,
+          )
+
+      with subtest("Grafana shows the dashboard"):
+          core.wait_for_unit("grafana.service")
+          # The first start sets its database up: slow on a small machine.
+          core.wait_for_open_port(3000, timeout=600)
+          core.wait_until_succeeds(
+              "curl -sf http://127.0.0.1:3000/api/dashboards/uid/babelchat | jq -e '.dashboard.title == \"BabelChat\"'",
+              timeout=60,
+          )
+          # Through its Prometheus data source, as the panels ask.
+          body = json.dumps({
+              "from": "now-5m",
+              "to": "now",
+              "queries": [{"refId": "A", "datasource": {"uid": "prometheus"}, "expr": "up", "instant": True}],
+          })
+          out = core.succeed(
+              f"curl -s -X POST http://127.0.0.1:3000/api/ds/query -H 'content-type: application/json' -d '{body}'"
+          )
+          frames = json.loads(out).get("results", {}).get("A", {}).get("frames", [])
+          assert len(frames) == 8, out
     '';
 }

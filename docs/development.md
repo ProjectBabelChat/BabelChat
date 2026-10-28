@@ -266,6 +266,29 @@ cargo run -p babel-engine --example sample_chat -- --models deploy/local/models.
 A laptop has 16 GB or so shared by the model, the cluster and the build:
 stop model servers before building the desktop app or the whole workspace.
 
+## Measuring a model server
+
+`load_test` runs the same chat in N guilds at once (each with its own
+context, its window growing) and prints, per N, how long a message waits
+for its translations and how many the server finishes per second: how
+many guilds one GPU carries, and what a translation costs.
+
+```sh
+cargo run --release -p babel-engine --example load_test -- \
+  --models deploy/bench/models.toml --model hy-mt2-7b --guilds 1,2,4,8,16
+```
+
+For a rented GPU machine (Ubuntu with NVIDIA's driver),
+`deploy/bench/gpu.sh` builds llama.cpp for CUDA, fetches the models and
+serves one at a time with N parallel slots; the load test reaches it
+through a tunnel:
+
+```sh
+scp deploy/bench/gpu.sh root@<gpu>: && ssh root@<gpu> ./gpu.sh setup
+ssh root@<gpu> ./gpu.sh serve hy-mt2-7b 8
+ssh -N -L 8001:127.0.0.1:8001 root@<gpu> &     # then load_test as above
+```
+
 ## Tests
 
 ```sh

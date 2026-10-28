@@ -103,6 +103,7 @@ babel-message-cell --cluster cluster.toml --name message-cell-0 \
 | `--cluster` (`BABEL_CLUSTER`) | all | `cluster.toml` |
 | `--name` (`BABEL_NAME`) | all | — |
 | `--pki` (`BABEL_PKI`) | all, `babel-admin` | the cluster file's `pki` |
+| `--metrics` (`BABEL_METRICS`): an address | all, standbys | no metrics served |
 | `--signups` (`BABEL_SIGNUPS`): `open`, `invite`, `closed` | the Account service | `open` |
 | `--data` | storing services | `data/<name>` |
 | `--backup-dir`, `--backup-every-mins`, `--backup-keep` | storing services | no backups; 15; 96 |
@@ -149,6 +150,7 @@ deploy/nixos/deploy.sh switch              # build here, copy, activate: all mac
 deploy/nixos/deploy.sh admin health        # babel-admin on the operator's machine
 deploy/nixos/deploy.sh admin signup-code --uses 5
 deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f
+deploy/nixos/deploy.sh dashboard           # Grafana at http://localhost:3000, through SSH
 ```
 
 `BABEL_DEPLOYMENT` picks another deployment directory. Everything is built
@@ -170,7 +172,7 @@ the same with its data copied over first (a standby, or a restored backup).
 
 `nix build .#checks.x86_64-linux.cluster` runs the module on two virtual
 machines: WireGuard, mutual TLS, closed ports, sign-ups by invitation, a
-standby, revoked tokens.
+standby, revoked tokens, metrics collected and shown.
 
 ## Certificates
 
@@ -351,6 +353,45 @@ cluster, and Edges answer it in plain HTTP (for load balancers).
 `babel-admin health` asks every service of the cluster file and fails if
 one does not answer.
 
+## Metrics
+
+With `--metrics <address>`, a service or standby serves its numbers at
+`GET /metrics` on that address, in Prometheus' text format. It is plain
+HTTP: give it an address on the private network only (the NixOS module
+uses the service's port plus 2000, open on WireGuard only). The numbers are
+counts and timings by route, model or outcome; no user, guild or message
+appears in them. Prometheus adds `service`, `kind`, `role` and `machine` to
+what it collects (on NixOS), so services do not use those labels.
+
+| Metric | From | What |
+|---|---|---|
+| `babel_requests_total`, `babel_request_duration_seconds` (`route`, `status`) | every service | calls of its API; long polls take as long as they wait |
+| `babel_engine_translation_seconds`, `babel_engine_summary_seconds` (`model`, `outcome`) | engines | time a model took: `ok`, `unavailable`, `rate_limited`, `invalid_output`… |
+| `babel_engine_tokens_total` (`model`, `type`) | engines | `input`, `cache_read`, `cache_write`, `output` |
+| `babel_translation_messages_total` (`status`) | Translation Cells | messages `queued` for a model, `over_budget`, or with `no_targets` |
+| `babel_translation_job_seconds` (`outcome`), `babel_translation_jobs` | Translation Cells | from queueing to the answer, retries included; jobs waiting or translating |
+| `babel_edge_sessions`, `babel_edge_websockets` | Edges | sessions; open sockets |
+| `babel_edge_rate_limited_total`, `babel_edge_sessions_dropped_total` | Edges | writes refused; sessions dropped for falling behind |
+| `babel_outbox_delivered_total`, `babel_outbox_retries_total` | Message Cells | guild events forwarded; retries mean a Translation Cell or the Directory is not taking them |
+| `babel_standby_behind`, `babel_standby_last_contact_timestamp_seconds` | standbys | writes behind the primary; when it last answered |
+| `babel_backup_last_success_timestamp_seconds`, `babel_backup_last_duration_seconds`, `babel_backup_failures_total` | services with `--backup-dir` | |
+
+On NixOS, `monitoring.machine` in the cluster description runs Prometheus
+there, collecting every 15 s from every service and standby and from
+`node_exporter` on every machine (CPU, memory, disks, systemd units), kept
+30 days (`monitoring.retention`). Grafana shows it on a provisioned
+dashboard (`nix/dashboard.nix`). Both listen on 127.0.0.1 only:
+
+```sh
+deploy/nixos/deploy.sh dashboard   # http://localhost:3000 (Grafana), :9090 (Prometheus)
+```
+
+Alert rules (`nix/module.nix`) watch for targets down, failed units,
+standbys out of touch or far behind, stale or failing backups, a stuck
+outbox, server errors, failing or slow translations, full disks and low
+memory. Firing alerts show on the dashboard and in Prometheus; nothing
+sends them anywhere yet.
+
 ## Logs and retention
 
 Guild logs, space logs and the Directory's membership stream keep an hour:
@@ -362,7 +403,7 @@ further behind drops the sessions concerned, and their clients reload.
 - Moving a guild's Translation Cell space.
 - Automatic failover, fencing of a returning primary, replicated Directory.
 - Certificate rotation and revocation.
+- Sending alerts (to e-mail, chat or a phone).
 - PostgreSQL for the (closed) Account service.
 - TLS for clients served by Edges themselves (Caddy does it in front).
-- Metrics.
 - Sign-up control in `babel-server` (it takes everyone).

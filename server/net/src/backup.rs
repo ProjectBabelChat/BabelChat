@@ -20,13 +20,25 @@ pub fn schedule(store: Arc<RocksStore>, dir: PathBuf, every: Duration, keep: usi
             let (store, dir_) = (store.clone(), dir.clone());
             let started = std::time::Instant::now();
             match tokio::task::spawn_blocking(move || store.backup(&dir_, keep)).await {
-                Ok(Ok(())) => tracing::info!(
-                    dir = %dir.display(),
-                    took_ms = started.elapsed().as_millis() as u64,
-                    "backed up"
-                ),
-                Ok(Err(error)) => tracing::error!(%error, "backing up failed"),
-                Err(error) => tracing::error!(%error, "backing up failed"),
+                Ok(Ok(())) => {
+                    tracing::info!(
+                        dir = %dir.display(),
+                        took_ms = started.elapsed().as_millis() as u64,
+                        "backed up"
+                    );
+                    metrics::gauge!("babel_backup_last_success_timestamp_seconds")
+                        .set(babel_common::now_ms() as f64 / 1000.0);
+                    metrics::gauge!("babel_backup_last_duration_seconds")
+                        .set(started.elapsed().as_secs_f64());
+                }
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "backing up failed");
+                    metrics::counter!("babel_backup_failures_total").increment(1);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "backing up failed");
+                    metrics::counter!("babel_backup_failures_total").increment(1);
+                }
             }
         }
     });

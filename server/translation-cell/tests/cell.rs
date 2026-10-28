@@ -476,7 +476,10 @@ async fn spaces_choose_their_model() {
 
     paid_space(&cell).await;
     let models = cell.list_models("guild".into()).await.unwrap();
-    let ids = models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>();
+    let ids = models
+        .iter()
+        .map(|model| model.id.as_str())
+        .collect::<Vec<_>>();
     assert_eq!(ids, ["small", "large"]);
 
     let choose = |model: &str| PolicyUpdate {

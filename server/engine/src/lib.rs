@@ -15,7 +15,7 @@ pub mod openai;
 pub mod prompt;
 mod remote;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use babel_api_engine::types::{
@@ -115,6 +115,69 @@ pub(crate) fn no_usage() -> Usage {
     }
 }
 
+/// The error's name in the API, for metrics and logs.
+pub fn error_name(error: &EngineError) -> &'static str {
+    match error {
+        EngineError::Unavailable => "unavailable",
+        EngineError::RateLimited => "rate_limited",
+        EngineError::InvalidOutput => "invalid_output",
+        EngineError::UnsupportedLanguage => "unsupported_language",
+        EngineError::UnknownModel => "unknown_model",
+    }
+}
+
+/// Times a call to `model` (`babel_engine_<call>_seconds`, by model and
+/// outcome).
+fn record<T>(
+    histogram: &'static str,
+    model: &Model,
+    started: Instant,
+    result: &Result<T, EngineError>,
+) {
+    let outcome = match result {
+        Ok(_) => "ok",
+        Err(error) => error_name(error),
+    };
+    metrics::histogram!(histogram, "model" => model.id.clone(), "outcome" => outcome)
+        .record(started.elapsed().as_secs_f64());
+}
+
+/// Counts the tokens a translation took (`babel_engine_tokens_total`).
+fn record_usage(model: &Model, usage: &Usage) {
+    for (token_type, tokens) in [
+        ("input", usage.input_tokens),
+        ("cache_read", usage.cache_read_tokens),
+        ("cache_write", usage.cache_write_tokens),
+        ("output", usage.output_tokens),
+    ] {
+        metrics::counter!("babel_engine_tokens_total", "model" => model.id.clone(), "type" => token_type)
+            .increment(tokens.max(0) as u64);
+    }
+}
+
+/// A model's translation, rejected if it misses a target or runs far
+/// longer than the message.
+async fn checked(model: &Model, body: &TranslateRequest) -> Result<TranslateResponse, EngineError> {
+    let response = model.backend.translate(body).await?;
+
+    let limit = body.message.text.chars().count() * MAX_LENGTH_RATIO + LENGTH_SLACK;
+    let complete = body.targets.iter().all(|target| {
+        response
+            .translations
+            .iter()
+            .any(|translation| translation.lang == target.tag)
+    });
+    let sane = response
+        .translations
+        .iter()
+        .all(|translation| translation.text.chars().count() <= limit);
+    if !complete || !sane {
+        tracing::warn!(model = %model.id, complete, sane, "rejected a translation");
+        return Err(EngineError::InvalidOutput);
+    }
+    Ok(response)
+}
+
 pub(crate) fn add_usage(total: &mut Usage, usage: &Usage) {
     total.input_tokens += usage.input_tokens;
     total.cache_read_tokens += usage.cache_read_tokens;
@@ -133,30 +196,21 @@ impl babel_api_engine::types::Engine for Engine {
             });
         }
 
-        let response = model.backend.translate(&body).await?;
-
-        let limit = body.message.text.chars().count() * MAX_LENGTH_RATIO + LENGTH_SLACK;
-        let complete = body.targets.iter().all(|target| {
-            response
-                .translations
-                .iter()
-                .any(|translation| translation.lang == target.tag)
-        });
-        let sane = response
-            .translations
-            .iter()
-            .all(|translation| translation.text.chars().count() <= limit);
-        if !complete || !sane {
-            tracing::warn!(model = %model.id, complete, sane, "rejected a translation");
-            return Err(EngineError::InvalidOutput);
+        let started = Instant::now();
+        let result = checked(model, &body).await;
+        record("babel_engine_translation_seconds", model, started, &result);
+        if let Ok(response) = &result {
+            record_usage(model, &response.usage);
         }
-
-        Ok(response)
+        result
     }
 
     async fn summarize(&self, body: SummarizeRequest) -> Result<SummarizeResponse, EngineError> {
         let model = self.model(body.model.as_deref())?;
-        let mut response = model.backend.summarize(&body).await?;
+        let started = Instant::now();
+        let result = model.backend.summarize(&body).await;
+        record("babel_engine_summary_seconds", model, started, &result);
+        let mut response = result?;
         let max_chars = body.max_chars.max(0) as usize;
         if response.text.chars().count() > max_chars {
             response.text = response.text.chars().take(max_chars).collect();

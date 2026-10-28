@@ -19,6 +19,11 @@
 # service to another machine is changing its `machine`; one that keeps data
 # needs its data moved too (docs/deployment.md).
 #
+# Every service and standby serves its metrics on its port plus 2000, and
+# every machine runs node_exporter (9100), both on WireGuard only. With
+# `monitoring`, one machine collects them all (Prometheus) and shows them
+# (Grafana), on 127.0.0.1: reach them through SSH (`deploy.sh dashboard`).
+#
 # Secrets never enter the Nix store. They are put in `secretsDir` by the
 # deploy tool (deploy/nixos/deploy.sh): `wireguard.key`, and in `pki/` the
 # certificates of the services placed here. Services read theirs through
@@ -262,6 +267,21 @@ let
           description = "The machine `babel-admin` runs on, holding the operator's certificate.";
         };
       };
+      monitoring = mkOption {
+        default = null;
+        description = "Prometheus and Grafana on one machine, collecting the metrics of every service and machine.";
+        type = types.nullOr (
+          types.submodule {
+            options = placed // {
+              retention = mkOption {
+                type = types.str;
+                default = "30d";
+                description = "How long Prometheus keeps what it collected.";
+              };
+            };
+          }
+        );
+      };
       acmeEmail = mkOption {
         type = types.nullOr types.str;
         default = null;
@@ -426,11 +446,16 @@ let
   };
 
   binary = kind: "${cfg.package}/bin/babel-${kind}";
-  common = name: [
+  metricsPort = service: service.port + 2000;
+  # A standby serves its metrics on the same port as its primary, on
+  # another machine.
+  common = service: [
     "--cluster"
     "/etc/babelchat/cluster.toml"
     "--name"
-    name
+    service.name
+    "--metrics"
+    "0.0.0.0:${toString (metricsPort service)}"
   ];
   storeArgs =
     service:
@@ -445,7 +470,7 @@ let
 
   argsOf =
     service:
-    common service.name
+    common service
     ++ [
       "--pki"
       "%d"
@@ -544,7 +569,7 @@ let
         # stopping this and placing the service on this machine.
         ExecStart = lib.escapeShellArgs (
           [ (binary "standby") ]
-          ++ common service.name
+          ++ common service
           ++ [
             "--pki"
             "%d"
@@ -639,12 +664,113 @@ let
 
   others = lib.filterAttrs (name: _: name != cfg.machine) cluster.machines;
 
+  # ---- Monitoring --------------------------------------------------------
+
+  nodeExporterPort = 9100;
+  monitoringHere = cluster.monitoring != null && cluster.monitoring.machine == cfg.machine;
+
+  # What Prometheus collects: every service and standby, every machine.
+  target = machine: port: labels: {
+    targets = [ "${wgAddress machine}:${toString port}" ];
+    labels = labels // {
+      inherit machine;
+    };
+  };
+  serviceTargets =
+    map (
+      service:
+      target service.machine (metricsPort service) {
+        service = service.name;
+        inherit (service) kind;
+        role = "primary";
+      }
+    ) (lib.attrValues services)
+    ++ map (
+      service:
+      target service.standby (metricsPort service) {
+        service = service.name;
+        inherit (service) kind;
+        role = "standby";
+      }
+    ) (lib.filter (service: service.stores && service.standby != null) (lib.attrValues services));
+  machineTargets = lib.mapAttrsToList (name: _: target name nodeExporterPort { }) cluster.machines;
+
+  # Shown in Grafana ("Firing alerts") and Prometheus; nothing sends them
+  # anywhere yet.
+  alert = name: expr: for: summary: {
+    alert = name;
+    inherit expr for;
+    annotations = { inherit summary; };
+  };
+  alertRules = {
+    groups = [
+      {
+        name = "babelchat";
+        rules = [
+          (alert "TargetDown" "up == 0" "2m"
+            "{{ $labels.service }}{{ $labels.job }} on {{ $labels.machine }} does not answer"
+          )
+          (alert "UnitFailed"
+            ''node_systemd_unit_state{state="failed", name=~"(babelchat|caddy|wireguard|prometheus|grafana).*"} == 1''
+            "1m"
+            "{{ $labels.name }} failed on {{ $labels.machine }}"
+          )
+          (alert "StandbyOutOfTouch" "time() - babel_standby_last_contact_timestamp_seconds > 120" "2m"
+            "The standby of {{ $labels.service }} on {{ $labels.machine }} has not heard from its primary"
+          )
+          (alert "StandbyBehind" "babel_standby_behind > 10000" "5m"
+            "The standby of {{ $labels.service }} is {{ $value }} writes behind"
+          )
+          (alert "BackupStale" "time() - babel_backup_last_success_timestamp_seconds > 3600" "5m"
+            "{{ $labels.service }} has not backed up for an hour"
+          )
+          (alert "BackupFailing" "increase(babel_backup_failures_total[1h]) > 0" "0m"
+            "Backing {{ $labels.service }} up failed"
+          )
+          (alert "OutboxStuck" "rate(babel_outbox_retries_total[5m]) > 0.5" "10m"
+            "{{ $labels.service }} cannot deliver guild events"
+          )
+          (alert "ServerErrors" ''sum by (service) (rate(babel_requests_total{status=~"5.."}[5m])) > 0.1''
+            "10m"
+            "{{ $labels.service }} answers with server errors"
+          )
+          (alert "TranslationsFailing"
+            ''sum(rate(babel_translation_job_seconds_count{outcome!="ok"}[10m])) / sum(rate(babel_translation_job_seconds_count[10m])) > 0.1''
+            "10m"
+            "More than one translation in ten fails"
+          )
+          (alert "TranslationsSlow"
+            "histogram_quantile(0.95, sum by (le) (rate(babel_translation_job_seconds_bucket[10m]))) > 30"
+            "10m"
+            "Translations take more than 30 s (p95)"
+          )
+          (alert "DiskFilling"
+            ''node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.15''
+            "10m"
+            "{{ $labels.machine }}'s disk is more than 85% full"
+          )
+          (alert "MemoryLow" "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.1" "10m"
+            "{{ $labels.machine }} has less than 10% of its memory free"
+          )
+        ];
+      }
+    ];
+  };
+
+  dashboards = pkgs.writeTextDir "babelchat.json" (builtins.toJSON (import ./dashboard.nix));
+
   # Every port of the cluster with what uses it, to refuse two on one
   # machine.
   portsHere =
     map (service: service.port) here
+    ++ map metricsPort (here ++ standbysHere)
+    ++ [ nodeExporterPort ]
     ++ lib.optional egressHere cluster.egress.port
-    ++ map (engine: engine.llama.port) llamasHere;
+    ++ map (engine: engine.llama.port) llamasHere
+    ++ lib.optionals monitoringHere [
+      9090
+      3000
+    ];
 in
 {
   options.services.babelchat = {
@@ -707,6 +833,7 @@ in
           "pki/${cluster.operator.name}.crt"
           "pki/${cluster.operator.name}.key"
         ]
+        ++ lib.optional monitoringHere "grafana.key"
       );
     };
   };
@@ -761,15 +888,103 @@ in
         443
       ];
       interfaces.${cluster.wireguard.interface}.allowedTCPPorts =
-        map (service: service.port) here ++ lib.optional egressHere cluster.egress.port;
+        map (service: service.port) here
+        ++ map metricsPort (here ++ standbysHere)
+        ++ [ nodeExporterPort ]
+        ++ lib.optional egressHere cluster.egress.port;
     };
 
-    systemd.services = lib.listToAttrs (
-      map serviceUnit here
-      ++ map standbyUnit standbysHere
-      ++ map llamaUnit llamasHere
-      ++ lib.optional egressHere egressUnit
-    );
+    systemd.services =
+      lib.listToAttrs (
+        map serviceUnit here
+        ++ map standbyUnit standbysHere
+        ++ map llamaUnit llamasHere
+        ++ lib.optional egressHere egressUnit
+      )
+      // lib.optionalAttrs monitoringHere {
+        grafana.serviceConfig.LoadCredential = [ "secret_key:${cfg.secretsDir}/grafana.key" ];
+      };
+
+    services.prometheus = lib.mkMerge [
+      {
+        # On WireGuard only (the firewall), for the monitoring machine.
+        exporters.node = {
+          enable = true;
+          listenAddress = "0.0.0.0";
+          port = nodeExporterPort;
+          enabledCollectors = [ "systemd" ];
+        };
+      }
+      (mkIf monitoringHere {
+        enable = true;
+        listenAddress = "127.0.0.1";
+        port = 9090;
+        retentionTime = cluster.monitoring.retention;
+        globalConfig.scrape_interval = "15s";
+        scrapeConfigs = [
+          {
+            job_name = "babelchat";
+            static_configs = serviceTargets;
+          }
+          {
+            job_name = "node";
+            static_configs = machineTargets;
+          }
+        ];
+        rules = [ (builtins.toJSON alertRules) ];
+      })
+    ];
+
+    services.grafana = mkIf monitoringHere {
+      enable = true;
+      # Grafana fetches its Prometheus data source on its first start unless
+      # it is given one: take it from nixpkgs (no downloads, below).
+      declarativePlugins = [ pkgs.grafanaPlugins.prometheus ];
+      settings = {
+        server = {
+          http_addr = "127.0.0.1";
+          http_port = 3000;
+        };
+        # Only reachable through SSH to this machine: no accounts. Viewers may
+        # still try queries (Explore).
+        "auth.anonymous" = {
+          enabled = true;
+          org_role = "Viewer";
+        };
+        users.viewers_can_edit = true;
+        auth.disable_login_form = true;
+        security.secret_key = "$__file{/run/credentials/grafana.service/secret_key}";
+        analytics = {
+          reporting_enabled = false;
+          check_for_updates = false;
+          check_for_plugin_updates = false;
+        };
+        news.news_feed_enabled = false;
+        # Everything it needs comes with it: no downloads from grafana.com.
+        plugins = {
+          preinstall_disabled = true;
+          public_key_retrieval_disabled = true;
+        };
+      };
+      provision = {
+        enable = true;
+        datasources.settings.datasources = [
+          {
+            name = "Prometheus";
+            type = "prometheus";
+            uid = "prometheus";
+            url = "http://127.0.0.1:9090";
+            isDefault = true;
+          }
+        ];
+        dashboards.settings.providers = [
+          {
+            name = "BabelChat";
+            options.path = dashboards;
+          }
+        ];
+      };
+    };
 
     services.caddy = mkIf (lib.any (edge: edge.https) edgesHere) {
       enable = true;

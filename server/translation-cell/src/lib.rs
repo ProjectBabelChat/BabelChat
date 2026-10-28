@@ -27,7 +27,7 @@ use std::{
         Arc,
         atomic::{AtomicI64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -696,6 +696,12 @@ impl Inner {
         batch.put_value(WINDOWS, window_key(tenant, &space, &conversation), &window);
         batch.put_value(SPACES, space_key(tenant, &space), &record);
         self.store.write(batch).map_err(storage)?;
+        let counted = match status {
+            TranslationStatus::Pending => "queued",
+            TranslationStatus::BudgetExceeded => "over_budget",
+            _ => "no_targets",
+        };
+        metrics::counter!("babel_translation_messages_total", "status" => counted).increment(1);
 
         if let Some(seq) = seq {
             self.publish(tenant, &space, seq);
@@ -811,6 +817,10 @@ impl Inner {
 
     /// Sends a job to the engine and stores the result.
     async fn run_job(self: Arc<Self>, job: Job) {
+        // Jobs waiting for an engine or translating.
+        let jobs = metrics::gauge!("babel_translation_jobs");
+        jobs.increment(1.0);
+        let started = Instant::now();
         let outcome = {
             let _permit = self.permits.clone().acquire_owned().await;
             let mut delay = Duration::from_millis(500);
@@ -836,6 +846,16 @@ impl Inner {
                 }
             }
         };
+        jobs.decrement(1.0);
+        // From queueing (or resuming) to the translation, retries included.
+        metrics::histogram!(
+            "babel_translation_job_seconds",
+            "outcome" => match &outcome {
+                Ok(_) => "ok",
+                Err(error) => babel_engine::error_name(error),
+            }
+        )
+        .record(started.elapsed().as_secs_f64());
 
         let space = job.message.space.clone();
         let tenant = job.tenant.as_str();

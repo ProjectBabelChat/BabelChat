@@ -6,6 +6,7 @@
 #   deploy/nixos/deploy.sh install <machine>    # replace its OS with NixOS (erases it)
 #   deploy/nixos/deploy.sh switch [<machine>…]  # build and activate (all by default)
 #   deploy/nixos/deploy.sh admin <args…>        # babel-admin on the operator's machine
+#   deploy/nixos/deploy.sh dashboard            # Grafana at http://localhost:3000
 #   deploy/nixos/deploy.sh ssh <machine> [<command>…]
 #
 # BABEL_DEPLOYMENT picks the deployment directory (deploy/vultr by default).
@@ -98,6 +99,9 @@ init() {
   if [ ! -f "$secrets/pki/ops.crt" ]; then
     "$package/bin/babel-pki" issue --dir "$secrets/pki" --role admin --name ops
   fi
+  if [ ! -f "$secrets/grafana.key" ]; then
+    (umask 077 && head -c 32 /dev/urandom | base64 >"$secrets/grafana.key")
+  fi
   say "Secrets are in $secrets: back them up."
 }
 
@@ -179,6 +183,12 @@ case $command in
     operator=$(evaluate operator)
     ssh "${ssh_options[@]}" "root@$(address_of "$operator")" babel-admin "$@"
     ;;
+  dashboard)
+    monitoring=$(evaluate monitoring)
+    [ -n "$monitoring" ] || { echo "no monitoring in $deployment/cluster.nix" >&2; exit 1; }
+    say "Grafana: http://localhost:3000  Prometheus: http://localhost:9090  (Ctrl-C to stop)"
+    ssh "${ssh_options[@]}" -N -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 "root@$(address_of "$monitoring")"
+    ;;
   ssh)
     [ $# -ge 1 ] || { echo "usage: deploy.sh ssh <machine> [<command>…]" >&2; exit 1; }
     name=$1
@@ -186,7 +196,7 @@ case $command in
     ssh "${ssh_options[@]}" "root@$(address_of "$name")" "$@"
     ;;
   *)
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac

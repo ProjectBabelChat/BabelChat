@@ -316,6 +316,10 @@ pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow:
             updates.iter().try_for_each(|update| writer.apply(update))
         })
         .await??;
+        metrics::gauge!("babel_standby_behind")
+            .set(latest.saturating_sub(store.latest_sequence()) as f64);
+        metrics::gauge!("babel_standby_last_contact_timestamp_seconds")
+            .set(babel_common::now_ms() as f64 / 1000.0);
         if reported.elapsed() > Duration::from_secs(60) {
             reported = tokio::time::Instant::now();
             let seq = store.latest_sequence();

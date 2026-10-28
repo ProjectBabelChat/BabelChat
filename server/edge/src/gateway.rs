@@ -66,7 +66,8 @@ pub fn event(kind: EventKind, guild_id: &str) -> Event {
 
 impl Sessions {
     pub fn create(&self, id: &str, user_id: &str, settings: UserSettings) {
-        self.sessions.lock().insert(
+        let mut sessions = self.sessions.lock();
+        sessions.insert(
             id.to_string(),
             Session {
                 user_id: user_id.to_string(),
@@ -78,6 +79,7 @@ impl Sessions {
                 last_seen: Instant::now(),
             },
         );
+        metrics::gauge!("babel_edge_sessions").set(sessions.len() as f64);
     }
 
     /// Adds a guild to every session of `user_id` (or one session), so they
@@ -268,6 +270,7 @@ impl Sessions {
             .map(|ids| ids.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         self.remove(&ids);
+        metrics::counter!("babel_edge_sessions_dropped_total").increment(ids.len() as u64);
         ids.len()
     }
 
@@ -275,6 +278,7 @@ impl Sessions {
     pub fn drop_all(&self) -> usize {
         let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
         self.remove(&ids);
+        metrics::counter!("babel_edge_sessions_dropped_total").increment(ids.len() as u64);
         ids.len()
     }
 
@@ -317,6 +321,7 @@ impl Sessions {
                 self.signals.publish(id, i64::MAX);
             }
         }
+        metrics::gauge!("babel_edge_sessions").set(sessions.len() as f64);
     }
 }
 

@@ -59,6 +59,8 @@ in
 {
   inherit package;
   operator = cluster.operator.machine;
+  monitoring =
+    if cluster ? monitoring && cluster.monitoring != null then cluster.monitoring.machine else "";
 
   # One line per machine for deploy.sh: name, public address, then the
   # files of secrets/ it needs.

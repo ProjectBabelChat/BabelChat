@@ -23,6 +23,7 @@ clap.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
+metrics.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

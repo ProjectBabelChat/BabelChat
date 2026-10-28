@@ -32,6 +32,10 @@ pub struct NodeArgs {
     /// `pki` (systemd's credentials directory, for instance).
     #[arg(long, env = "BABEL_PKI")]
     pub pki: Option<PathBuf>,
+    /// Serve metrics for Prometheus at `GET /metrics` on this address
+    /// (plain HTTP: one on the private network).
+    #[arg(long, env = "BABEL_METRICS")]
+    pub metrics: Option<String>,
 }
 
 /// Command-line options of services that keep data.
@@ -70,7 +74,7 @@ impl Node {
     }
 
     /// Loads whichever service the cluster lists as `args.name` (a standby
-    /// copies any of them).
+    /// copies any of them), and starts serving metrics if asked.
     pub fn load_any(args: &NodeArgs) -> anyhow::Result<Self> {
         let mut cluster = Cluster::load(&args.cluster)?;
         if let Some(pki) = &args.pki {
@@ -90,6 +94,9 @@ impl Node {
             &cluster.key_path(&identity.name),
         )?;
         credentials.expect(&identity)?;
+        if let Some(address) = &args.metrics {
+            crate::prometheus::serve(address)?;
+        }
         Ok(Self {
             cluster,
             identity,
@@ -206,7 +213,13 @@ impl Node {
             .await
             .with_context(|| format!("listening on {address}"))?;
         tracing::info!(service = %self.identity, %address, "serving");
-        serve(router, listener, &self.credentials, policy).await
+        serve(
+            router.route_layer(axum::middleware::from_fn(crate::prometheus::track)),
+            listener,
+            &self.credentials,
+            policy,
+        )
+        .await
     }
 }
 

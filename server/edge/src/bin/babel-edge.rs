@@ -50,7 +50,9 @@ async fn main() -> anyhow::Result<()> {
     let address = node.service.listen_address()?;
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(edge = %node.identity, %address, url = %node.service.url, "serving clients");
-    let router = babel_api_edge::router(edge.clone()).merge(edge.websocket_router());
+    let router = babel_api_edge::router(edge.clone())
+        .merge(edge.websocket_router())
+        .route_layer(axum::middleware::from_fn(babel_net::prometheus::track));
     axum::serve(listener, router).await?;
     Ok(())
 }

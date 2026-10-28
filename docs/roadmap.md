@@ -149,12 +149,21 @@ Done so far:
   tokens every Edge refuses at once (a stream of revocations, like
   placements).
 - Health checks (`babel-admin health`), logs as JSON lines.
+- Metrics: every service counts and times its calls, plus what matters for
+  it (translation times and tokens, sessions, standbys behind, backups);
+  on NixOS, Prometheus and Grafana on one machine with a dashboard and
+  alert rules (`deploy.sh dashboard`).
+- Running it: the eight machines on Vultr, installed and updated with
+  `deploy.sh`, chatting over HTTPS with translations from Hy-MT2 on a CPU.
+- Measured on a rented GPU (NVIDIA A16): what one GPU translates per
+  second and per dollar, with a load test (`load_test`, `deploy/bench`).
 
 Next:
 
-- Running the eight machines; the desktop app on an `https://` server.
-- Operations: metrics; certificate rotation; moving a guild's Translation
-  Cell space; automatic failover and fencing; a replicated Directory;
+- The desktop app on an `https://` server; GPU engines in the NixOS module.
+- Operations: failover in one command, then automatic, with fencing;
+  backups on another machine; certificate rotation; sending alerts;
+  moving a guild's Translation Cell space; a replicated Directory;
   machines without Nix (plain systemd units).
 - Translation from real usage: window and summary sizes tuned with real
   numbers; reference channels (owner-chosen descriptions) as context.

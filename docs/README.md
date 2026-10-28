@@ -48,9 +48,10 @@ for BabelChat.
 | `server/net` | Running apart: cluster file, mutual TLS, remote clients, standbys, egress proxy, `babel-pki`, `babel-admin` |
 | `server/all-in-one` | `babel-server`: every service in one process |
 | `deploy/local` | A whole cluster on one machine, one process per service |
-| `nix` | The server binaries as a Nix package; the NixOS module (`services.babelchat`); its test on virtual machines |
+| `nix` | The server binaries as a Nix package; the NixOS module (`services.babelchat`), with Prometheus and Grafana; its test on virtual machines |
 | `deploy/nixos` | Deploying a cluster to NixOS machines from one description (`deploy.sh`) |
 | `deploy/vultr` | A production-like cluster on eight virtual machines |
+| `deploy/bench` | Measuring a model server on a rented GPU (with the engine's `load_test`) |
 | `client/sdk` | Client SDK: sessions, display language, on-device translation |
 | `client/desktop` | `babelchat`: the desktop app (GPUI + Material 3 Expressive) |
 | `client/cli` | `babel`: a terminal chat client on the SDK |

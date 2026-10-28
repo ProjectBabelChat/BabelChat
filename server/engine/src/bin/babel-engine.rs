@@ -52,6 +52,10 @@ struct Args {
     /// Where the certificates are, instead of the cluster file's `pki`.
     #[arg(long, env = "BABEL_PKI")]
     pki: Option<PathBuf>,
+    /// Serve metrics for Prometheus on this address (plain HTTP; one on the
+    /// private network).
+    #[arg(long, env = "BABEL_METRICS")]
+    metrics: Option<String>,
     /// The models to serve. Without it, one model from the options below.
     #[arg(long, env = "BABEL_MODELS", conflicts_with_all = ["backend", "base_url", "model", "api_key_env", "no_json_mode", "style"])]
     models: Option<PathBuf>,
@@ -123,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                     cluster: args.cluster,
                     name,
                     pki: args.pki,
+                    metrics: args.metrics,
                 },
                 Role::Engine,
             )?;

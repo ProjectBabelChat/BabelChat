@@ -15,6 +15,12 @@ guilds, a tenant cannot reach a Message Cell. Clients check that the server
 holds the certificate of the service they meant to reach. See
 [deployment](../deployment.md).
 
+Metrics are not behind mutual TLS: services and `node_exporter` answer
+`GET /metrics` in plain HTTP, on addresses the firewall opens to WireGuard
+only. They carry counts and timings by route, model and service, never a
+user, guild or message; Grafana and Prometheus listen on 127.0.0.1 of the
+monitoring machine, reached through SSH.
+
 Keeping placement secret still matters against subtler attacks — for
 instance, making a cell slow by abusing another guild on it, to degrade a
 target guild. So placement does not leak either:
@@ -51,7 +57,7 @@ target guild. So placement does not leak either:
 |---|---|
 | Spam in many languages to run up the LLM bill | Daily budget per space; on-device fallback past it |
 | Prompt injection in messages or descriptions | Content embedded as JSON data, never as instructions (`json` models); engines have no tools; outputs missing targets or far longer than the source are rejected |
-| A message talking a translation model into a different translation (`plain` models such as Hy-MT2 read text, not JSON) | The prompt tells the model to translate requests as written; the harm stays within the author's own message, whose original every reader can show; spaces that need more pick a `json` model |
+| A message talking a translation model into a different translation (`plain` models such as Hy-MT2 read text, not JSON) | The prompt tells the model to translate requests as written (Hy-MT2 1.8B does; the 7B model once answered an injection instead, [measured](translation-engine.md#measured-on-a-rented-gpu)); the harm stays within the author's own message, whose original every reader can show; spaces that need more pick a `json` model |
 | A tenant giving itself a better plan | `set_plan` only takes operators' calls (billing later) |
 | A malicious owner's description | Only affects that owner's space: context layers are per space |
 | Private channel content leaking through context | Only channels everyone in the guild can read may become reference context (planned with reference channels) |

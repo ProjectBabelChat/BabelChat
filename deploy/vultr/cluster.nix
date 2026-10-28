@@ -25,7 +25,8 @@
         address = "108.160.130.239";
         wireguardAddress = "10.8.0.12";
       };
-      # Account service, Directory, egress proxy; the operator's tools.
+      # Account service, Directory, egress proxy; the operator's tools and
+      # monitoring.
       core = {
         address = "167.179.108.6";
         wireguardAddress = "10.8.0.2";
@@ -144,5 +145,8 @@
     };
 
     operator.machine = "core";
+
+    # Prometheus and Grafana: `deploy.sh dashboard`.
+    monitoring.machine = "core";
   };
 }

@@ -62,6 +62,7 @@ pub(crate) async fn run(inner: Arc<Inner>) {
         for (key, entry) in entries {
             match deliver(&inner, &entry).await {
                 Delivery::Done => {
+                    metrics::counter!("babel_outbox_delivered_total").increment(1);
                     let mut batch = Batch::new();
                     batch.delete(OUTBOX, key);
                     if let Err(error) = inner.store.write(batch) {
@@ -69,6 +70,7 @@ pub(crate) async fn run(inner: Arc<Inner>) {
                     }
                 }
                 Delivery::Retry => {
+                    metrics::counter!("babel_outbox_retries_total").increment(1);
                     // Keep commit order: stop here and retry from this entry.
                     tokio::time::sleep(RETRY).await;
                     break;

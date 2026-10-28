@@ -14,6 +14,7 @@
 //!   cannot tell an in-process peer from a remote one.
 //! - [`pki`]: the cluster's CA and the user token key pair (`babel-pki`).
 //! - [`node`]: what every service binary does on start.
+//! - [`prometheus`]: metrics, served to Prometheus (`--metrics`).
 //! - [`egress`]: the proxy outbound requests leave through (`babel-egress`).
 //! - [`replication`], [`backup`]: standbys and backups of any service's
 //!   store (`babel-standby`, `babel-admin restore`).
@@ -26,6 +27,7 @@ pub mod egress;
 pub mod node;
 pub mod pki;
 pub mod policies;
+pub mod prometheus;
 pub mod remote;
 pub mod replication;
 pub mod serve;

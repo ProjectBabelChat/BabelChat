@@ -65,7 +65,25 @@ async fn upgrade(
     ws.on_upgrade(move |socket| serve(edge, claim, resume, socket))
 }
 
+/// Counts the open sockets (`babel_edge_websockets`) while it lives.
+struct Open(metrics::Gauge);
+
+impl Open {
+    fn new() -> Self {
+        let sockets = metrics::gauge!("babel_edge_websockets");
+        sockets.increment(1.0);
+        Self(sockets)
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.decrement(1.0);
+    }
+}
+
 async fn serve(edge: Edge, claim: Claim, resume: Resume, socket: WebSocket) {
+    let _open = Open::new();
     let (mut sender, mut receiver) = socket.split();
     let mut after = resume.after;
     loop {

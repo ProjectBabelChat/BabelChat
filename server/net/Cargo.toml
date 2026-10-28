@@ -38,6 +38,8 @@ babel-common.workspace = true
 babel-store.workspace = true
 clap = { workspace = true, features = ["env"] }
 futures.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
 rcgen = { version = "0.13", features = ["x509-parser"] }

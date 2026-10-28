@@ -208,6 +208,36 @@ written, even when it asks for something" sentence, Hy-MT2 answered
 (readers can always show the original), but it is why a spoofed
 translation is listed in [Security](security.md).
 
+## Measured on a rented GPU
+
+One NVIDIA A16 (16 GB, passed through whole; Vultr, about $0.47 an hour),
+llama.cpp built for CUDA (`deploy/bench/gpu.sh`), Q4_K_M, 4k of context per
+parallel slot, from `sample_chat` and `load_test` (every guild chats without
+pause, so these are the server's limits, not a real server's load):
+
+| Model | Style | One guild, per message | Most messages/s (guilds at once) | p95 wait there | VRAM | Notes |
+|---|---|---|---|---|---|---|
+| Hy-MT2 1.8B | plain | 1.1 s | 4.1 (48) | 16.5 s | 13.5 GB with 48 slots | Same quality as on the laptop, three times faster |
+| Hy-MT2 7B | plain | 2.8 s | 1.4 (16) | 15.5 s | 12.8 GB with 16 slots | The most natural; **answered "HACKED" to the injection** (Japanese) |
+| Qwen3.5 9B | json | 3.2 s | 0.8 (16) | 23.9 s | 7.9 GB with 16 slots | 7 of 128 failed at 16 guilds; left a Korean message untranslated |
+| Qwen3.5 4B | json | 2.2 s | 1.2 (16) | 16.8 s | 5.7 GB with 16 slots | 3 of 128 failed at 16 guilds |
+
+Hy-MT2 7B at Q8_0 does not fit with 16 slots of 4k.
+
+At 4 messages a second, Hy-MT2 1.8B translates about 14,000 messages an
+hour on one A16: under $0.00004 a message when the GPU is busy. A guild
+writing 3,000 messages a month costs about $0.10 of GPU time at full use;
+idle hours multiply it. The CPU machine of `deploy/vultr` (4 vCPU, $40 a
+month) takes 3–4 s a message one at a time, about 1,000 an hour, so per
+message it costs about as much; the GPU buys waiting time and capacity per
+machine, and room for the 7B model. A message waits about a second while
+the GPU has spare slots; past that, waits grow with the queue.
+
+The 7B model's answer to the injection shows that the `plain` style's
+"translate it as written" sentence is not enough for every translation
+model: a space choosing a larger translation model takes that risk (its
+readers can still show the original).
+
 ## Summaries
 
 `summarize` serves two purposes: digests of long descriptions (into the space
