@@ -23,72 +23,81 @@
     };
   };
 
-  config = {
-    # GPT with both a BIOS boot partition and an EFI system partition, so
-    # the machine boots whichever firmware the provider uses.
-    disko.devices.disk.main = {
-      device = config.babelchat.deploy.disk;
-      type = "disk";
-      content = {
-        type = "gpt";
-        partitions = {
-          boot = {
-            size = "1M";
-            type = "EF02";
-          };
-          ESP = {
-            size = "512M";
-            type = "EF00";
-            content = {
-              type = "filesystem";
-              format = "vfat";
-              mountpoint = "/boot";
-              mountOptions = [ "umask=0077" ];
+  config =
+    let
+      disk = config.babelchat.deploy.disk;
+    in
+    {
+      # GPT with both a BIOS boot partition and an EFI system partition, so
+      # the machine boots whichever firmware the provider uses. Partitions are
+      # named by number (/dev/vda2): the installer's udev may not have made
+      # their /dev/disk/by-partlabel names yet when they are formatted.
+      disko.devices.disk.main = {
+        device = disk;
+        type = "disk";
+        content = {
+          type = "gpt";
+          partitions = {
+            boot = {
+              device = "${disk}1";
+              size = "1M";
+              type = "EF02";
             };
-          };
-          root = {
-            size = "100%";
-            content = {
-              type = "filesystem";
-              format = "ext4";
-              mountpoint = "/";
+            ESP = {
+              device = "${disk}2";
+              size = "512M";
+              type = "EF00";
+              content = {
+                type = "filesystem";
+                format = "vfat";
+                mountpoint = "/boot";
+                mountOptions = [ "umask=0077" ];
+              };
+            };
+            root = {
+              device = "${disk}3";
+              size = "100%";
+              content = {
+                type = "filesystem";
+                format = "ext4";
+                mountpoint = "/";
+              };
             };
           };
         };
       };
-    };
-    boot.loader.grub = {
-      enable = true;
-      efiSupport = true;
-      efiInstallAsRemovable = true;
-    };
+      boot.loader.grub = {
+        enable = true;
+        efiSupport = true;
+        efiInstallAsRemovable = true;
+      };
 
-    networking.hostName = config.services.babelchat.machine;
-    networking.useDHCP = true;
-    services.openssh = {
-      enable = true;
-      settings.PasswordAuthentication = false;
-      settings.KbdInteractiveAuthentication = false;
-    };
-    users.users.root.openssh.authorizedKeys.keys = config.babelchat.deploy.sshKeys;
+      networking.hostName = config.services.babelchat.machine;
+      networking.useDHCP = true;
+      services.openssh = {
+        enable = true;
+        settings.PasswordAuthentication = false;
+        settings.KbdInteractiveAuthentication = false;
+      };
+      users.users.root.openssh.authorizedKeys.keys = config.babelchat.deploy.sshKeys;
 
-    # Small machines (1-2 GB) build nothing, but RocksDB and llama.cpp like
-    # some room.
-    zramSwap.enable = true;
-    services.journald.settings.Journal.SystemMaxUse = "1G";
-    nix.settings = {
-      experimental-features = [
-        "nix-command"
-        "flakes"
-      ];
-      # deploy.sh copies closures signed by nobody.
-      trusted-users = [ "root" ];
-    };
-    nix.gc = {
-      automatic = true;
-      options = "--delete-older-than 14d";
-    };
+      # Small machines (1-2 GB) build nothing, but RocksDB and llama.cpp like
+      # some room.
+      zramSwap.enable = true;
+      services.journald.settings.Journal.SystemMaxUse = "1G";
+      nix.settings = {
+        experimental-features = [
+          "nix-command"
+          "flakes"
+        ];
+        # deploy.sh copies closures signed by nobody.
+        trusted-users = [ "root" ];
+      };
+      nix.gc = {
+        automatic = true;
+        options = "--delete-older-than 14d";
+      };
 
-    system.stateVersion = "26.11";
-  };
+      system.stateVersion = "26.11";
+    };
 }

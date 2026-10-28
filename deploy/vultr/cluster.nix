@@ -11,46 +11,46 @@
 # another machine needs its data moved too (docs/deployment.md).
 {
   sshKeys = [
-    # "ssh-ed25519 AAAA... you@laptop"
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDoAuQ9ZYf44a9+WxSzgdVF7PoIDi4TEKtT3NktOyPil8W4ndb4WxYnDIT4e+9eJtbT6lsjM1b4CDmbarbtZ9DaaYeQHKBxFkBAGva3OKh1aq2xcwReevSW3CZTI8SCQUbTaHtHrq1mm7ZmelDUyNc/O8W/k2iI1NM6/dQDNBQJdK511xEUk0HrtIY/HaKTTLtBN+p1I3SjwfYx++Y5LnceGapv4jcGPa47aMTWRGabWxTwP89g+6+kCzb1eWBLP0OltyrZ8AdnMZg5OXJgHESCS+d9fYFWdFgOicBSzUO+60Dvvlc2zhmUfmyfvBwMTA8i5LKwU+XsvUKgN9w3cST4sXRO1wl1eIbFRdgRhGXRHBt94Y08nC/zELsa2DcwRJjdNz7N3uTJ8oONdy7eS5FKZRWiD2QnO8uklNIP54AMAYQk8WBGqJ0WWNkisKeFSbB5jDRtR996mGbXO6jwohQjVvkbf8fj+daEBblFs8ck/QjqFVkm4rNCHXgSSzrO0VM="
   ];
 
   cluster = {
     machines = {
       # 1 vCPU, 2 GB unless noted.
       edge-a = {
-        address = "203.0.113.11";
+        address = "108.61.181.135";
         wireguardAddress = "10.8.0.11";
       };
       edge-b = {
-        address = "203.0.113.12";
+        address = "108.160.130.239";
         wireguardAddress = "10.8.0.12";
       };
       # Account service, Directory, egress proxy; the operator's tools.
       core = {
-        address = "203.0.113.2";
+        address = "167.179.108.6";
         wireguardAddress = "10.8.0.2";
       };
       cell-a = {
-        address = "203.0.113.3";
+        address = "45.76.53.9";
         wireguardAddress = "10.8.0.3";
       };
       cell-b = {
-        address = "203.0.113.4";
+        address = "207.148.107.84";
         wireguardAddress = "10.8.0.4";
       };
       translation = {
-        address = "203.0.113.5";
+        address = "45.32.55.18";
         wireguardAddress = "10.8.0.5";
       };
       # 4 vCPU, 8 GB: Hy-MT2 on the CPU.
       llm = {
-        address = "203.0.113.6";
+        address = "45.32.40.18";
         wireguardAddress = "10.8.0.6";
       };
       # Standbys of the Account service, the Directory and the Translation
       # Cells.
       spare = {
-        address = "203.0.113.7";
+        address = "45.77.134.197";
         wireguardAddress = "10.8.0.7";
       };
     };

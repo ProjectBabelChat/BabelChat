@@ -111,6 +111,9 @@ install_machine() {
   trap 'rm -rf "$staging"' RETURN
   stage_secrets "$name" "$staging/var/lib/babelchat-secrets"
   say "Installing NixOS on $name ($address): its disk is erased"
+  # Whatever answers there is about to be erased; the old system's key (or
+  # an interrupted install's) would only stop the installer.
+  ssh-keygen -R "$address" -f "$secrets/known_hosts" >/dev/null 2>&1 || true
   tool nixos-anywhere nixos-anywhere \
     --store-paths "$disko" "$toplevel" \
     --extra-files "$staging" \
