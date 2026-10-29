@@ -50,10 +50,14 @@ ones:
   type and is documented on the `Gateway` interface.
 - **File contents.** TYML has no type for bytes, and JSON would carry
   them as base64 a third larger. Files go up and down through routes next
-  to the generated ones, written by hand (`POST /media/upload` and
-  `GET /media/<guild>/<channel>/<id>` on Edges, `PUT`/`GET /media/blobs` on
-  Media services), documented in the TYML file's comments; what they
-  answer (`Attachment`, `Blob`, the errors) is a TYML type.
+  to the generated ones, written by hand (`POST /media/upload`, `POST
+  /media/emoji` and `GET /media/<guild>/<channel or ->/<id>` on Edges,
+  `PUT`/`GET /media/blobs` on Media services), documented in the TYML
+  file's comments; what they answer (`Attachment`, `Emoji`, `Blob`, the
+  errors) is a TYML type.
+- **Rich text.** Message text is a string; a guild's emoji in it are codes
+  (`<:name:guild_id.id>`, the `babel-emoji` crate), not a type of their
+  own.
 - **Maps.** Arrays of pairs (`[LanguageAlias]`) where order matters or keys
   are user input.
 - **Timestamps.** `int` milliseconds since the Unix epoch.

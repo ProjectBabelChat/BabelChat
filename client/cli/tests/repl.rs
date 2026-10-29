@@ -313,6 +313,26 @@ async fn reactions_lines_and_renames_as_typed() {
         "bring a capo"
     );
 
+    // A guild's emoji: added by the owner, typed as :name:, shown so.
+    let party = files.path().join("party.png");
+    let mut png = vec![
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13, b'I', b'H', b'D', b'R', 0,
+        0, 0, 32, 0, 0, 0, 32, 8, 6, 0, 0, 0,
+    ];
+    png.resize(500, 7);
+    std::fs::write(&party, png).unwrap();
+    alice
+        .type_line(&format!("/emoji add party {}", party.display()))
+        .await;
+    alice.wait_for("Added :party: to Rhythm Club.").await;
+    bob.wait_for("☺ emoji of Rhythm Club: :party:").await;
+    alice.type_line("今夜 :party:").await;
+    bob.wait_for("#3 alice: [en-US] 今夜 :party:").await;
+    bob.type_line("/react #3 :party:").await;
+    alice.wait_for("#general #3  [:party: 1]").await;
+    bob.type_line("/emoji").await;
+    assert!(bob.recent().contains(":party:  (Rhythm Club)"));
+
     // Renaming needs the owner; deleting needs the name typed.
     bob.type_line("/rename lounge").await;
     bob.wait_for("! the server refused").await;

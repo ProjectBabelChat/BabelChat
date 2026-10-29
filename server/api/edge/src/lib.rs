@@ -455,10 +455,31 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
         }
     }));
     let api25 = api.clone();
+    router = router.route("/guilds/delete_emoji", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
+       __header: axum::http::HeaderMap, | {
+        let api = api25;
+
+        let Some(__claim) = crate::types::__bearer(&__header)
+                                .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
+                                .flatten() else {
+            return Response::builder().status(StatusCode::UNAUTHORIZED).body(Body::empty()).unwrap();
+        };
+        let guild_id = __query.get("guild_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(guild_id) = guild_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let emoji_id = __query.get("emoji_id").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(emoji_id) = emoji_id else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::Guilds>::delete_emoji(&api, __claim, guild_id, emoji_id, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api26 = api.clone();
     router = router.route("/messages/send_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, 
        Json(__body): Json<_>| {
-        let api = api25;
+        let api = api26;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -472,11 +493,11 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api26 = api.clone();
+    let api27 = api.clone();
     router = router.route("/messages/edit_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, 
        Json(__body): Json<_>| {
-        let api = api26;
+        let api = api27;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -490,10 +511,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api27 = api.clone();
+    let api28 = api.clone();
     router = router.route("/messages/delete_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api27;
+        let api = api28;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -513,10 +534,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api28 = api.clone();
+    let api29 = api.clone();
     router = router.route("/messages/add_reaction", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api28;
+        let api = api29;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -538,10 +559,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api29 = api.clone();
+    let api30 = api.clone();
     router = router.route("/messages/remove_reaction", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api29;
+        let api = api30;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -563,10 +584,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api30 = api.clone();
+    let api31 = api.clone();
     router = router.route("/messages/typing", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api30;
+        let api = api31;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -584,10 +605,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api31 = api.clone();
+    let api32 = api.clone();
     router = router.route("/messages/get_messages", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api31;
+        let api = api32;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -609,10 +630,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api32 = api.clone();
+    let api33 = api.clone();
     router = router.route("/messages/ack", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api32;
+        let api = api33;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -632,10 +653,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api33 = api.clone();
+    let api34 = api.clone();
     router = router.route("/gateway/connect", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api33;
+        let api = api34;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())
@@ -649,10 +670,10 @@ pub fn router<T: crate::types::Auth + crate::types::Me + crate::types::Guilds + 
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api34 = api.clone();
+    let api35 = api.clone();
     router = router.route("/gateway/poll", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, 
        __header: axum::http::HeaderMap, | {
-        let api = api34;
+        let api = api35;
 
         let Some(__claim) = crate::types::__bearer(&__header)
                                 .map(|token| <T as crate::types::JwtValidator>::validate(&api, token).ok())

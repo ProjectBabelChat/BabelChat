@@ -4,8 +4,8 @@ use std::{sync::Arc, time::Duration};
 
 use babel_api_media::types::Media as _;
 use babel_media::{
-    BLOB_TABLES, BlobKind, BlobRef, BlobRefs, Blobs, ByteStream, MAX_FILE_BYTES, Media, MediaError,
-    NewBlob, RemoteMedia, TABLES,
+    BLOB_TABLES, BlobKind, BlobRef, BlobRefs, Blobs, ByteStream, MAX_EMOJI_BYTES, MAX_FILE_BYTES,
+    Media, MediaError, NewBlob, RemoteMedia, TABLES,
 };
 use babel_store::RocksStore;
 use bytes::Bytes;
@@ -97,6 +97,23 @@ async fn too_large_and_empty_files_are_refused_and_leave_nothing() {
     no_channel.channel_id = None;
     assert!(matches!(
         media.put(no_channel, body(b"hi", 1)).await,
+        Err(MediaError::InvalidRequest)
+    ));
+    // Emoji belong to no channel, and are small.
+    let emoji = |name: &str| NewBlob {
+        channel_id: None,
+        kind: BlobKind::Emoji,
+        ..attachment("c", name)
+    };
+    let big = png(MAX_EMOJI_BYTES as usize + 1);
+    assert!(matches!(
+        media.put(emoji("big.png"), body(&big, 1 << 16)).await,
+        Err(MediaError::LimitExceeded)
+    ));
+    let mut in_channel = emoji("a.png");
+    in_channel.channel_id = Some("c".into());
+    assert!(matches!(
+        media.put(in_channel, body(&png(100), 100)).await,
         Err(MediaError::InvalidRequest)
     ));
     let usage = media.get_usage().await.unwrap();

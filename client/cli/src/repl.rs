@@ -9,6 +9,8 @@
 //! `/react` and `/thread`. A line ending in `\` goes on on the next one,
 //! for messages of several lines. `/attach` puts a file on the server for
 //! the next message (or `/send` alone); `/download` saves a message's.
+//! A guild's emoji show as `:name:`, and `:name:` typed is one, from any
+//! of the user's guilds (`/emoji` lists them).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,8 +21,8 @@ use std::{
 
 use babel_sdk::{
     Attachment, ChannelKind, ChannelNotify, ChatMessage, GuildChange, GuildView,
-    LanguagePolicyUpdate, MAX_UPLOAD_BYTES, MessageChange, Notification, NotifyLevel, NotifyReason,
-    RegionMode, Session, Shown, Unread, Update,
+    LanguagePolicyUpdate, MAX_EMOJI_BYTES, MAX_UPLOAD_BYTES, MessageChange, Notification,
+    NotifyLevel, NotifyReason, RegionMode, Session, Shown, Unread, Update, emoji, emoji_code,
 };
 
 /// How long a new message may wait for its translation before printing.
@@ -70,6 +72,8 @@ with \\ to go on on the next one. Commands:
   /reply <#n> <text>           answer a message          /thread <#n> <name>  thread from it
   /edit <#n> <text>            /delete <#n>
   /react <#n> <emoji>          react (👍 or :thumbsup:)  /unreact <#n> <emoji>
+  /emoji                       a guild's emoji (:name: in text, from any of your guilds)
+  /emoji add <name> <path>     add one to this guild     /emoji remove <name>  (owner)
   /attach <path>               a file for your next message (10 MB)
   /send                        send attached files alone /download <#n> [dir]  save its files
   /create <name>               create a guild            /channel <name>   create a channel
@@ -199,6 +203,7 @@ impl Repl {
             "attach" if !rest.is_empty() => self.attach(rest).await,
             "send" => self.send(rest).await,
             "download" => self.download(rest).await,
+            "emoji" => self.emoji(rest).await,
             "react" => self.react(rest, true).await,
             "unreact" => self.react(rest, false).await,
             "rename" if !rest.is_empty() => self.rename_channel(Some(rest), None).await,
@@ -350,7 +355,7 @@ impl Repl {
         let mut text = format!(
             "{lead}{label} #{number} {}{replying}: {}{}{}",
             m.author_name,
-            message.display.text.replace('\n', "\n      "),
+            emoji::plain(&message.display.text).replace('\n', "\n      "),
             marker(&message.display.shown),
             reactions_text(message)
         );
@@ -358,7 +363,11 @@ impl Repl {
             text.push_str(&format!("\n      📎 {}", file_text(file)));
         }
         if message.display.is_translated() && self.session.settings().show_original {
-            text.push_str(&format!("\n      ┆ {}", m.text.replace('\n', "\n      ┆ ")));
+            let original = emoji::plain(&m.text);
+            text.push_str(&format!(
+                "\n      ┆ {}",
+                original.replace('\n', "\n      ┆ ")
+            ));
         }
         self.printed
             .insert(m.id.clone(), message.display.text.clone());
@@ -522,8 +531,15 @@ impl Repl {
 
     async fn react(&mut self, rest: &str, add: bool) {
         let (number, emoji) = rest.split_once(' ').unwrap_or((rest, ""));
-        let (Some((channel, message)), Some(emoji)) = (self.numbered(number), emoji_named(emoji))
-        else {
+        let custom = self.guild.as_deref().and_then(|guild| {
+            let name = emoji.trim().strip_prefix(':')?.strip_suffix(':')?;
+            self.session.find_emoji(guild, name)
+        });
+        let emoji = match custom {
+            Some(custom) => Some(emoji_code(&custom)),
+            None => emoji_named(emoji),
+        };
+        let (Some((channel, message)), Some(emoji)) = (self.numbered(number), emoji) else {
             self.say(if add {
                 "/react <#n> <emoji>, e.g. 👍 or :thumbsup:"
             } else {
@@ -538,6 +554,65 @@ impl Repl {
         };
         if let Err(error) = result {
             self.say(format!("! {error}"));
+        }
+    }
+
+    /// `/emoji`: what the user may use; `add` and `remove` for owners.
+    async fn emoji(&mut self, rest: &str) {
+        let mut words = rest.split_whitespace();
+        let (action, name, path) = (words.next(), words.next(), words.next());
+        let Some(view) = self.current_view() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        match (action, name, path) {
+            (None, _, _) => {
+                let usable = self.session.usable_emoji(Some(&view.guild.id));
+                if usable.is_empty() {
+                    self.say("No emoji yet: owners add them with /emoji add <name> <path>.");
+                    return;
+                }
+                let lines = usable
+                    .iter()
+                    .map(|emoji| format!("  :{}:  ({})", emoji.name, self.name_of(&emoji.guild_id)))
+                    .collect::<Vec<_>>();
+                self.say(format!("Your emoji, for any guild:\n{}", lines.join("\n")));
+            }
+            (Some("add"), Some(name), Some(path)) => {
+                let read = match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.len() as i64 > MAX_EMOJI_BYTES => {
+                        self.say(format!("! {path} is larger than 256 KB"));
+                        return;
+                    }
+                    Ok(_) => std::fs::read(path),
+                    Err(error) => Err(error),
+                };
+                let bytes = match read {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        self.say(format!("! {path}: {error}"));
+                        return;
+                    }
+                };
+                let name = name.trim_matches(':');
+                match self.session.create_emoji(&view.guild.id, name, bytes).await {
+                    Ok(emoji) => {
+                        self.say(format!("Added :{}: to {}.", emoji.name, view.guild.name))
+                    }
+                    Err(error) => self.say(format!("! not added: {error}")),
+                }
+            }
+            (Some("remove"), Some(name), None) => {
+                let name = name.trim_matches(':');
+                let Some(emoji) = view.emoji.iter().find(|emoji| emoji.name == name) else {
+                    self.say(format!("No :{name}: in {}.", view.guild.name));
+                    return;
+                };
+                if let Err(error) = self.session.delete_emoji(&view.guild.id, &emoji.id).await {
+                    self.say(format!("! not removed: {error}"));
+                }
+            }
+            _ => self.say("/emoji, /emoji add <name> <path>, /emoji remove <name>"),
         }
     }
 
@@ -749,6 +824,19 @@ impl Repl {
                 }
             }
             GuildChange::Languages => self.say_languages(&view),
+            GuildChange::Emoji => {
+                let names = view
+                    .emoji
+                    .iter()
+                    .map(|emoji| format!(":{}:", emoji.name))
+                    .collect::<Vec<_>>();
+                let names = if names.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    names.join(" ")
+                };
+                self.say(format!("☺ emoji of {name}: {names}"));
+            }
             GuildChange::Joined
             | GuildChange::Deleted
             | GuildChange::ChannelCreated { .. }
@@ -1427,7 +1515,7 @@ fn reactions_text(message: &ChatMessage) -> String {
         .iter()
         .map(|reaction| {
             let me = if reaction.me { "*" } else { "" };
-            format!("{} {}{me}", reaction.emoji, reaction.count)
+            format!("{} {}{me}", emoji::plain(&reaction.emoji), reaction.count)
         })
         .collect::<Vec<_>>();
     format!("  [{}]", list.join("  "))

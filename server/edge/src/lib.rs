@@ -86,6 +86,9 @@ struct Inner {
     /// (user, guild) -> when the user was last found allowed to see the
     /// guild, for downloads.
     viewers: Mutex<HashMap<(String, String), Instant>>,
+    /// Guild -> its emoji, and when the Edge asked for them: for checking
+    /// the emoji codes people write.
+    emoji: Mutex<HashMap<String, (Vec<cell::Emoji>, Instant)>>,
 }
 
 const SETTINGS_TTL: Duration = Duration::from_secs(60);
@@ -116,7 +119,8 @@ macro_rules! on_cell {
     }};
 }
 
-// After `on_cell!`, which it uses.
+// After `on_cell!`, which they use.
+mod emoji;
 mod media;
 
 impl Edge {
@@ -141,6 +145,7 @@ impl Edge {
             followed: Mutex::default(),
             revoked: RwLock::default(),
             viewers: Mutex::default(),
+            emoji: Mutex::default(),
         });
 
         let sweeper = Arc::downgrade(&inner);
@@ -158,8 +163,9 @@ impl Edge {
     }
 
     /// Routes served next to the generated API: the WebSocket gateway
-    /// (`GET /gateway/ws`), files (`POST /media/upload`, `GET /media/…`),
-    /// and `GET /health` for load balancers (`ok` while the Edge runs).
+    /// (`GET /gateway/ws`), files and emoji (`POST /media/upload`, `POST
+    /// /media/emoji`, `GET /media/…`), and `GET /health` for load balancers
+    /// (`ok` while the Edge runs).
     pub fn routes(&self) -> axum::Router {
         websocket::router(self.clone())
             .merge(media::router(self.clone()))
@@ -426,6 +432,7 @@ impl Inner {
                 .map(convert::read_state)
                 .collect(),
             notifications: convert::notifications(&snapshot.notifications),
+            emoji: snapshot.emoji.iter().map(convert::emoji).collect(),
         }
     }
 
@@ -608,6 +615,19 @@ impl Inner {
                         match guild_event.kind {
                             cell::GuildEventKind::ReactionAdded => EventKind::ReactionAdded,
                             _ => EventKind::ReactionRemoved,
+                        },
+                        guild,
+                    )
+                }
+            }
+            cell::GuildEventKind::EmojiCreated | cell::GuildEventKind::EmojiDeleted => {
+                self.emoji.lock().remove(guild);
+                public::Event {
+                    emoji: guild_event.emoji.as_ref().map(convert::emoji),
+                    ..event(
+                        match guild_event.kind {
+                            cell::GuildEventKind::EmojiCreated => EventKind::EmojiCreated,
+                            _ => EventKind::EmojiDeleted,
                         },
                         guild,
                     )
@@ -1239,6 +1259,23 @@ impl public::Guilds for Edge {
         // The user's sessions hear of it through the guild's log.
         Ok(convert::notifications(&settings))
     }
+
+    async fn delete_emoji(
+        &self,
+        claim: Claim,
+        guild_id: String,
+        emoji_id: String,
+    ) -> ApiResult<()> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        on_cell!(inner, &guild_id, |cell| cell.delete_emoji(
+            guild_id.clone(),
+            emoji_id.clone(),
+            claim.sub.clone()
+        ))?;
+        inner.emoji.lock().remove(&guild_id);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1251,13 +1288,14 @@ impl public::Messages for Edge {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
         let settings = inner.settings(&claim.sub).await?;
+        let text = inner.checked_text(&claim.sub, &body.text).await;
         let message = on_cell!(inner, &body.guild_id, |cell| cell.send_message(
             cell::NewMessage {
                 guild_id: body.guild_id.clone(),
                 channel_id: body.channel_id.clone(),
                 user_id: claim.sub.clone(),
                 author_locale: Some(settings.locale.clone()),
-                text: body.text.clone(),
+                text: text.clone(),
                 reply_to: body.reply_to.clone(),
                 attachments: body.attachments.clone(),
             }
@@ -1275,13 +1313,14 @@ impl public::Messages for Edge {
     ) -> ApiResult<public::MessageView> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
+        let text = inner.checked_text(&claim.sub, &body.text).await;
         let message = on_cell!(inner, &body.guild_id, |cell| cell.edit_message(
             cell::MessageEdit {
                 guild_id: body.guild_id.clone(),
                 channel_id: body.channel_id.clone(),
                 message_id: body.message_id.clone(),
                 user_id: claim.sub.clone(),
-                text: body.text.clone(),
+                text: text.clone(),
             }
         ))?;
         Ok(public::MessageView {
@@ -1317,6 +1356,7 @@ impl public::Messages for Edge {
     ) -> ApiResult<public::Message> {
         let inner = &self.inner;
         inner.write_allowed(&claim)?;
+        let emoji = inner.reaction_emoji(&claim.sub, emoji).await?;
         let message = on_cell!(inner, &guild_id, |cell| cell.add_reaction(
             guild_id.clone(),
             channel_id.clone(),

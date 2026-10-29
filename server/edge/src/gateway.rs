@@ -58,6 +58,7 @@ pub fn event(kind: EventKind, guild_id: &str) -> Event {
         message: None,
         deleted: None,
         reaction: None,
+        emoji: None,
         typing: None,
         translation: None,
         policy: None,

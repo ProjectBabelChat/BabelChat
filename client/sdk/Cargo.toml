@@ -10,6 +10,7 @@ description = "BabelChat client SDK: sessions, live state, display language and 
 bytes.workspace = true
 async-trait.workspace = true
 babel-api-edge-client.workspace = true
+babel-emoji.workspace = true
 babel-lang.workspace = true
 dirs.workspace = true
 futures.workspace = true

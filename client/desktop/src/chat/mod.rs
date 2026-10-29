@@ -2,9 +2,11 @@
 //! members, like Discord. State comes from the SDK session; this view only
 //! remembers what is on screen.
 
+mod completion;
 mod dialogs;
 mod emoji;
 mod files;
+mod guild_emoji;
 mod messages;
 mod sidebar;
 
@@ -15,13 +17,14 @@ use std::{
 };
 
 use babel_sdk::{
-    ChannelKind, GuildChange, GuildView, MessageChange, Notification, NotifyReason, Session, Update,
+    ChannelKind, GuildChange, GuildView, MessageChange, Notification, NotifyReason, Session,
+    Update, emoji as codes,
 };
 use gpui::prelude::*;
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ListAlignment, ListState,
-    Pixels, Point, Render, SharedString, Subscription, SystemNotification, Task, Window, actions,
-    anchored, deferred, div, px,
+    Context, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ListAlignment, ListState, Pixels, Point, Render, SharedString, Subscription,
+    SystemNotification, Task, Window, actions, anchored, deferred, div, px,
 };
 use gpui_md3e::prelude::*;
 use tokio::sync::broadcast::error::RecvError;
@@ -61,9 +64,18 @@ struct Toast {
     visible: bool,
 }
 
-/// The emoji picker, open for one message.
+/// What a picked emoji goes to.
+#[derive(Clone, PartialEq, Eq)]
+enum PickerTarget {
+    /// A reaction to this message.
+    Reaction(String),
+    /// The composer, at the caret.
+    Composer,
+}
+
+/// The emoji picker, open for a message or the composer.
 struct Picker {
-    message_id: String,
+    target: PickerTarget,
     view: Entity<EmojiPicker>,
     /// Where it was asked for, on screen.
     position: Point<Pixels>,
@@ -101,6 +113,9 @@ pub struct ChatView {
     picker: Option<Picker>,
     guild_menu: bool,
     files: files::Files,
+    emoji_pictures: Entity<guild_emoji::EmojiPictures>,
+    /// Emoji offered for the name being typed in the composer.
+    completion: Option<completion::Completion>,
     dialog: Option<Dialog>,
     toast: Option<Toast>,
     toast_epoch: u64,
@@ -149,9 +164,13 @@ impl ChatView {
         );
 
         let this = cx.entity().downgrade();
+        let emoji_pictures = cx.new(|_| guild_emoji::EmojiPictures::default());
+        let pictures = emoji_pictures.clone();
         let composer = cx.new(|cx| {
             gpui_md3e::components::TextField::new(cx)
                 .multiline(COMPOSER_LINES)
+                // Guilds' emoji codes show as their pictures.
+                .inline_pictures(move |text, cx| pictures.read(cx).in_text(text))
                 .on_submit(move |text, window, cx| {
                     this.update(cx, |this, cx| this.submit(text, window, cx))
                         .unwrap_or(false)
@@ -165,17 +184,21 @@ impl ChatView {
                 cx.notify();
             }),
             // Others see the user writing; not while editing a message.
-            cx.subscribe(
+            cx.subscribe_in(
                 &composer,
-                |this, composer, event: &gpui_md3e::components::TextFieldEvent, cx| {
+                window,
+                |this, composer, event: &gpui_md3e::components::TextFieldEvent, window, cx| {
+                    if *event != gpui_md3e::components::TextFieldEvent::Edited {
+                        return;
+                    }
                     let writing = !composer.read(cx).text().trim().is_empty();
-                    if *event == gpui_md3e::components::TextFieldEvent::Edited
-                        && writing
+                    if writing
                         && !matches!(this.compose, Compose::Edit(_))
                         && let Some(channel) = &this.channel
                     {
                         this.session.typing(channel);
                     }
+                    this.composer_edited(window, cx);
                 },
             ),
         ];
@@ -214,6 +237,8 @@ impl ChatView {
             picker: None,
             guild_menu: false,
             files: files::Files::default(),
+            emoji_pictures,
+            completion: None,
             dialog: None,
             toast: None,
             toast_epoch: 0,
@@ -366,6 +391,10 @@ impl ChatView {
                 }
             }
             GuildChange::Languages => self.list.remeasure(),
+            GuildChange::Emoji => {
+                self.forget_deleted_emoji(&guild_id, cx);
+                self.refresh_picker(cx);
+            }
             _ => {}
         }
     }
@@ -576,6 +605,7 @@ impl ChatView {
             return false;
         }
         let compose = std::mem::replace(&mut self.compose, Compose::Message);
+        self.completion = None;
         let session = self.session.clone();
         let sending = files.clone();
         let task = runtime::spawn(cx, async move {
@@ -625,9 +655,10 @@ impl ChatView {
         };
         self.save_draft(cx);
         self.compose = Compose::Edit(message_id);
-        self.composer.update(cx, |field, cx| {
-            field.set_text(chat.message.text, window, cx)
-        });
+        let text = chat.message.text;
+        self.composer
+            .update(cx, |field, cx| field.set_text(text, window, cx));
+        self.fetch_composer_pictures(cx);
         window.focus(&self.composer.focus_handle(cx), cx);
         cx.notify();
     }
@@ -666,28 +697,40 @@ impl ChatView {
         .detach();
     }
 
-    /// Opens the emoji picker for a message, where it was asked for.
+    /// Opens the emoji picker for a message or the composer, where it was
+    /// asked for.
     fn open_picker(
         &mut self,
-        message_id: String,
+        target: PickerTarget,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let t = self.t();
-        let view = cx.new(|cx| EmojiPicker::new(t.search_emoji, t.no_emoji, window, cx));
+        let custom = self.picker_emoji(cx);
+        let view = cx.new(|cx| EmojiPicker::new(t.search_emoji, t.no_emoji, custom, window, cx));
         let subscription = cx.subscribe_in(&view, window, {
-            let message_id = message_id.clone();
+            let target = target.clone();
             move |this, _, event: &EmojiEvent, window, cx| {
                 let EmojiEvent::Picked(emoji) = event;
                 this.picker = None;
-                this.toggle_reaction(message_id.clone(), emoji.clone(), cx);
+                match &target {
+                    PickerTarget::Reaction(message_id) => {
+                        this.toggle_reaction(message_id.clone(), emoji.clone(), cx)
+                    }
+                    // A guild's emoji as its code, which shows as its picture.
+                    PickerTarget::Composer => {
+                        this.composer.update(cx, |field, cx| {
+                            field.replace_text_in_range(None, emoji, window, cx)
+                        });
+                    }
+                }
                 window.focus(&this.composer.focus_handle(cx), cx);
                 cx.notify();
             }
         });
         self.picker = Some(Picker {
-            message_id,
+            target,
             view,
             position,
             _subscription: subscription,
@@ -713,7 +756,9 @@ impl ChatView {
     }
 
     fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.files.viewer.is_some() {
+        if self.completing(cx) {
+            self.completion = None;
+        } else if self.files.viewer.is_some() {
             self.files.viewer = None;
         } else if self.picker.is_some() {
             self.picker = None;
@@ -762,7 +807,7 @@ impl ChatView {
             NotifyReason::Message => t.message_title,
         };
         let title = fill(template, &[&message.author_name, &channel]);
-        let body = notification.message.display.text.clone();
+        let body = codes::plain(&notification.message.display.text);
         let target = (notification.guild_id.clone(), message.channel_id.clone());
         if self.active {
             self.show_toast(format!("{title}: {body}"), Some(target), cx);

@@ -3,6 +3,8 @@
 //! ```text
 //! POST /media/upload?guild_id=&channel_id=&name=   body: the file -> Attachment
 //! GET  /media/<guild>/<channel>/<attachment id>    -> the file
+//! POST /media/emoji?guild_id=&name=                body: an image -> Emoji
+//! GET  /media/<guild>/-/<emoji id>                 -> the image
 //! ```
 //!
 //! An upload is checked like a message (the user must be allowed to write
@@ -12,6 +14,10 @@
 //! guild's members; whether a user may see a guild is remembered for a
 //! minute. Images come back as themselves, anything else as a download,
 //! never sniffed by browsers.
+//!
+//! A guild's emoji are uploaded by those who manage the guild and become
+//! emoji at once. Their images are for anyone signed in: emoji are seen in
+//! every guild their guild's members write in.
 
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
@@ -30,7 +36,9 @@ use axum::{
 };
 use babel_api_edge::types::{self as public, ApiError, Claim};
 use babel_api_message_cell::types::{self as cell, Permission};
-use babel_media::{BlobKind, BlobRef, BlobRefs, Blobs, MAX_FILE_BYTES, NewBlob, sniff};
+use babel_media::{
+    BlobKind, BlobRef, BlobRefs, Blobs, MAX_EMOJI_BYTES, MAX_FILE_BYTES, NewBlob, sniff,
+};
 use futures::StreamExt;
 use serde::Deserialize;
 
@@ -41,6 +49,9 @@ use crate::{ApiResult, Edge, Inner, convert};
 const VIEWER_TTL: Duration = Duration::from_secs(60);
 const MAX_NAME_CHARS: usize = 255;
 
+/// In download paths, where an attachment has its channel: an emoji.
+const NO_CHANNEL: &str = "-";
+
 #[derive(Deserialize)]
 struct Upload {
     guild_id: String,
@@ -48,11 +59,33 @@ struct Upload {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct NewEmoji {
+    guild_id: String,
+    name: String,
+}
+
 pub fn router(edge: Edge) -> Router {
     Router::new()
         .route("/media/upload", post(upload))
+        .route("/media/emoji", post(upload_emoji))
         .route("/media/{guild_id}/{channel_id}/{id}", get(download))
         .with_state(edge)
+}
+
+/// The size a request says its body has.
+fn declared_size(headers: &HeaderMap) -> Option<i64> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+}
+
+fn body_stream(body: Body) -> babel_media::ByteStream {
+    Box::pin(
+        body.into_data_stream()
+            .map(|chunk| chunk.map_err(io::Error::other)),
+    )
 }
 
 fn failed(error: ApiError) -> Response {
@@ -74,6 +107,21 @@ async fn upload(
     };
     match edge.inner.upload(claim, &headers, upload, body).await {
         Ok(attachment) => Json(attachment).into_response(),
+        Err(error) => failed(error),
+    }
+}
+
+async fn upload_emoji(
+    State(edge): State<Edge>,
+    headers: HeaderMap,
+    Query(new): Query<NewEmoji>,
+    body: Body,
+) -> Response {
+    let Some(claim) = edge.bearer(&headers) else {
+        return failed(ApiError::Unauthorized);
+    };
+    match edge.inner.upload_emoji(claim, &headers, new, body).await {
+        Ok(emoji) => Json(emoji).into_response(),
         Err(error) => failed(error),
     }
 }
@@ -149,7 +197,7 @@ impl Inner {
 
     /// Fails unless the user may see the guild, asking its cell at most
     /// once a minute.
-    async fn may_view(&self, user: &str, guild: &str) -> ApiResult<()> {
+    pub(crate) async fn may_view(&self, user: &str, guild: &str) -> ApiResult<()> {
         let key = (user.to_string(), guild.to_string());
         if self
             .viewers
@@ -164,12 +212,17 @@ impl Inner {
             user.to_string(),
             Permission::View
         ))?;
+        self.viewed(user, guild);
+        Ok(())
+    }
+
+    /// Remembers that the user may see the guild, as a cell just said.
+    pub(crate) fn viewed(&self, user: &str, guild: &str) {
         let mut viewers = self.viewers.lock();
         if viewers.len() > 100_000 {
             viewers.retain(|_, at| at.elapsed() < VIEWER_TTL);
         }
-        viewers.insert(key, Instant::now());
-        Ok(())
+        viewers.insert((user.to_string(), guild.to_string()), Instant::now());
     }
 
     async fn upload(
@@ -181,11 +234,7 @@ impl Inner {
     ) -> ApiResult<public::Attachment> {
         self.write_allowed(&claim)?;
         let name = file_name(&upload.name).ok_or(ApiError::InvalidRequest)?;
-        let declared = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<i64>().ok());
-        if declared.is_some_and(|size| size > MAX_FILE_BYTES) {
+        if declared_size(headers).is_some_and(|size| size > MAX_FILE_BYTES) {
             return Err(ApiError::LimitExceeded);
         }
         let (guild, channel) = (upload.guild_id, upload.channel_id);
@@ -196,9 +245,6 @@ impl Inner {
         ))?;
         let media = self.media_for(&guild).ok_or(ApiError::Unavailable)?;
 
-        let body = body
-            .into_data_stream()
-            .map(|chunk| chunk.map_err(io::Error::other));
         let blob = media
             .put(
                 NewBlob {
@@ -208,7 +254,7 @@ impl Inner {
                     uploader: claim.sub.clone(),
                     name,
                 },
-                Box::pin(body),
+                body_stream(body),
             )
             .await
             .map_err(convert::media_error)?;
@@ -244,6 +290,72 @@ impl Inner {
         Ok(convert::attachment(&guild, &channel, &attachment))
     }
 
+    async fn upload_emoji(
+        &self,
+        claim: Claim,
+        headers: &HeaderMap,
+        new: NewEmoji,
+        body: Body,
+    ) -> ApiResult<public::Emoji> {
+        self.write_allowed(&claim)?;
+        if !babel_emoji::valid_name(&new.name) {
+            return Err(ApiError::InvalidRequest);
+        }
+        if declared_size(headers).is_some_and(|size| size > MAX_EMOJI_BYTES) {
+            return Err(ApiError::LimitExceeded);
+        }
+        let guild = new.guild_id;
+        on_cell!(self, &guild, |cell| cell.check_permission(
+            guild.clone(),
+            claim.sub.clone(),
+            Permission::ManageGuild
+        ))?;
+        let media = self.media_for(&guild).ok_or(ApiError::Unavailable)?;
+        let blob = media
+            .put(
+                NewBlob {
+                    guild_id: guild.clone(),
+                    channel_id: None,
+                    kind: BlobKind::Emoji,
+                    uploader: claim.sub.clone(),
+                    name: new.name.clone(),
+                },
+                body_stream(body),
+            )
+            .await
+            .map_err(convert::media_error)?;
+        let created = if sniff::INLINE.contains(&blob.content_type.as_str()) {
+            on_cell!(self, &guild, |cell| cell.create_emoji(cell::NewEmoji {
+                guild_id: guild.clone(),
+                user_id: claim.sub.clone(),
+                id: blob.id.clone(),
+                name: new.name.clone(),
+            }))
+        } else {
+            // Emoji are pictures.
+            Err(ApiError::InvalidRequest)
+        };
+        match created {
+            Ok(emoji) => {
+                self.emoji.lock().remove(&guild);
+                Ok(convert::emoji(&emoji))
+            }
+            Err(error) => {
+                // Nothing will use it: no need to wait for the sweeper.
+                let _ = media
+                    .delete_blobs(BlobRefs {
+                        blobs: vec![BlobRef {
+                            guild_id: guild,
+                            channel_id: None,
+                            id: blob.id,
+                        }],
+                    })
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
     async fn download(
         &self,
         claim: Claim,
@@ -251,16 +363,23 @@ impl Inner {
         channel: String,
         id: String,
     ) -> ApiResult<Response> {
-        self.may_view(&claim.sub, &guild).await?;
+        // Attachments are for the guild's members, emoji for everyone.
+        let (channel, kind) = match channel.as_str() {
+            NO_CHANNEL => (None, BlobKind::Emoji),
+            _ => {
+                self.may_view(&claim.sub, &guild).await?;
+                (Some(channel.as_str()), BlobKind::Attachment)
+            }
+        };
         let media = id
             .split_once('.')
             .and_then(|(name, _)| self.cluster.media.get(name))
             .ok_or(ApiError::NotFound)?;
         let (blob, stream) = media
-            .get(&guild, Some(&channel), &id)
+            .get(&guild, channel, &id)
             .await
             .map_err(convert::media_error)?;
-        if blob.kind != BlobKind::Attachment {
+        if blob.kind != kind {
             return Err(ApiError::NotFound);
         }
         let inline = sniff::INLINE.contains(&blob.content_type.as_str());

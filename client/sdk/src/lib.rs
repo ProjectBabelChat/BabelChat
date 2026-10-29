@@ -36,17 +36,24 @@ mod websocket;
 
 pub use api::{Client, Error, Result};
 pub use babel_api_edge_client::types::{
-    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelNotify, GuildView, Invite,
+    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelNotify, Emoji, GuildView, Invite,
     LanguageAlias, LanguagePolicy, LanguagePolicyUpdate, LanguageView, Member, Message,
     MessageTranslation, NotificationSettings, NotifyLevel, ReadState, RegionMode, Token,
     Translation, TranslationModel, UserSettings,
 };
+/// A guild's emoji in text: codes found, turned into `:name:`, and so on.
+pub use babel_emoji as emoji;
 pub use device::{DeviceError, DeviceTranslator, MockDeviceTranslator};
 pub use display::{Display, Shown};
 pub use session::{
-    ChatMessage, GuildChange, MAX_UPLOAD_BYTES, MessageChange, Notification, NotifyReason, Session,
-    SessionConfig, Transport, Unread, Update,
+    ChatMessage, GuildChange, MAX_EMOJI_BYTES, MAX_UPLOAD_BYTES, MessageChange, Notification,
+    NotifyReason, Session, SessionConfig, Transport, Unread, Update,
 };
+
+/// How text and reactions write a guild's emoji: `<:name:guild_id.id>`.
+pub fn emoji_code(emoji: &Emoji) -> String {
+    babel_emoji::code(&emoji.name, &emoji.guild_id, &emoji.id)
+}
 
 // Apps share one session between their UI thread and the runtime.
 const _: () = {

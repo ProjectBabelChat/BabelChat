@@ -1,12 +1,12 @@
 //! The open channel: its header, the message list and the composer.
 
-use babel_sdk::{ChannelKind, ChatMessage, GuildView, Shown};
+use babel_sdk::{ChannelKind, ChatMessage, GuildView, Shown, emoji as codes};
 use chrono::{DateTime, Local, TimeZone as _};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, ExternalPaths, IntoElement, SharedString, Window, div, list, px};
 use gpui_md3e::prelude::*;
 
-use super::{ChatView, Compose, Dialog};
+use super::{ChatView, Compose, Dialog, PickerTarget};
 use crate::{
     i18n::{Strings, fill, language_name},
     widgets,
@@ -221,13 +221,25 @@ impl ChatView {
             .text_color(colors.on_surface_variant)
             .truncate()
             .children(self.typing_text());
+        // Emoji offered for a name being typed, over the composer's row.
+        let completion = self.render_completion(cx).map(|list| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_full()
+                .mb_2()
+                .child(list)
+        });
         column
             .child(
                 div()
+                    .relative()
                     .flex()
                     .flex_row()
                     .items_end()
                     .gap_3()
+                    .children(completion)
                     .child(
                         div().pb(px(8.0)).child(
                             IconButton::new("attach", Icon::AttachFile)
@@ -235,7 +247,20 @@ impl ChatView {
                                 .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
                         ),
                     )
-                    .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    .child(self.render_composer_field(cx))
+                    .child(
+                        div().pb(px(8.0)).child(
+                            IconButton::new("insert-emoji", Icon::Mood)
+                                .size(ButtonSize::Medium)
+                                .label(self.t().insert_emoji)
+                                .on_click(cx.listener(
+                                    |this, event: &gpui::ClickEvent, window, cx| {
+                                        let at = event.position();
+                                        this.open_picker(PickerTarget::Composer, at, window, cx)
+                                    },
+                                )),
+                        ),
+                    )
                     // Level with the composer's last line as it grows.
                     .child(
                         div().pb(px(8.0)).child(
@@ -254,6 +279,41 @@ impl ChatView {
                     ),
             )
             .child(typing)
+            .into_any_element()
+    }
+
+    /// The composer. While emoji are offered for a name being typed, Up,
+    /// Down, Enter and Tab choose among them.
+    fn render_composer_field(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_md3e::components::text_field::{Down, Submit, Up};
+        div()
+            .flex_1()
+            .min_w_0()
+            .capture_action(cx.listener(|this, _: &Up, _, cx| {
+                if this.completing(cx) {
+                    this.move_completion(-1, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Down, _, cx| {
+                if this.completing(cx) {
+                    this.move_completion(1, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Submit, window, cx| {
+                if this.completing(cx) {
+                    this.accept_completion(None, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &crate::app::FocusNext, window, cx| {
+                if this.completing(cx) {
+                    this.accept_completion(None, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(self.composer.clone())
             .into_any_element()
     }
 
@@ -296,7 +356,10 @@ impl ChatView {
         let mut content = div().flex_1().min_w_0().flex().flex_col();
         if let Some(reply_to) = &message.reply_to {
             let (author, text) = match self.session.message(&channel, reply_to) {
-                Some(replied) => (replied.message.author_name, replied.display.text),
+                Some(replied) => (
+                    replied.message.author_name,
+                    codes::plain(&replied.display.text),
+                ),
                 None => (String::new(), t.deleted_message.to_string()),
             };
             content = content.child(
@@ -360,24 +423,28 @@ impl ChatView {
         };
         // Files alone have no text.
         if !body.is_empty() {
-            content = content.child(
-                div()
-                    .md_type(TypeRole::BodyLarge, cx)
-                    .text_color(colors.on_surface)
-                    .child(SelectableText::new(
-                        SharedString::from(format!("message-text-{id}")),
-                        body,
-                    )),
-            );
+            let mut text = div()
+                .md_type(TypeRole::BodyLarge, cx)
+                .text_color(colors.on_surface);
+            // A guild's emoji alone are shown large.
+            if codes::only_emoji(&body) {
+                text = text.text_size(px(36.0)).line_height(px(48.0));
+            }
+            let parts = self.text_parts(&body, cx);
+            content = content.child(text.child(SelectableText::parts(
+                SharedString::from(format!("message-text-{id}")),
+                parts,
+            )));
         }
         if settings.show_original && chat.display.is_translated() && !show_original {
+            let parts = self.text_parts(&message.text, cx);
             content = content.child(
                 div()
                     .md_type(TypeRole::BodySmall, cx)
                     .text_color(colors.on_surface_variant)
-                    .child(SelectableText::new(
+                    .child(SelectableText::parts(
                         SharedString::from(format!("message-original-{id}")),
-                        message.text.clone(),
+                        parts,
                     )),
             );
         }
@@ -433,7 +500,7 @@ impl ChatView {
         let picking = self
             .picker
             .as_ref()
-            .is_some_and(|picker| picker.message_id == id);
+            .is_some_and(|picker| picker.target == PickerTarget::Reaction(id.clone()));
         if hovered || picking {
             let guild_owner = self
                 .current_guild()
@@ -450,7 +517,8 @@ impl ChatView {
                         .on_click(cx.listener({
                             let id = id.clone();
                             move |this, event: &gpui::ClickEvent, window, cx| {
-                                this.open_picker(id.clone(), event.position(), window, cx)
+                                let target = PickerTarget::Reaction(id.clone());
+                                this.open_picker(target, event.position(), window, cx)
                             }
                         })),
                 )
@@ -507,7 +575,7 @@ impl ChatView {
 
     /// "👍 2" for each emoji people reacted with; the user's own stand
     /// out. Clicking one adds or takes back the user's reaction.
-    fn reaction_chips(&self, chat: &ChatMessage, cx: &mut Context<Self>) -> AnyElement {
+    fn reaction_chips(&mut self, chat: &ChatMessage, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.md().colors;
         let id = chat.message.id.clone();
         let mut row = div().flex().flex_row().flex_wrap().gap_1().pt_1();
@@ -526,6 +594,7 @@ impl ChatView {
                 )
             };
             let (message_id, emoji) = (id.clone(), reaction.emoji.clone());
+            let face = self.reaction_face(&reaction.emoji, cx);
             row = row.child(
                 div()
                     .id(SharedString::from(format!("reaction-{id}-{ix}")))
@@ -545,7 +614,7 @@ impl ChatView {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_reaction(message_id.clone(), emoji.clone(), cx)
                     }))
-                    .child(div().text_size(px(16.0)).child(reaction.emoji.clone()))
+                    .child(face)
                     .child(
                         div()
                             .md_type(TypeRole::LabelMedium, cx)
@@ -562,7 +631,8 @@ impl ChatView {
             .label(self.t().add_reaction)
             .on_click(cx.listener(
                 move |this, event: &gpui::ClickEvent, window, cx| {
-                    this.open_picker(id.clone(), event.position(), window, cx)
+                    let target = PickerTarget::Reaction(id.clone());
+                    this.open_picker(target, event.position(), window, cx)
                 },
             )),
         )

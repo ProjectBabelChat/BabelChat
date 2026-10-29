@@ -96,7 +96,10 @@ the real trade-off against a database server.
 A standby starts from a checkpoint of the primary and then applies every
 write batch in order, so its sequence numbers match the primary's. It copies
 the whole store, whichever service it belongs to; primaries keep six hours
-of write-ahead log for standbys that fell behind. Failing over is manual
+of write-ahead log for standbys that fell behind. A new version of a
+service may add a table, which the log names but cannot create: a standby
+whose copy lacks one throws the copy away and starts over from a new
+checkpoint. Failing over is manual
 (see [deployment](../deployment.md#standbys)).
 
 The Account service is the exception: relational, transactional, small, and

@@ -1,7 +1,7 @@
 // Media API (internal)
 //
 // A Media service keeps the files people upload: attachments of messages
-// (and, later, a guild's emoji). It is never reachable from the internet;
+// and a guild's own emoji. It is never reachable from the internet;
 // Edges pass files on after checking who may send or see them, and
 // Message Cells tell it which files messages took in and which went.
 //
@@ -23,7 +23,7 @@
 enum BlobKind {
     /// A file sent with a message, seen by the guild's members.
     "attachment"
-    /// A guild's own emoji, usable and seen in every guild (not yet).
+    /// A guild's own emoji, used and seen in every guild.
     "emoji"
 }
 
@@ -75,7 +75,8 @@ type MediaUsage {
 enum MediaError {
     "not_found"
     "invalid_request"
-    /// The file is larger than the service takes (10 MB).
+    /// The file is larger than the service takes (10 MB; 256 KB for
+    /// emoji).
     "limit_exceeded"
     "unavailable"
 }

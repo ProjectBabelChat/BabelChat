@@ -431,6 +431,13 @@ impl ChatView {
                     this.dialog = Some(Dialog::notifications(this, window, cx));
                 }),
             ),
+            (
+                t.guild_emoji,
+                Icon::Mood,
+                Box::new(|this, window, cx| {
+                    this.dialog = Some(Dialog::emoji(this, window, cx));
+                }),
+            ),
         ];
         if owner {
             items.push((

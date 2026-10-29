@@ -29,6 +29,12 @@ pub enum MessageCellError {
     InvalidRequest,
     #[serde(rename = "unavailable")]
     Unavailable,
+    /// A name already in use (emoji).
+    #[serde(rename = "name_taken")]
+    NameTaken,
+    /// The guild holds as many as it may (50 emoji).
+    #[serde(rename = "limit_exceeded")]
+    LimitExceeded,
     /// The guild lives on another cell now: ask the Directory again.
     #[serde(rename = "moved")]
     Moved,
@@ -50,6 +56,8 @@ pub struct GuildSnapshot {
     /// The requesting member's, one per channel.
     pub read_states: Vec<ReadState>,
     pub notifications: NotificationSettings,
+    /// The guild's own emoji, oldest first.
+    pub emoji: Vec<Emoji>,
     /// Sequence number of the last event included in this snapshot.
     pub last_seq: i64,
 }
@@ -135,6 +143,19 @@ pub enum NotifyLevel {
 pub struct ChannelNotify {
     pub channel_id: String,
     pub level: NotifyLevel,
+}
+
+/// A guild's own emoji. Its members use it in any guild, in text and in
+/// reactions, as `<:name:guild_id.id>`; its image is on a Media service.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Emoji {
+    /// The image's ID on its Media service ("media-0.8a2b…").
+    pub id: String,
+    pub guild_id: String,
+    /// 2 to 32 ASCII letters, digits and underscores; unique in the guild.
+    pub name: String,
+    pub created_by: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -223,6 +244,15 @@ pub struct Attachment {
     pub height: Option<i64>,
 }
 
+/// A guild's new emoji, its image already on a Media service.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NewEmoji {
+    pub guild_id: String,
+    pub user_id: String,
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewMessage {
     pub guild_id: String,
@@ -270,8 +300,8 @@ pub struct Message {
 /// Everyone who reacted to a message with one emoji.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Reaction {
-    /// A Unicode emoji. Room is left for a guild's own emoji as
-    /// `custom:<id>`, usable in other guilds too; none exist yet.
+    /// A Unicode emoji, or a guild's emoji as `<:name:guild_id.id>` (the
+    /// same emoji whatever name it gives).
     pub emoji: String,
     /// In the order they reacted.
     pub user_ids: Vec<String>,
@@ -311,6 +341,7 @@ pub struct GuildEvent {
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
     pub reaction: Option<ReactionChange>,
+    pub emoji: Option<Emoji>,
     pub typing: Option<Typing>,
     pub user_id: Option<String>,
     pub read_state: Option<ReadState>,
@@ -354,6 +385,11 @@ pub enum GuildEventKind {
     ReactionAdded,
     #[serde(rename = "reaction_removed")]
     ReactionRemoved,
+    /// The guild's emoji (`emoji`).
+    #[serde(rename = "emoji_created")]
+    EmojiCreated,
+    #[serde(rename = "emoji_deleted")]
+    EmojiDeleted,
     /// Not kept anywhere but the log; Edges pass it on and forget it.
     #[serde(rename = "typing")]
     Typing,
@@ -460,11 +496,21 @@ pub trait MessageCell: Send + Sync + 'static {
     /// Records a file the Edge put on a Media service for the member, who
     /// must be allowed to write in the channel. Sending a message takes it.
     async fn add_upload(&self, body: NewUpload) -> Result<(), MessageCellError>;
+    /// Managers only. The image is on a Media service already (kind
+    /// `emoji`); the outbox tells it the emoji took it in.
+    async fn create_emoji(&self, body: NewEmoji) -> Result<Emoji, MessageCellError>;
+    /// Managers only. The outbox deletes the image; texts and reactions
+    /// naming the emoji show its name instead.
+    async fn delete_emoji(&self, guild_id: String, emoji_id: String, user_id: String) -> Result<(), MessageCellError>;
+    /// Members only: Edges ask it whether a writer may use the guild's
+    /// emoji, here or in another guild.
+    async fn get_emoji(&self, guild_id: String, user_id: String) -> Result<Vec<Emoji>, MessageCellError>;
     async fn send_message(&self, body: NewMessage) -> Result<Message, MessageCellError>;
     async fn edit_message(&self, body: MessageEdit) -> Result<Message, MessageCellError>;
     async fn delete_message(&self, guild_id: String, channel_id: String, message_id: String, user_id: String) -> Result<(), MessageCellError>;
     /// Adding a reaction already there, or removing one that is not, changes
-    /// nothing. A message holds at most 20 different emoji.
+    /// nothing. A message holds at most 20 different emoji. Edges check
+    /// that the user may use a guild's emoji; the cell checks its form only.
     async fn add_reaction(&self, guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Result<Message, MessageCellError>;
     async fn remove_reaction(&self, guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Result<Message, MessageCellError>;
     /// Tells the guild's readers the member is writing in the channel.

@@ -5,16 +5,20 @@
 //! page: pressing on another [`SelectableText`] or anywhere else replaces
 //! or clears it. [`CopySelection`] (Ctrl+C, ⌘C) copies it, and so does a
 //! focused text field's copy when the field has nothing selected itself.
+//!
+//! Text may hold small pictures in its lines ([`TextPart::Image`], a chat's
+//! own emoji): each stands on a placeholder in the text, painted over, so
+//! it wraps and is selected like a word and copies as its text.
 
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, Element,
-    ElementId, Entity, EntityId, ExternalDragPayload, Global, GlobalElementId, Hitbox,
-    HitboxBehavior, InteractiveElement as _, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, RenderOnce,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, TextLayout, Window,
-    actions, div, fill, point, px, size,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Corners, CursorStyle, DispatchPhase,
+    Element, ElementId, Entity, EntityId, ExternalDragPayload, Global, GlobalElementId,
+    HighlightStyle, Hitbox, HitboxBehavior, Image, InteractiveElement as _, IntoElement, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
+    Render, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText,
+    TextLayout, Window, actions, div, fill, point, px, size,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -80,11 +84,82 @@ pub(crate) fn drag_preview(text: SharedString, cx: &mut App) -> Entity<DragPrevi
     cx.new(|_| DragPreview { text })
 }
 
+/// Stands in a text for a picture: letters, so the picture wraps like a
+/// word; two, so it has about a line's height of room.
+pub(super) const IMAGE_PLACEHOLDER: &str = "MM";
+
+/// One run of a [`SelectableText`].
+#[derive(Clone)]
+pub enum TextPart {
+    Text(SharedString),
+    /// A picture as tall as the line, copied as `text`. Without an image
+    /// (one still loading) it takes its room and shows nothing.
+    Image {
+        image: Option<Arc<Image>>,
+        text: SharedString,
+    },
+}
+
+/// A picture in a text: where its placeholder is, what it shows, and what
+/// it copies as.
+#[derive(Clone)]
+struct InlineImage {
+    range: Range<usize>,
+    image: Option<Arc<Image>>,
+    text: SharedString,
+}
+
+/// The text of `parts` with placeholders for pictures, and the pictures.
+fn layout_parts(parts: Vec<TextPart>) -> (SharedString, Vec<InlineImage>) {
+    let mut text = String::new();
+    let mut images = Vec::new();
+    for part in parts {
+        match part {
+            TextPart::Text(run) => text.push_str(&run),
+            TextPart::Image {
+                image,
+                text: copied,
+            } => {
+                let start = text.len();
+                text.push_str(IMAGE_PLACEHOLDER);
+                images.push(InlineImage {
+                    range: start..text.len(),
+                    image,
+                    text: copied,
+                });
+            }
+        }
+    }
+    (text.into(), images)
+}
+
+/// `range` of `text` as copied: pictures as their text.
+fn copied(text: &str, range: Range<usize>, images: &[InlineImage]) -> String {
+    let mut out = String::new();
+    let mut at = range.start;
+    for image in images
+        .iter()
+        .filter(|image| image.range.start < range.end && range.start < image.range.end)
+    {
+        if at < image.range.start {
+            out.push_str(&text[at..image.range.start]);
+        }
+        out.push_str(&image.text);
+        at = image.range.end.max(at);
+    }
+    if at < range.end {
+        out.push_str(&text[at..range.end]);
+    }
+    out
+}
+
 /// The app's selection outside text fields.
 #[derive(Default)]
 struct TextSelection {
     owner: Option<ElementId>,
     text: SharedString,
+    /// Pictures in `text`, which copy as their text.
+    images: Vec<InlineImage>,
     range: Range<usize>,
     anchor: usize,
     /// The mouse button is down and the selection follows it.
@@ -100,7 +175,7 @@ impl Global for TextSelection {}
 pub fn selected_text(cx: &App) -> Option<SharedString> {
     let selection = cx.try_global::<TextSelection>()?;
     (selection.owner.is_some() && !selection.range.is_empty())
-        .then(|| selection.text[selection.range.clone()].to_string().into())
+        .then(|| copied(&selection.text, selection.range.clone(), &selection.images).into())
 }
 
 /// Drops the selection outside text fields.
@@ -142,6 +217,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
 pub struct SelectableText {
     id: ElementId,
     text: SharedString,
+    images: Vec<InlineImage>,
 }
 
 impl SelectableText {
@@ -149,6 +225,17 @@ impl SelectableText {
         Self {
             id: id.into(),
             text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    /// Text with pictures in its lines.
+    pub fn parts(id: impl Into<ElementId>, parts: Vec<TextPart>) -> Self {
+        let (text, images) = layout_parts(parts);
+        Self {
+            id: id.into(),
+            text,
+            images,
         }
     }
 }
@@ -164,7 +251,11 @@ impl RenderOnce for SelectableText {
             && !selection.selecting
             && selection.text == self.text
         {
-            let dragged = DraggedText::new(selection.text[selection.range.clone()].to_string());
+            let dragged = DraggedText::new(copied(
+                &selection.text,
+                selection.range.clone(),
+                &selection.images,
+            ));
             for (ix, rect) in selection.rects.iter().enumerate() {
                 handles.push(
                     div()
@@ -192,7 +283,18 @@ impl RenderOnce for SelectableText {
             .child(SelectableTextElement {
                 id: self.id,
                 text: self.text.clone(),
-                styled: StyledText::new(self.text),
+                // Placeholders take their room and are not seen.
+                styled: StyledText::new(self.text).with_highlights(self.images.iter().map(
+                    |image| {
+                        // Blending a clear color would change nothing.
+                        let hidden = HighlightStyle {
+                            fade_out: Some(1.0),
+                            ..HighlightStyle::default()
+                        };
+                        (image.range.clone(), hidden)
+                    },
+                )),
+                images: self.images,
             })
             .children(handles)
     }
@@ -202,6 +304,7 @@ struct SelectableTextElement {
     id: ElementId,
     text: SharedString,
     styled: StyledText,
+    images: Vec<InlineImage>,
 }
 
 impl IntoElement for SelectableTextElement {
@@ -284,10 +387,14 @@ impl Element for SelectableTextElement {
 
         self.styled
             .paint(None, None, bounds, state, &mut (), window, cx);
+        for image in &self.images {
+            paint_inline_image(&layout, image, window, cx);
+        }
         window.set_cursor_style(CursorStyle::IBeam, hitbox);
 
         let id = self.id.clone();
         let text = self.text.clone();
+        let images = self.images.clone();
         let hitbox = hitbox.clone();
         {
             let layout = layout.clone();
@@ -331,6 +438,7 @@ impl Element for SelectableTextElement {
                 cx.set_global(TextSelection {
                     owner: Some(id.clone()),
                     text: text.clone(),
+                    images: images.clone(),
                     range,
                     anchor,
                     selecting: event.click_count == 1,
@@ -378,6 +486,64 @@ impl Element for SelectableTextElement {
             }
         });
     }
+}
+
+fn paint_inline_image(layout: &TextLayout, image: &InlineImage, window: &mut Window, cx: &mut App) {
+    let (Some(picture), Some(start), Some(end)) = (
+        image.image.as_ref(),
+        layout.position_for_index(image.range.start),
+        layout.position_for_index(image.range.end),
+    ) else {
+        return;
+    };
+    paint_picture(picture, start, end, layout.line_height(), window, cx);
+}
+
+/// Paints a picture over its placeholder, which runs from `start` to `end`
+/// on a line: as tall as the line at most, centered on the placeholder's
+/// room.
+pub(super) fn paint_picture(
+    picture: &Arc<Image>,
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(data) = picture.clone().use_render_image(window, cx) else {
+        return;
+    };
+    // A placeholder is one word, so it is on one line: its end is further
+    // right, unless it ends the line.
+    let width = if (end.y - start.y).abs() < px(0.5) {
+        end.x - start.x
+    } else {
+        line_height
+    };
+    let side = width.min(line_height);
+    let room = Bounds::new(
+        point(
+            start.x + (width - side) / 2.0,
+            start.y + (line_height - side) / 2.0,
+        ),
+        size(side, side),
+    );
+    // Contained, keeping its shape.
+    let natural = data.size(0);
+    let (w, h) = (
+        natural.width.0.max(1) as f32,
+        natural.height.0.max(1) as f32,
+    );
+    let scale = (side / px(w)).min(side / px(h));
+    let fitted = size(px(w) * scale, px(h) * scale);
+    let fitted = Bounds::new(
+        point(
+            room.origin.x + (side - fitted.width) / 2.0,
+            room.origin.y + (side - fitted.height) / 2.0,
+        ),
+        fitted,
+    );
+    let _ = window.paint_image(fitted, fitted, Corners::default(), data, 0, false);
 }
 
 /// The text index nearest to `position`, above the text meaning its start
@@ -439,6 +605,23 @@ fn selection_rects(layout: &TextLayout, range: Range<usize>) -> Vec<Bounds<Pixel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictures_stand_in_the_text_and_copy_as_their_text() {
+        let (text, images) = layout_parts(vec![
+            TextPart::Text("Party ".into()),
+            TextPart::Image {
+                image: None,
+                text: ":party:".into(),
+            },
+            TextPart::Text(" now".into()),
+        ]);
+        assert_eq!(text.as_ref(), "Party MM now");
+        assert_eq!(images[0].range, 6..8);
+        assert_eq!(copied(&text, 0..text.len(), &images), "Party :party: now");
+        assert_eq!(copied(&text, 7..10, &images), ":party: n");
+        assert_eq!(copied(&text, 0..5, &images), "Party");
+    }
 
     #[test]
     fn double_clicks_pick_the_word() {

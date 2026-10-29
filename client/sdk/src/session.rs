@@ -23,9 +23,9 @@ use std::{
 };
 
 use babel_api_edge_client::types::{
-    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelUpdate, Guild, GuildUpdate, GuildView,
-    Invite, LanguagePolicy, LanguagePolicyUpdate, Member, MessageEdit, NewChannel, NewGuild,
-    NewInvite, NewMessage, NotificationSettings, TranslationModel, UserSettings,
+    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelUpdate, Emoji, Guild, GuildUpdate,
+    GuildView, Invite, LanguagePolicy, LanguagePolicyUpdate, Member, MessageEdit, NewChannel,
+    NewGuild, NewInvite, NewMessage, NotificationSettings, TranslationModel, UserSettings,
 };
 use babel_lang::Normalizer;
 use parking_lot::Mutex;
@@ -99,6 +99,11 @@ impl Default for SessionConfig {
 
 /// The largest file the server takes. Check before reading a file in.
 pub const MAX_UPLOAD_BYTES: i64 = 10 * 1024 * 1024;
+/// The largest emoji image the server takes.
+pub const MAX_EMOJI_BYTES: i64 = 256 * 1024;
+/// How long a device shows an emoji's picture without asking the server
+/// whether the emoji still exists.
+const EMOJI_KEPT: Duration = Duration::from_secs(60 * 60);
 /// Downloaded files kept on the device; the oldest go first.
 pub const MEDIA_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -223,6 +228,8 @@ pub enum GuildChange {
     Languages,
     /// The user's notification settings for the guild.
     Notifications,
+    /// The guild's own emoji: one added or deleted.
+    Emoji,
     /// Reloaded after a reconnect or a settings change.
     Refreshed,
 }
@@ -500,27 +507,59 @@ impl Session {
             return Err(Error::Api(ApiError::LimitExceeded));
         }
         let guild_id = self.shared.guild_of(channel_id)?;
+        let query = [
+            ("guild_id", guild_id.as_str()),
+            ("channel_id", channel_id),
+            ("name", name),
+        ];
         self.shared
             .client
-            .upload(&guild_id, channel_id, name, bytes)
+            .upload("/media/upload", &query, bytes)
             .await
     }
 
     /// A file's contents: from the device when downloaded before (a file
     /// never changes under its ID), otherwise from the server.
     pub async fn download(&self, file: &Attachment) -> Result<bytes::Bytes> {
+        self.fetch_file(&file.id, &file.url, None).await
+    }
+
+    /// The file `id` at `url`, from the media cache if it is there (and
+    /// younger than `max_age`, when given). A file the server no longer has
+    /// leaves the cache.
+    async fn fetch_file(
+        &self,
+        id: &str,
+        url: &str,
+        max_age: Option<Duration>,
+    ) -> Result<bytes::Bytes> {
         let cached = self
             .shared
             .config
             .media_cache
             .as_ref()
-            .map(|dir| dir.join(media_name(&file.id)));
-        if let Some(path) = &cached
-            && let Ok(bytes) = tokio::fs::read(path).await
-        {
-            return Ok(bytes.into());
+            .map(|dir| dir.join(media_name(id)));
+        if let Some(path) = &cached {
+            let fresh = match max_age {
+                None => true,
+                Some(max_age) => tokio::fs::metadata(path)
+                    .await
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|at| at.elapsed().is_ok_and(|age| age < max_age)),
+            };
+            if fresh && let Ok(bytes) = tokio::fs::read(path).await {
+                return Ok(bytes.into());
+            }
         }
-        let bytes = self.shared.client.download(&file.url).await?;
+        let bytes = match self.shared.client.download(url).await {
+            Err(Error::Api(ApiError::NotFound)) => {
+                if let Some(path) = &cached {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
+                return Err(Error::Api(ApiError::NotFound));
+            }
+            result => result?,
+        };
         if let (Some(path), Some(dir)) = (cached, self.shared.config.media_cache.clone()) {
             let bytes = bytes.clone();
             let forgotten = self.shared.cache_forgotten.clone();
@@ -560,9 +599,9 @@ impl Session {
             .send_message(
                 self.shared.client.jwt(),
                 NewMessage {
+                    text: self.fill_emoji(&guild_id, text),
                     guild_id,
                     channel_id: channel_id.to_string(),
-                    text: text.to_string(),
                     reply_to: reply_to.map(str::to_string),
                     attachments: (!files.is_empty())
                         .then(|| files.iter().map(|file| file.id.clone()).collect()),
@@ -588,10 +627,10 @@ impl Session {
             .edit_message(
                 self.shared.client.jwt(),
                 MessageEdit {
+                    text: self.fill_emoji(&guild_id, text),
                     guild_id,
                     channel_id: channel_id.to_string(),
                     message_id: message_id.to_string(),
-                    text: text.to_string(),
                 },
             )
             .await?;
@@ -626,7 +665,8 @@ impl Session {
         Ok(())
     }
 
-    /// Reacts with one Unicode emoji; reacting twice changes nothing.
+    /// Reacts with one Unicode emoji or a guild's emoji's code
+    /// ([`emoji_code`](crate::emoji_code)); reacting twice changes nothing.
     pub async fn react(&self, channel_id: &str, message_id: &str, emoji: &str) -> Result<()> {
         self.set_reaction(channel_id, message_id, emoji, true).await
     }
@@ -670,6 +710,99 @@ impl Session {
             });
         }
         Ok(())
+    }
+
+    // ---- A guild's own emoji -------------------------------------------
+
+    /// Every emoji the user may use, in text and reactions, in any guild:
+    /// the user's guilds' own, `first`'s before the others.
+    pub fn usable_emoji(&self, first: Option<&str>) -> Vec<Emoji> {
+        let state = self.shared.state.lock();
+        let mut guilds = state.guilds.iter().collect::<Vec<_>>();
+        guilds.sort_by_key(|view| Some(view.guild.id.as_str()) != first);
+        guilds
+            .into_iter()
+            .flat_map(|view| view.emoji.iter().cloned())
+            .collect()
+    }
+
+    /// The emoji `:name:` means when written in `guild_id`: the guild's
+    /// own first, then another guild's.
+    pub fn find_emoji(&self, guild_id: &str, name: &str) -> Option<Emoji> {
+        let usable = self.usable_emoji(Some(guild_id));
+        let found = usable.iter().find(|emoji| emoji.name == name).or_else(|| {
+            usable
+                .iter()
+                .find(|emoji| emoji.name.eq_ignore_ascii_case(name))
+        });
+        found.cloned()
+    }
+
+    /// `text` with each `:name:` of an emoji the user may use written as
+    /// its code ([`Self::find_emoji`]). Sending and editing do it.
+    pub fn fill_emoji(&self, guild_id: &str, text: &str) -> String {
+        if !text.contains(':') {
+            return text.to_string();
+        }
+        crate::emoji::fill(text, |name| {
+            self.find_emoji(guild_id, name)
+                .map(|emoji| crate::emoji_code(&emoji))
+        })
+    }
+
+    /// Adds an emoji to a guild (owner only) from a PNG, JPEG, GIF or WebP
+    /// image of up to [`MAX_EMOJI_BYTES`]. Names are 2 to 32 letters,
+    /// digits and underscores, unique in the guild (`Api(NameTaken)`); a
+    /// guild has at most 50 (`Api(LimitExceeded)`).
+    pub async fn create_emoji(&self, guild_id: &str, name: &str, bytes: Vec<u8>) -> Result<Emoji> {
+        if bytes.len() as i64 > MAX_EMOJI_BYTES {
+            return Err(Error::Api(ApiError::LimitExceeded));
+        }
+        if !crate::emoji::valid_name(name) {
+            return Err(Error::Api(ApiError::InvalidRequest));
+        }
+        let query = [("guild_id", guild_id), ("name", name)];
+        let emoji: Emoji = self
+            .shared
+            .client
+            .upload("/media/emoji", &query, bytes)
+            .await?;
+        if self.shared.state.lock().put_emoji(emoji.clone()) {
+            self.shared.emit(Update::Guild {
+                guild_id: guild_id.to_string(),
+                change: GuildChange::Emoji,
+            });
+        }
+        Ok(emoji)
+    }
+
+    /// Owner only. Messages and reactions using it show its name instead.
+    pub async fn delete_emoji(&self, guild_id: &str, emoji_id: &str) -> Result<()> {
+        self.shared
+            .client
+            .guilds()
+            .delete_emoji(
+                self.shared.client.jwt(),
+                guild_id.to_string(),
+                emoji_id.to_string(),
+            )
+            .await?;
+        if self.shared.state.lock().remove_emoji(guild_id, emoji_id) {
+            self.shared.emit(Update::Guild {
+                guild_id: guild_id.to_string(),
+                change: GuildChange::Emoji,
+            });
+        }
+        Ok(())
+    }
+
+    /// The image of a guild's emoji, of any guild (codes in messages name
+    /// emoji of guilds the reader may not be in). Kept on the device for
+    /// an hour, then asked for again: `Api(NotFound)` once the emoji is
+    /// deleted.
+    pub async fn emoji_image(&self, guild_id: &str, emoji_id: &str) -> Result<bytes::Bytes> {
+        let url = format!("/media/{guild_id}/-/{emoji_id}");
+        self.fetch_file(emoji_id, &url, Some(EMOJI_KEPT)).await
     }
 
     /// Tells the channel the user is writing. Call it as they type: at most

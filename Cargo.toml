@@ -33,6 +33,7 @@ edition = "2024"
 [workspace.dependencies]
 # ---- BabelChat (crates/, server/) ----
 babel-lang = { path = "crates/babel-lang" }
+babel-emoji = { path = "crates/babel-emoji" }
 babel-store = { path = "server/store" }
 babel-account = { path = "server/account" }
 babel-directory = { path = "server/directory" }

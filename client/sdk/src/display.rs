@@ -89,9 +89,10 @@ pub(crate) fn plan(
             shown,
         })
     };
-    // Files alone carry no text to translate.
+    // Files or emoji alone carry no text to translate.
     if message.author_id == me
         || message.text.trim().is_empty()
+        || babel_emoji::only_emoji(&message.text)
         || !(view.llm || view.client_translation)
     {
         return original(Shown::Original);
@@ -113,7 +114,8 @@ pub(crate) fn plan(
         .find(|t| t.lang == view.effective)
     {
         return Plan::Show(Display {
-            text: translated.text.clone(),
+            // Translators read `:name:` for a guild's emoji.
+            text: babel_emoji::restore(&message.text, &translated.text),
             shown: Shown::Server {
                 from: source.clone(),
                 to: view.effective.clone(),
@@ -131,7 +133,7 @@ pub(crate) fn plan(
         .find(|t| normalizer.is_english(&t.lang));
     let (from, text) = match english {
         Some(english) => (english.lang.clone(), english.text.clone()),
-        None => (source.clone(), message.text.clone()),
+        None => (source.clone(), babel_emoji::plain(&message.text)),
     };
     Plan::Device(DeviceJob {
         message_id: message.id.clone(),
@@ -156,7 +158,7 @@ pub(crate) fn device_display(
             shown: Shown::Translating,
         },
         Some(Ok(text)) => Display {
-            text: text.clone(),
+            text: babel_emoji::restore(&message.text, text),
             shown: Shown::Device {
                 from: job.source.clone(),
                 to: job.to.clone(),

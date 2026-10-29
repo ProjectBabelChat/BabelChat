@@ -11,6 +11,7 @@
 //! reads     guild / user / channel           ReadState    (members' read markers)
 //! notify    guild / user                     NotificationSettings
 //! uploads   guild / user / attachment id     Upload       (files not sent yet; a day)
+//! emoji     guild / emoji id                 Emoji        (the guild's own)
 //! log       guild / seq                      GuildEvent   (the guild's event log)
 //! outbox    seq                              OutboxEntry  (cell-wide, in commit order)
 //! ```
@@ -31,18 +32,19 @@ pub const BANS: Table = "bans";
 pub const READS: Table = "reads";
 pub const NOTIFY: Table = "notify";
 pub const UPLOADS: Table = "uploads";
+pub const EMOJI: Table = "emoji";
 pub const LOG: Table = "log";
 pub const OUTBOX: Table = "outbox";
 
 pub const TABLES: &[Table] = &[
-    GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, LOG, OUTBOX,
+    GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, EMOJI, LOG, OUTBOX,
 ];
 
 /// The tables holding a guild's entries (every key starts with the guild),
 /// in the order a move copies them: the guild record last, so the guild is
 /// whole on the new cell before it exists there.
 pub const GUILD_TABLES: &[Table] = &[
-    MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, LOG, GUILDS,
+    MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, EMOJI, LOG, GUILDS,
 ];
 
 pub fn guild_key(guild: &str) -> Vec<u8> {
@@ -85,6 +87,10 @@ pub fn upload_prefix(guild: &str, user: &str) -> Vec<u8> {
 
 pub fn upload_key(guild: &str, user: &str, id: &str) -> Vec<u8> {
     Key::new().str(guild).str(user).str(id).build()
+}
+
+pub fn emoji_key(guild: &str, id: &str) -> Vec<u8> {
+    Key::new().str(guild).str(id).build()
 }
 
 pub fn log_key(guild: &str, seq: i64) -> Vec<u8> {

@@ -129,6 +129,9 @@ mod message_cell {
         fn update_channel(body: ChannelUpdate) -> Channel;
         fn delete_channel(guild_id: String, channel_id: String, user_id: String) -> ();
         fn add_upload(body: NewUpload) -> ();
+        fn create_emoji(body: NewEmoji) -> Emoji;
+        fn delete_emoji(guild_id: String, emoji_id: String, user_id: String) -> ();
+        fn get_emoji(guild_id: String, user_id: String) -> Vec<Emoji>;
         fn send_message(body: NewMessage) -> Message;
         fn edit_message(body: MessageEdit) -> Message;
         fn delete_message(guild_id: String, channel_id: String, message_id: String, user_id: String) -> ();

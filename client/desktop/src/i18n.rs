@@ -156,6 +156,20 @@ pub struct Strings {
     pub save_file: &'static str,
     pub saved_to: &'static str,
     pub file_unavailable: &'static str,
+
+    pub guild_emoji: &'static str,
+    pub emoji_hint: &'static str,
+    pub emoji_none: &'static str,
+    pub emoji_name: &'static str,
+    pub emoji_name_hint: &'static str,
+    pub add_emoji: &'static str,
+    pub new_emoji: &'static str,
+    pub add: &'static str,
+    pub emoji_not_image: &'static str,
+    pub emoji_matching: &'static str,
+    pub delete_emoji: &'static str,
+    pub emoji_limit: &'static str,
+    pub insert_emoji: &'static str,
 }
 
 pub static EN: Strings = Strings {
@@ -311,6 +325,20 @@ pub static EN: Strings = Strings {
     save_file: "Save",
     saved_to: "Saved to {0}",
     file_unavailable: "This file is no longer available.",
+
+    guild_emoji: "Emoji",
+    emoji_hint: "Members use them in any guild, typed as :name:. PNG, JPEG, GIF or WebP up to 256 KB; 50 per guild.",
+    emoji_none: "No emoji yet.",
+    emoji_name: "Name",
+    emoji_name_hint: "2 to 32 letters, digits and _; typed as :name:",
+    add_emoji: "Add an image…",
+    new_emoji: "New emoji",
+    add: "Add",
+    emoji_not_image: "Emoji are PNG, JPEG, GIF or WebP images.",
+    emoji_matching: "Emoji matching {0}",
+    delete_emoji: "Delete :{0}:",
+    emoji_limit: "Emoji are up to 256 KB, and 50 per guild.",
+    insert_emoji: "Emoji",
 };
 
 pub static JA: Strings = Strings {
@@ -466,6 +494,20 @@ pub static JA: Strings = Strings {
     save_file: "保存",
     saved_to: "{0} に保存しました",
     file_unavailable: "このファイルはもうありません。",
+
+    guild_emoji: "絵文字",
+    emoji_hint: "メンバーはどのギルドでも :名前: と入力して使えます。PNG・JPEG・GIF・WebP で 256 KB まで、ギルドごとに 50 個までです。",
+    emoji_none: "絵文字はまだありません。",
+    emoji_name: "名前",
+    emoji_name_hint: "英数字と _ で 2〜32 文字。:名前: と入力して使います",
+    add_emoji: "画像を追加…",
+    new_emoji: "新しい絵文字",
+    add: "追加",
+    emoji_not_image: "絵文字は PNG・JPEG・GIF・WebP の画像です。",
+    emoji_matching: "{0} に一致する絵文字",
+    delete_emoji: ":{0}: を削除",
+    emoji_limit: "絵文字は 256 KB まで、ギルドごとに 50 個までです。",
+    insert_emoji: "絵文字",
 };
 
 /// The strings for a reader of `locale` (a BCP 47 tag).

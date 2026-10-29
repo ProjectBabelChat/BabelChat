@@ -36,7 +36,7 @@ pub enum BlobKind {
     /// A file sent with a message, seen by the guild's members.
     #[serde(rename = "attachment")]
     Attachment,
-    /// A guild's own emoji, usable and seen in every guild (not yet).
+    /// A guild's own emoji, used and seen in every guild.
     #[serde(rename = "emoji")]
     Emoji,
 }
@@ -47,7 +47,8 @@ pub enum MediaError {
     NotFound,
     #[serde(rename = "invalid_request")]
     InvalidRequest,
-    /// The file is larger than the service takes (10 MB).
+    /// The file is larger than the service takes (10 MB; 256 KB for
+    /// emoji).
     #[serde(rename = "limit_exceeded")]
     LimitExceeded,
     #[serde(rename = "unavailable")]

@@ -3,8 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use babel_api_edge_client::types::{
-    ApiError, Attachment, Auth, Credentials, Gateway, Guilds, Me, Messages, PasswordChange,
-    Registration, ThrowsOrOtherError, Token,
+    ApiError, Auth, Credentials, Gateway, Guilds, Me, Messages, PasswordChange, Registration,
+    ThrowsOrOtherError, Token,
 };
 use parking_lot::RwLock;
 
@@ -223,24 +223,19 @@ impl Client {
         Session::connect(self.clone(), translator, config).await
     }
 
-    /// Puts a file on the server for the user's next message in the
-    /// channel (`POST /media/upload`).
-    pub(crate) async fn upload(
+    /// Puts a file on the server: `/media/upload` (for the user's next
+    /// message in a channel) or `/media/emoji` (a guild's new emoji).
+    pub(crate) async fn upload<T: serde::de::DeserializeOwned>(
         &self,
-        guild_id: &str,
-        channel_id: &str,
-        name: &str,
+        path: &str,
+        query: &[(&str, &str)],
         bytes: Vec<u8>,
-    ) -> Result<Attachment> {
+    ) -> Result<T> {
         let response = self
             .inner
             .http
-            .post(format!("{}/media/upload", self.inner.server))
-            .query(&[
-                ("guild_id", guild_id),
-                ("channel_id", channel_id),
-                ("name", name),
-            ])
+            .post(format!("{}{path}", self.inner.server))
+            .query(query)
             .bearer_auth(self.jwt())
             .timeout(MEDIA_TIMEOUT)
             .body(bytes)

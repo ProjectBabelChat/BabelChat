@@ -5,7 +5,8 @@ use babel_sdk::{ChannelNotify, LanguagePolicyUpdate, NotifyLevel, TranslationMod
 use gpui::Focusable;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, IntoElement, SharedString, Window, div, px,
+    AnyElement, App, ClipboardItem, Context, Entity, ExternalPaths, IntoElement, SharedString,
+    Window, div, px,
 };
 use gpui_md3e::prelude::*;
 
@@ -65,6 +66,16 @@ pub enum Dialog {
     Notifications {
         guild_id: String,
         channel_id: Option<String>,
+    },
+    /// The guild's own emoji: listed for members, added (an image, then
+    /// its name) and deleted by its owner.
+    Emoji {
+        guild_id: String,
+        /// The image chosen for a new emoji, waiting for its name.
+        new: Option<super::guild_emoji::NewEmoji>,
+        name: Entity<TextField>,
+        busy: bool,
+        error: Option<String>,
     },
     Settings {
         locale: Entity<TextField>,
@@ -393,6 +404,24 @@ impl Dialog {
         Dialog::Notifications {
             guild_id: chat.guild.clone().unwrap_or_default(),
             channel_id: chat.channel.clone(),
+        }
+    }
+
+    pub fn emoji(chat: &ChatView, _: &mut Window, cx: &mut Context<ChatView>) -> Self {
+        let t = chat.t();
+        let submit = submit(cx);
+        let name = cx.new(|cx| {
+            TextField::new(cx)
+                .label(t.emoji_name)
+                .supporting_text(t.emoji_name_hint)
+                .on_submit(submit)
+        });
+        Dialog::Emoji {
+            guild_id: chat.guild.clone().unwrap_or_default(),
+            new: None,
+            name,
+            busy: false,
+            error: None,
         }
     }
 
@@ -917,7 +946,10 @@ impl ChatView {
                     );
                 }
             },
-            Dialog::Invite { .. } | Dialog::Notifications { .. } => self.dialog = None,
+            Dialog::Emoji { new: Some(_), .. } => self.upload_emoji(window, cx),
+            Dialog::Invite { .. } | Dialog::Notifications { .. } | Dialog::Emoji { .. } => {
+                self.dialog = None
+            }
         }
     }
 
@@ -981,6 +1013,7 @@ impl ChatView {
                             | Some(Dialog::Settings { busy: true, .. })
                             | Some(Dialog::Password { busy: true, .. })
                             | Some(Dialog::Confirm { busy: true, .. })
+                            | Some(Dialog::Emoji { busy: true, .. })
                     );
                     if !busy {
                         this.dialog = None;
@@ -1535,6 +1568,80 @@ impl ChatView {
                     dismiss,
                     cx,
                 )
+            }
+            Dialog::Emoji {
+                guild_id,
+                new,
+                name,
+                busy,
+                error,
+            } => {
+                let (guild_id, name, busy, error) =
+                    (guild_id.clone(), name.clone(), *busy, error.clone());
+                // An image chosen: it waits for its name.
+                if let Some(image) = new.as_ref().map(|new| new.image.clone()) {
+                    let body = div()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(ChatView::new_emoji_view(image, name, cx))
+                        .children(error_line(&error, cx));
+                    let actions = vec![
+                        Button::new("discard-emoji", t.cancel)
+                            .style(ButtonStyle::Text)
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.discard_emoji_image(cx)))
+                            .into_any_element(),
+                        confirm(t.add, busy, cx),
+                    ];
+                    return widgets::dialog("emoji", t.new_emoji, body, actions, dismiss, cx);
+                }
+                let owner = self
+                    .session
+                    .guild(&guild_id)
+                    .is_some_and(|guild| self.is_owner(&guild));
+                let mut body = div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        div()
+                            .md_type(TypeRole::BodyMedium, cx)
+                            .text_color(colors.on_surface_variant)
+                            .child(t.emoji_hint),
+                    )
+                    .child(self.emoji_list(&guild_id, owner, busy, cx));
+                let mut actions = Vec::new();
+                if owner {
+                    // An image dropped on the dialog is chosen too.
+                    let dropping = colors.primary_container.opacity(0.35);
+                    body = body
+                        .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(dropping))
+                        .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                            if let Some(path) = paths.paths().first() {
+                                this.choose_emoji_image(path.clone(), window, cx);
+                            }
+                            cx.stop_propagation();
+                        }));
+                    actions.push(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .child(
+                                Button::new("add-emoji", t.add_emoji)
+                                    .style(ButtonStyle::Text)
+                                    .icon(Icon::Add)
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.pick_emoji_image(window, cx)
+                                    })),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                body = body.children(error_line(&error, cx));
+                actions.push(confirm(t.close, false, cx));
+                widgets::dialog("emoji", t.guild_emoji, body, actions, dismiss, cx)
             }
             Dialog::Settings {
                 locale,

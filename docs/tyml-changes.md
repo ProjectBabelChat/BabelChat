@@ -136,7 +136,7 @@ channels needed:
 | Reaction events that can be applied twice | The event carries the emoji's count after the change (`ReactionChange.count`) |
 | Typing, which nothing should keep | A log entry like any other (`typing`), not forwarded by the outbox and trimmed with the log |
 | New events | More `kind` values with one optional payload field each (`guild_info`, `reaction`, `typing`), as before |
-| Room for a guild's own emoji later | `emoji: string`, with `custom:<id>` reserved in its doc comment; no union type needed |
+| Room for a guild's own emoji later | `emoji: string`, with `custom:<id>` reserved in its doc comment; no union type needed (now a code, see below) |
 
 ## Phase 7 (attachments)
 
@@ -150,3 +150,15 @@ No TYML changes. Files sent with messages, on a new Media service
 | Fields added to stored and public types (a message's files; a message's files to delete) | Optional fields (`attachments: [Attachment]?`, `DeletedMessage.attachments: [string]?`); the public `Message.attachments` is required and the Edge fills in an empty list, as for reactions |
 | Where a file is, without a lookup | Its ID (`media-0.3f9c…`), a string, as invite codes carry their guild |
 | Pages of files oldest first, for maintenance | `after: string?` cursor and `next: string?`, as in `export_guild` |
+
+## Phase 7 (a guild's own emoji)
+
+No TYML changes. A guild's emoji, used in other guilds too, needed:
+
+| Need | How |
+|---|---|
+| A guild's emoji, listed with the guild and changing live | A type (`Emoji`), a list in the snapshot (`GuildSnapshot.emoji`, `GuildView.emoji`), and two more event kinds with one more optional payload (`emoji_created`, `emoji_deleted`, `emoji: Emoji?`), as before |
+| Adding one, with its image | A route next to the generated ones (`POST /media/emoji`), like file uploads, answering the generated `Emoji`; the Edge then calls a generated function on the cell (`create_emoji`) |
+| Emoji in text and reactions | A code in the string (`<:name:guild_id.id>`), checked and rewritten by the Edge; no union or rich-text type. It replaces the `custom:<id>` reserved in phase 7: the name lets readers show an emoji whose guild they are not in, or that is gone |
+| A name taken, a guild full | Two more variants of `MessageCellError` (`name_taken`, `limit_exceeded`), mapped to the public `ApiError` ones that existed |
+| An Edge checking a writer may use another guild's emoji | A members-only list function on the cell (`get_emoji`), cached by the Edge |

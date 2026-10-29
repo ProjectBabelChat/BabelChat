@@ -172,6 +172,20 @@ type Ban {
     banned_at: int
 }
 
+/// A guild's own emoji. Its members use it in any guild, in text and in
+/// reactions, written `<:name:guild_id.id>`; everyone signed in sees it.
+type Emoji {
+    id: string
+    guild_id: string
+    /// 2 to 32 ASCII letters, digits and underscores; unique in the guild.
+    name: string
+    /// The image: `GET` with the token, like attachments; the same as
+    /// `/media/<guild_id>/-/<id>`, which readers of a code build.
+    url: string
+    created_by: string
+    created_at: int
+}
+
 type GuildView {
     guild: Guild
     channels: [Channel]
@@ -181,6 +195,8 @@ type GuildView {
     /// The user's, one per channel.
     read_states: [ReadState]
     notifications: NotificationSettings
+    /// The guild's own emoji, oldest first.
+    emoji: [Emoji]
 }
 
 type NewGuild {
@@ -260,8 +276,7 @@ type Attachment {
 
 /// One emoji people reacted with.
 type Reaction {
-    /// A Unicode emoji. Later also `custom:<id>`, a guild's own emoji
-    /// (usable in other guilds too); none exist yet.
+    /// A Unicode emoji, or a guild's emoji as `<:name:guild_id.id>`.
     emoji: string
     count: int
     /// The user is among them.
@@ -318,7 +333,9 @@ type MessageView {
 type NewMessage {
     guild_id: string
     channel_id: string
-    /// `@name` notifies that member.
+    /// `@name` notifies that member. A guild's emoji is written
+    /// `<:name:guild_id.id>`; codes of emoji the user may not use (of
+    /// guilds they are not in, or deleted) become `:name:`.
     text: string
     reply_to: string?
     /// IDs of the user's uploads to this channel (`POST /media/upload`),
@@ -382,6 +399,9 @@ enum EventKind {
     "message_deleted"
     "reaction_added"
     "reaction_removed"
+    /// The guild's emoji (`emoji`).
+    "emoji_created"
+    "emoji_deleted"
     "typing"
     "message_translated"
     "policy_updated"
@@ -408,6 +428,7 @@ type Event {
     message: Message?
     deleted: DeletedMessage?
     reaction: ReactionChange?
+    emoji: Emoji?
     typing: Typing?
     translation: MessageTranslation?
     /// For policy_updated: the new policy and the user's resulting view.
@@ -523,6 +544,11 @@ interface Guilds {
 
     /// Saved for the user's other devices; they hear `notifications_updated`.
     authed function put_notification_settings(@claim: Claim, @body: NotificationSettings) -> NotificationSettings throws ApiError
+
+    /// Owner only. Emoji are added by uploading their image (`POST
+    /// /media/emoji`, see `Messages`). Texts and reactions naming a deleted
+    /// emoji show its name.
+    authed function delete_emoji(@claim: Claim, guild_id: string, emoji_id: string) throws ApiError
 }
 
 /// Files go up and down outside the JSON API, with the same token
@@ -532,6 +558,10 @@ interface Guilds {
 ///       -> Attachment (JSON). Up to 10 MB (`limit_exceeded`); the user
 ///       must be allowed to write in the channel. Send it within a day.
 ///   GET  <Attachment.url>  -> the file, for the guild's members.
+///   POST /media/emoji?guild_id=&name=   body: a PNG, JPEG, GIF or WebP
+///       -> Emoji (JSON), the guild's new emoji. Owner only; up to 256 KB
+///       and 50 emoji per guild (`limit_exceeded`); `name_taken`.
+///   GET  <Emoji.url>  -> the image, for anyone signed in.
 ///
 /// Errors are ApiError as JSON with 400, like the API's (401 without a
 /// valid token).
@@ -542,8 +572,9 @@ interface Messages {
 
     authed function delete_message(@claim: Claim, guild_id: string, channel_id: string, message_id: string) throws ApiError
 
-    /// `emoji` is one Unicode emoji. Reacting twice with the same one
-    /// changes nothing. A message holds at most 20 different emoji.
+    /// `emoji` is one Unicode emoji, or the code of a guild's emoji the
+    /// user may use (of a guild they are in). Reacting twice with the same
+    /// one changes nothing. A message holds at most 20 different emoji.
     authed function add_reaction(@claim: Claim, guild_id: string, channel_id: string, message_id: string, emoji: string) -> Message throws ApiError
 
     authed function remove_reaction(@claim: Claim, guild_id: string, channel_id: string, message_id: string, emoji: string) -> Message throws ApiError

@@ -14,7 +14,9 @@ mod shape_view;
 mod slider;
 mod split_button;
 mod surfaces;
-mod text_field;
+/// The text field, and its editing actions (for views that take some of
+/// them first, with `capture_action`).
+pub mod text_field;
 
 pub use button::*;
 pub use button_group::*;
@@ -27,14 +29,15 @@ pub use navigation_rail::*;
 pub use pressable::SurfaceColors;
 pub use progress::*;
 pub use selectable_text::{
-    CopySelection, DragPreview, DraggedText, SelectableText, clear_selection, selected_text,
+    CopySelection, DragPreview, DraggedText, SelectableText, TextPart, clear_selection,
+    selected_text,
 };
 pub use selection::*;
 pub use shape_view::*;
 pub use slider::*;
 pub use split_button::*;
 pub use surfaces::*;
-pub use text_field::{TextField, TextFieldEvent, TextFieldStyle};
+pub use text_field::{InlinePicture, TextField, TextFieldEvent, TextFieldStyle};
 
 /// Installs key bindings used by gpui-md3e components.
 pub(crate) fn bind_keys(cx: &mut gpui::App) {

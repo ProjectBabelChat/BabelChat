@@ -147,7 +147,8 @@ records URL from `FXTRANSLATE_RECORDS_URL`, and the files can be put in
 ## Reactions, writing, and managing channels
 
 - **Reactions.** `react(channel, message, emoji)` and `unreact` take one
-  Unicode emoji (`👍`; `❤` and `❤️` are the same one). Each message carries
+  Unicode emoji (`👍`; `❤` and `❤️` are the same one) or a guild's emoji's
+  code (below). Each message carries
   its reactions in the order first used, each with a count and whether this
   user is among them (`me`); reacting changes neither the text nor its
   revision. The server answers with the message, and other sessions get
@@ -258,6 +259,32 @@ dropped and early translations wait for their message.
   recently written going first; `forget_cache` deletes them with the rest.
   Downloads are for the guild's members (`Api(NotFound)` otherwise).
 
+## A guild's emoji
+
+- **Which.** Each `GuildView` lists its guild's emoji (`emoji`), kept
+  current by `emoji_created` and `emoji_deleted` events
+  (`GuildChange::Emoji`). The user may use those of every guild they are
+  in, in any guild: `usable_emoji(first)` lists them, a guild's first.
+- **Writing.** Text names an emoji by its code, `<:name:guild_id.id>`
+  (`emoji_code(&emoji)`); `babel_sdk::emoji` (the `babel-emoji` crate)
+  finds codes in text, cuts it into runs and codes, and turns codes into
+  `:name:` for plain-text readers. Sending and editing turn each `:name:`
+  the user may use into its code (`fill_emoji`: the guild written in
+  first, then the others, an exact name before one differing in case), so
+  apps let people type `:party:`. The server turns codes the user may not
+  use into names.
+- **Showing.** A translation comes back with the original's codes where
+  their `:name:` survived (translators only see names); device
+  translations get the same, and text of emoji alone shows as it is.
+  `emoji_image(guild, id)` returns an emoji's picture, for any guild's
+  emoji: readers see emoji of guilds they are not in. Pictures go into the
+  media cache too, but are asked for again after an hour, so a deleted
+  emoji (`Api(NotFound)`) leaves devices that showed it; apps show its
+  `:name:` then.
+- **Managing.** `create_emoji(guild, name, bytes)` (owner; a PNG, JPEG, GIF
+  or WebP up to `MAX_EMOJI_BYTES`, 256 KB; names of 2 to 32 letters, digits
+  and underscores) and `delete_emoji(guild, id)`.
+
 ## The cache
 
 With `SessionConfig::cache` set to a file, the session keeps its state
@@ -292,6 +319,4 @@ on.
 - Mirroring the device models, and updating them when new versions ship.
 - Push notifications for devices that are not connected.
 - Who reacted with an emoji (the server knows; the public API gives counts).
-- A guild's own emoji, usable in other guilds too (next, on the Media
-  service).
 - Upload progress (an upload is one request).

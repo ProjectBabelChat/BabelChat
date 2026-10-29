@@ -11,6 +11,10 @@
 //! GET /replication/updates?after=&wait_ms=  writes after a sequence number (long poll)
 //! ```
 //!
+//! A new version of a service may add tables (RocksDB column families),
+//! which its write-ahead log names but cannot create: a standby whose copy
+//! lacks one throws the copy away and copies the primary again.
+//!
 //! Only the service itself may call these routes (a standby holds its
 //! certificate). Failing over is starting the service on the standby's data
 //! directory and pointing the service's address at it; see
@@ -247,9 +251,35 @@ async fn receive_files(response: reqwest::Response, dir: &Path) -> anyhow::Resul
 
 /// Keeps `data` a copy of the store of the service at `url`, until the
 /// process ends or the copy cannot continue. An empty `data` starts from a
-/// checkpoint. `client` must present the service's own certificate.
+/// checkpoint, and so does a copy that lacks a table the primary has.
+/// `client` must present the service's own certificate.
 pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow::Result<()> {
     let url = url.trim_end_matches('/');
+    loop {
+        copy_checkpoint(url, client, data).await?;
+        follow_copy(url, client, data).await?;
+        tracing::warn!(
+            data = %data.display(),
+            "the primary has a table this copy lacks (a newer version added it): copying it again"
+        );
+        let mut entries = tokio::fs::read_dir(data).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            if entry.file_type().await?.is_dir() {
+                tokio::fs::remove_dir_all(entry.path()).await?;
+            } else {
+                tokio::fs::remove_file(entry.path()).await?;
+            }
+        }
+    }
+}
+
+/// RocksDB's answer to a write into a column family the store lacks.
+fn lacks_table(error: &babel_store::StoreError) -> bool {
+    error.to_string().contains("Invalid column family")
+}
+
+/// Copies a checkpoint of the primary into `data`, unless it holds a store.
+async fn copy_checkpoint(url: &str, client: &reqwest::Client, data: &Path) -> anyhow::Result<()> {
     if !data.join("CURRENT").exists() {
         tracing::info!(%url, "copying a checkpoint of the primary");
         // Within `data`, which may be the only place the standby can write
@@ -279,7 +309,12 @@ pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow:
         tokio::fs::rename(current, data.join("CURRENT")).await?;
         tokio::fs::remove_dir(&partial).await?;
     }
+    Ok(())
+}
 
+/// Replays the primary's writes into the copy in `data`. Returns once a
+/// write names a table the copy lacks.
+async fn follow_copy(url: &str, client: &reqwest::Client, data: &Path) -> anyhow::Result<()> {
     let store = Arc::new(RocksStore::open_existing(data)?);
     tracing::info!(seq = store.latest_sequence(), "following the primary");
     let mut reported = tokio::time::Instant::now();
@@ -312,10 +347,14 @@ pub async fn follow(url: &str, client: &reqwest::Client, data: &Path) -> anyhow:
         let latest = latest_of(response.headers());
         let updates = decode(&response.bytes().await?)?;
         let writer = store.clone();
-        tokio::task::spawn_blocking(move || {
+        let applied = tokio::task::spawn_blocking(move || {
             updates.iter().try_for_each(|update| writer.apply(update))
         })
-        .await??;
+        .await?;
+        match applied {
+            Err(error) if lacks_table(&error) => return Ok(()),
+            applied => applied?,
+        }
         metrics::gauge!("babel_standby_behind")
             .set(latest.saturating_sub(store.latest_sequence()) as f64);
         metrics::gauge!("babel_standby_last_contact_timestamp_seconds")

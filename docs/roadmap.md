@@ -203,6 +203,14 @@ Done so far:
   with their message, channel or guild, and those nobody sent after two
   days; every file timestamped and listed oldest first for maintenance
   (`babel-admin media-usage`).
+- A guild's own emoji, used by its members in any guild: added and deleted
+  by owners (images up to 256 KB on the Media service, 50 per guild),
+  written `<:name:guild.id>` in text and reactions and checked by Edges
+  wherever they are used, seen by anyone signed in, kept out of
+  translators' way (they read `:name:`, clients put the emoji back). In
+  the SDK, the terminal client (`:name:` typed, `/emoji`) and the desktop
+  app (emoji in the text and reactions, the picker, the guild's emoji
+  dialog; pictures in `SelectableText`).
 
 Next:
 
@@ -212,9 +220,7 @@ Next:
 - Mirrored hosting for the on-device models, and model updates.
 - The desktop app: categories from the UI, keyboard navigation, tray
   icon.
-- A guild's own emoji, usable in other guilds too (on the Media service:
-  blobs of kind `emoji`, readable by anyone signed in); then avatars and
-  guild icons.
+- Avatars and guild icons (on the Media service, as emoji are).
 - Files: object storage (S3) behind the Media API as an option,
   thumbnails, ranges (video), quotas, a maintenance program freeing space
   by age.

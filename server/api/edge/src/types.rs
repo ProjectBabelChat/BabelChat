@@ -93,6 +93,8 @@ pub struct GuildView {
     /// The user's, one per channel.
     pub read_states: Vec<ReadState>,
     pub notifications: NotificationSettings,
+    /// The guild's own emoji, oldest first.
+    pub emoji: Vec<Emoji>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -221,6 +223,21 @@ pub struct ChannelNotify {
     pub level: NotifyLevel,
 }
 
+/// A guild's own emoji. Its members use it in any guild, in text and in
+/// reactions, written `<:name:guild_id.id>`; everyone signed in sees it.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Emoji {
+    pub id: String,
+    pub guild_id: String,
+    /// 2 to 32 ASCII letters, digits and underscores; unique in the guild.
+    pub name: String,
+    /// The image: `GET` with the token, like attachments; the same as
+    /// `/media/<guild_id>/-/<id>`, which readers of a code build.
+    pub url: String,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewInvite {
     pub guild_id: String,
@@ -296,7 +313,9 @@ pub struct Ban {
 pub struct NewMessage {
     pub guild_id: String,
     pub channel_id: String,
-    /// `@name` notifies that member.
+    /// `@name` notifies that member. A guild's emoji is written
+    /// `<:name:guild_id.id>`; codes of emoji the user may not use (of
+    /// guilds they are not in, or deleted) become `:name:`.
     pub text: String,
     pub reply_to: Option<String>,
     /// IDs of the user's uploads to this channel (`POST /media/upload`),
@@ -336,8 +355,7 @@ pub struct Message {
 /// One emoji people reacted with.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Reaction {
-    /// A Unicode emoji. Later also `custom:<id>`, a guild's own emoji
-    /// (usable in other guilds too); none exist yet.
+    /// A Unicode emoji, or a guild's emoji as `<:name:guild_id.id>`.
     pub emoji: String,
     pub count: i64,
     /// The user is among them.
@@ -426,6 +444,7 @@ pub struct Event {
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
     pub reaction: Option<ReactionChange>,
+    pub emoji: Option<Emoji>,
     pub typing: Option<Typing>,
     pub translation: Option<MessageTranslation>,
     /// For policy_updated: the new policy and the user's resulting view.
@@ -472,6 +491,11 @@ pub enum EventKind {
     ReactionAdded,
     #[serde(rename = "reaction_removed")]
     ReactionRemoved,
+    /// The guild's emoji (`emoji`).
+    #[serde(rename = "emoji_created")]
+    EmojiCreated,
+    #[serde(rename = "emoji_deleted")]
+    EmojiDeleted,
     #[serde(rename = "typing")]
     Typing,
     #[serde(rename = "message_translated")]
@@ -600,6 +624,10 @@ pub trait Guilds: Send + Sync + 'static {
     async fn get_bans(&self, claim: Claim, guild_id: String) -> Result<Vec<Ban>, ApiError>;
     /// Saved for the user's other devices; they hear `notifications_updated`.
     async fn put_notification_settings(&self, claim: Claim, body: NotificationSettings) -> Result<NotificationSettings, ApiError>;
+    /// Owner only. Emoji are added by uploading their image (`POST
+    /// /media/emoji`, see `Messages`). Texts and reactions naming a deleted
+    /// emoji show its name.
+    async fn delete_emoji(&self, claim: Claim, guild_id: String, emoji_id: String) -> Result<(), ApiError>;
 }
 
 /// Files go up and down outside the JSON API, with the same token
@@ -609,6 +637,10 @@ pub trait Guilds: Send + Sync + 'static {
 ///       -> Attachment (JSON). Up to 10 MB (`limit_exceeded`); the user
 ///       must be allowed to write in the channel. Send it within a day.
 ///   GET  <Attachment.url>  -> the file, for the guild's members.
+///   POST /media/emoji?guild_id=&name=   body: a PNG, JPEG, GIF or WebP
+///       -> Emoji (JSON), the guild's new emoji. Owner only; up to 256 KB
+///       and 50 emoji per guild (`limit_exceeded`); `name_taken`.
+///   GET  <Emoji.url>  -> the image, for anyone signed in.
 ///
 /// Errors are ApiError as JSON with 400, like the API's (401 without a
 /// valid token).
@@ -617,8 +649,9 @@ pub trait Messages: Send + Sync + 'static {
     async fn send_message(&self, claim: Claim, body: NewMessage) -> Result<MessageView, ApiError>;
     async fn edit_message(&self, claim: Claim, body: MessageEdit) -> Result<MessageView, ApiError>;
     async fn delete_message(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String) -> Result<(), ApiError>;
-    /// `emoji` is one Unicode emoji. Reacting twice with the same one
-    /// changes nothing. A message holds at most 20 different emoji.
+    /// `emoji` is one Unicode emoji, or the code of a guild's emoji the
+    /// user may use (of a guild they are in). Reacting twice with the same
+    /// one changes nothing. A message holds at most 20 different emoji.
     async fn add_reaction(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ApiError>;
     async fn remove_reaction(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ApiError>;
     /// Tells the channel's readers the user is writing. Send it at most every

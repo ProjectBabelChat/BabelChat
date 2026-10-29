@@ -37,6 +37,12 @@ pub enum MessageCellError {
     InvalidRequest,
     #[serde(rename = "unavailable")]
     Unavailable,
+    /// A name already in use (emoji).
+    #[serde(rename = "name_taken")]
+    NameTaken,
+    /// The guild holds as many as it may (50 emoji).
+    #[serde(rename = "limit_exceeded")]
+    LimitExceeded,
     /// The guild lives on another cell now: ask the Directory again.
     #[serde(rename = "moved")]
     Moved,
@@ -58,6 +64,8 @@ pub struct GuildSnapshot {
     /// The requesting member's, one per channel.
     pub read_states: Vec<ReadState>,
     pub notifications: NotificationSettings,
+    /// The guild's own emoji, oldest first.
+    pub emoji: Vec<Emoji>,
     /// Sequence number of the last event included in this snapshot.
     pub last_seq: i64,
 }
@@ -143,6 +151,19 @@ pub enum NotifyLevel {
 pub struct ChannelNotify {
     pub channel_id: String,
     pub level: NotifyLevel,
+}
+
+/// A guild's own emoji. Its members use it in any guild, in text and in
+/// reactions, as `<:name:guild_id.id>`; its image is on a Media service.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Emoji {
+    /// The image's ID on its Media service ("media-0.8a2b…").
+    pub id: String,
+    pub guild_id: String,
+    /// 2 to 32 ASCII letters, digits and underscores; unique in the guild.
+    pub name: String,
+    pub created_by: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -231,6 +252,15 @@ pub struct Attachment {
     pub height: Option<i64>,
 }
 
+/// A guild's new emoji, its image already on a Media service.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NewEmoji {
+    pub guild_id: String,
+    pub user_id: String,
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewMessage {
     pub guild_id: String,
@@ -278,8 +308,8 @@ pub struct Message {
 /// Everyone who reacted to a message with one emoji.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Reaction {
-    /// A Unicode emoji. Room is left for a guild's own emoji as
-    /// `custom:<id>`, usable in other guilds too; none exist yet.
+    /// A Unicode emoji, or a guild's emoji as `<:name:guild_id.id>` (the
+    /// same emoji whatever name it gives).
     pub emoji: String,
     /// In the order they reacted.
     pub user_ids: Vec<String>,
@@ -319,6 +349,7 @@ pub struct GuildEvent {
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
     pub reaction: Option<ReactionChange>,
+    pub emoji: Option<Emoji>,
     pub typing: Option<Typing>,
     pub user_id: Option<String>,
     pub read_state: Option<ReadState>,
@@ -362,6 +393,11 @@ pub enum GuildEventKind {
     ReactionAdded,
     #[serde(rename = "reaction_removed")]
     ReactionRemoved,
+    /// The guild's emoji (`emoji`).
+    #[serde(rename = "emoji_created")]
+    EmojiCreated,
+    #[serde(rename = "emoji_deleted")]
+    EmojiDeleted,
     /// Not kept anywhere but the log; Edges pass it on and forget it.
     #[serde(rename = "typing")]
     Typing,
@@ -798,6 +834,66 @@ impl MessageCell {
             }
         }
     }
+    /// Managers only. The image is on a Media service already (kind
+    /// `emoji`); the outbox tells it the emoji took it in.
+    pub async fn create_emoji(&self, __body: NewEmoji) -> Result<Emoji, ThrowsOrOtherError<MessageCellError>> {
+        let mut request = self.client.post(format!("{}/message_cell/create_emoji", &self.url));
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Managers only. The outbox deletes the image; texts and reactions
+    /// naming the emoji show its name instead.
+    pub async fn delete_emoji(&self, guild_id: String, emoji_id: String, user_id: String) -> Result<(), ThrowsOrOtherError<MessageCellError>> {
+        let mut request = self.client.post(format!("{}/message_cell/delete_emoji", &self.url));
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("emoji_id", serde_json::to_string(&emoji_id).unwrap()), ("user_id", serde_json::to_string(&user_id).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(())
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Members only: Edges ask it whether a writer may use the guild's
+    /// emoji, here or in another guild.
+    pub async fn get_emoji(&self, guild_id: String, user_id: String) -> Result<Vec<Emoji>, ThrowsOrOtherError<MessageCellError>> {
+        let mut request = self.client.get(format!("{}/message_cell/get_emoji", &self.url));
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("user_id", serde_json::to_string(&user_id).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
     pub async fn send_message(&self, __body: NewMessage) -> Result<Message, ThrowsOrOtherError<MessageCellError>> {
         let mut request = self.client.post(format!("{}/message_cell/send_message", &self.url));
         request = request.header("Accept", "application/json");
@@ -853,7 +949,8 @@ impl MessageCell {
         }
     }
     /// Adding a reaction already there, or removing one that is not, changes
-    /// nothing. A message holds at most 20 different emoji.
+    /// nothing. A message holds at most 20 different emoji. Edges check
+    /// that the user may use a guild's emoji; the cell checks its form only.
     pub async fn add_reaction(&self, guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Result<Message, ThrowsOrOtherError<MessageCellError>> {
         let mut request = self.client.post(format!("{}/message_cell/add_reaction", &self.url));
         request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap()), ("message_id", serde_json::to_string(&message_id).unwrap()), ("user_id", serde_json::to_string(&user_id).unwrap()), ("emoji", serde_json::to_string(&emoji).unwrap())]);

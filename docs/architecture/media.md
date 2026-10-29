@@ -3,7 +3,7 @@
 Code: `server/media` · Contract: `types/media.tyml`
 
 The Media service keeps the files people upload: attachments of messages
-now, a guild's own emoji next. Like a cell, it is never reachable from the
+and a guild's own emoji. Like a cell, it is never reachable from the
 internet; Edges pass files to it after checking who may send or see them,
 and Message Cells tell it which files messages took in and which went.
 
@@ -89,12 +89,30 @@ minute per user and guild), then streams the file from its Media service.
   (`Cache-Control: private, max-age=31536000, immutable`), and clients keep
   downloaded files by ID (the SDK's media cache).
 
-## Emoji next
+## A guild's emoji
 
-A guild's emoji will be blobs of kind `emoji` (no channel). They are used
-in other guilds too, so their images will be readable by anyone signed in,
+A guild's emoji are blobs of kind `emoji`, of no channel (keys hold an
+empty channel). Their guild's members use them in any guild, so their
+images are for anyone signed in (`GET /media/<guild>/-/<id>` on an Edge),
 while attachments stay with the guild's members; the record's `kind`
 decides which rule applies, and maintenance can tell them apart.
+
+```
+client ─ POST /media/emoji?guild_id=&name= ─▶ Edge ─ check_permission(manage) ─▶ Message Cell
+                                               ─ PUT /media/blobs (kind emoji) ─▶ Media: pending
+                                               ─ create_emoji ─▶ Message Cell: the guild's emoji
+                        outbox: emoji_created ─ attach_blobs ─▶ Media: no longer pending
+                        outbox: emoji_deleted ─ delete_blobs ─▶ Media
+```
+
+- An emoji's image is a PNG, JPEG, GIF or WebP of up to 256 KB; the Media
+  service refuses more as it arrives, the Edge anything that is not a
+  picture.
+- The emoji itself (name, image ID, who added it) is kept by its guild's
+  Message Cell; see [Message Cell](message-cell.md#a-guilds-emoji) for how
+  text and reactions name it, and [Edge](edge.md#a-guilds-emoji) for who
+  may use it where.
+- Deleting the guild deletes its emoji's images with its other files.
 
 ## Maintenance
 
@@ -106,8 +124,9 @@ through files uploaded before a time (attachments only, say), and
 
 ## Limits
 
-- 10 MB per file (`limit_exceeded`), checked against `Content-Length` by the
-  Edge and while the file arrives by the Media service.
+- 10 MB per file, 256 KB per emoji (`limit_exceeded`), checked against
+  `Content-Length` by the Edge and while the file arrives by the Media
+  service.
 - Names are kept as given, without path or control characters, at most 255
   characters.
 

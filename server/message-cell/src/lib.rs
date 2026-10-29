@@ -29,11 +29,11 @@ use async_trait::async_trait;
 use babel_api_directory::types::Directory;
 use babel_api_media::types::Media;
 use babel_api_message_cell::types::{
-    Attachment, Ban, Channel, ChannelKind, ChannelUpdate, DeletedMessage, Guild, GuildEvent,
+    Attachment, Ban, Channel, ChannelKind, ChannelUpdate, DeletedMessage, Emoji, Guild, GuildEvent,
     GuildEventBatch, GuildEventKind, GuildExport, GuildImport, GuildSnapshot, GuildUpdate, Invite,
-    Member, Message, MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
-    NewUpload, NotificationSettings, NotifyLevel, Permission, Reaction, ReactionChange, ReadState,
-    Role, Typing,
+    Member, Message, MessageCellError, MessageEdit, NewChannel, NewEmoji, NewGuild, NewInvite,
+    NewMessage, NewUpload, NotificationSettings, NotifyLevel, Permission, Reaction, ReactionChange,
+    ReadState, Role, Typing,
 };
 use babel_api_translation_cell::types::TranslationCell;
 use babel_common::{
@@ -43,10 +43,10 @@ use babel_store::{Batch, KvStore, Scan, StoreError};
 use parking_lot::Mutex;
 pub use records::TABLES;
 use records::{
-    BANS, CHANNELS, GUILD_TABLES, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES, NOTIFY,
-    OUTBOX, OutboxEntry, READS, UPLOADS, Upload, channel_key, guild_key, invite_key, log_key,
-    member_key, message_key, message_prefix, outbox_key, read_key, read_prefix, upload_key,
-    upload_prefix,
+    BANS, CHANNELS, EMOJI, GUILD_TABLES, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES,
+    NOTIFY, OUTBOX, OutboxEntry, READS, UPLOADS, Upload, channel_key, emoji_key, guild_key,
+    invite_key, log_key, member_key, message_key, message_prefix, outbox_key, read_key,
+    read_prefix, upload_key, upload_prefix,
 };
 use tokio::sync::{Notify, OwnedMutexGuard};
 pub use trim::{LOG_RETENTION, UPLOADS_KEPT};
@@ -64,6 +64,8 @@ const MAX_REACTIONS: usize = 20;
 const MAX_ATTACHMENTS: usize = 10;
 /// Files a member may have uploaded and not sent yet, per guild.
 const MAX_UPLOADS: usize = 50;
+/// A guild's own emoji.
+const MAX_EMOJI: usize = 50;
 /// Messages read when recounting a member's mentions after an ack.
 const RECOUNT_LIMIT: usize = 1000;
 
@@ -84,6 +86,7 @@ fn event(kind: GuildEventKind) -> GuildEvent {
         message: None,
         deleted: None,
         reaction: None,
+        emoji: None,
         typing: None,
         user_id: None,
         read_state: None,
@@ -159,12 +162,24 @@ fn parse_id(id: &str) -> CellResult<u64> {
 }
 
 /// One Unicode emoji, in its fully qualified form (`❤` becomes `❤️`), so
-/// the same emoji is always one reaction. Custom emoji (`custom:<id>`)
-/// will be checked against the emoji that exist; none do yet.
+/// the same emoji is always one reaction; or the code of a guild's emoji,
+/// which the Edge found the user may use.
 fn emoji(text: &str) -> CellResult<String> {
+    if let Some(custom) = babel_emoji::parse(text) {
+        return Ok(custom.code());
+    }
     emojis::get(text)
         .map(|emoji| emoji.as_str().to_string())
         .ok_or(MessageCellError::InvalidRequest)
+}
+
+/// The same reaction: a guild's emoji is the same whatever name its code
+/// gives it.
+fn same_emoji(a: &str, b: &str) -> bool {
+    match (babel_emoji::parse(a), babel_emoji::parse(b)) {
+        (Some(a), Some(b)) => a.key() == b.key(),
+        _ => a == b,
+    }
 }
 
 /// Owners manage every channel; a thread's creator manages the thread.
@@ -530,6 +545,7 @@ impl Inner {
         Ok(GuildSnapshot {
             guild: record.guild.clone(),
             notifications: self.notifications(guild, user)?,
+            emoji: self.emoji_of(guild)?,
             read_states,
             channels,
             members,
@@ -1143,6 +1159,88 @@ impl Inner {
         self.store.write(batch).map_err(storage)
     }
 
+    /// The guild's own emoji, oldest first.
+    fn emoji_of(&self, guild: &str) -> CellResult<Vec<Emoji>> {
+        let mut emoji = self
+            .store
+            .scan_values::<Emoji>(Scan::prefix(EMOJI, &guild_key(guild)))
+            .map_err(storage)?
+            .into_iter()
+            .map(|(_, emoji)| emoji)
+            .collect::<Vec<_>>();
+        emoji.sort_by_key(|emoji| emoji.created_at);
+        Ok(emoji)
+    }
+
+    async fn create_emoji(&self, new: NewEmoji) -> CellResult<Emoji> {
+        if !babel_emoji::valid_name(&new.name) || new.id.is_empty() {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let guild = new.guild_id.clone();
+        let _guard = self.lock_writable(&guild).await?;
+        self.authorize(&guild, &new.user_id, Permission::ManageGuild)?;
+        let existing = self.emoji_of(&guild)?;
+        // The Edge may retry.
+        if let Some(emoji) = existing.iter().find(|emoji| emoji.id == new.id) {
+            return Ok(emoji.clone());
+        }
+        // Names are typed as `:name:`: `Party` and `party` would be one.
+        if existing
+            .iter()
+            .any(|emoji| emoji.name.eq_ignore_ascii_case(&new.name))
+        {
+            return Err(MessageCellError::NameTaken);
+        }
+        if existing.len() >= MAX_EMOJI {
+            return Err(MessageCellError::LimitExceeded);
+        }
+        let emoji = Emoji {
+            id: new.id,
+            guild_id: guild.clone(),
+            name: new.name,
+            created_by: new.user_id,
+            created_at: now_ms(),
+        };
+        let mut record = self.guild(&guild)?;
+        let mut batch = Batch::new();
+        batch.put_value(EMOJI, emoji_key(&guild, &emoji.id), &emoji);
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                emoji: Some(emoji.clone()),
+                ..event(GuildEventKind::EmojiCreated)
+            },
+            true,
+        );
+        self.commit(batch, &record)?;
+        Ok(emoji)
+    }
+
+    async fn delete_emoji(&self, guild: String, id: String, user: String) -> CellResult<()> {
+        let _guard = self.lock_writable(&guild).await?;
+        self.authorize(&guild, &user, Permission::ManageGuild)?;
+        let key = emoji_key(&guild, &id);
+        let emoji = self
+            .store
+            .get_value::<Emoji>(EMOJI, &key)
+            .map_err(storage)?
+            .ok_or(MessageCellError::NotFound)?;
+        let mut record = self.guild(&guild)?;
+        let mut batch = Batch::new();
+        batch.delete(EMOJI, key);
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                emoji: Some(emoji),
+                ..event(GuildEventKind::EmojiDeleted)
+            },
+            true,
+        );
+        self.commit(batch, &record)
+    }
+
     /// The member's uploads to the channel named by `ids`, which sending
     /// takes: deleted in `batch`.
     fn take_uploads(
@@ -1378,7 +1476,9 @@ impl Inner {
         let reactions = message.reactions.get_or_insert_with(Vec::new);
         let at = reactions
             .iter()
-            .position(|reaction| reaction.emoji == emoji);
+            .position(|reaction| same_emoji(&reaction.emoji, &emoji));
+        // As first used, so everyone's reactions show as one.
+        let emoji = at.map_or(emoji, |at| reactions[at].emoji.clone());
         let count = match (add, at) {
             (true, Some(at)) if !reactions[at].user_ids.contains(&user) => {
                 reactions[at].user_ids.push(user.clone());
@@ -1677,6 +1777,25 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
 
     async fn add_upload(&self, body: NewUpload) -> CellResult<()> {
         self.inner.add_upload(body).await
+    }
+
+    async fn create_emoji(&self, body: NewEmoji) -> CellResult<Emoji> {
+        self.inner.create_emoji(body).await
+    }
+
+    async fn delete_emoji(
+        &self,
+        guild_id: String,
+        emoji_id: String,
+        user_id: String,
+    ) -> CellResult<()> {
+        self.inner.delete_emoji(guild_id, emoji_id, user_id).await
+    }
+
+    async fn get_emoji(&self, guild_id: String, user_id: String) -> CellResult<Vec<Emoji>> {
+        self.inner
+            .authorize(&guild_id, &user_id, Permission::View)?;
+        self.inner.emoji_of(&guild_id)
     }
 
     async fn send_message(&self, body: NewMessage) -> CellResult<Message> {

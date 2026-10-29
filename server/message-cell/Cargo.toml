@@ -18,6 +18,7 @@ babel-api-media.workspace = true
 babel-api-message-cell.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
+babel-emoji.workspace = true
 babel-media.workspace = true
 babel-net.workspace = true
 babel-store.workspace = true

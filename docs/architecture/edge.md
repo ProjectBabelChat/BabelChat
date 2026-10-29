@@ -124,6 +124,8 @@ them), next to it like the WebSocket gateway, with the same token
 ```
 POST /media/upload?guild_id=&channel_id=&name=   body: the file -> Attachment (JSON)
 GET  /media/<guild>/<channel>/<attachment id>    -> the file
+POST /media/emoji?guild_id=&name=                body: an image -> Emoji (JSON)
+GET  /media/<guild>/-/<emoji id>                 -> the image
 ```
 
 - An upload is checked like a message (the user may write in the guild;
@@ -137,8 +139,30 @@ GET  /media/<guild>/<channel>/<attachment id>    -> the file
   streams from the Media service its ID names; images come back as
   themselves, anything else as a download, never sniffed by browsers
   ([Media](media.md#reading-files)).
+- A guild's new emoji is uploaded by its owner (`check_permission` with
+  `manage_guild`), refused past 256 KB, stored as a blob of kind `emoji`,
+  and becomes an emoji on the guild's cell (`create_emoji`) only if it is
+  a picture; otherwise, or if the cell refuses (a name taken, 50 already),
+  the image is deleted at once. Emoji images are for anyone signed in.
 - Errors are `ApiError` as JSON with 400, like the API's, and 401 without
   a valid token.
+
+## A guild's emoji
+
+Its members use a guild's emoji in any guild, so the Edge, which sees
+every guild, checks each emoji code people write (`emoji.rs`), not the
+cell written to, which may know nothing of the emoji's guild:
+
+- In text (`send_message`, `edit_message`), a code stays if the writer may
+  use it (they are in its guild, and the emoji exists there), written as
+  its guild has it; any other becomes `:name:`. A text may use the emoji of
+  up to ten guilds; codes of more become names, and so do those of a guild
+  that cannot be asked right now (the message still goes).
+- A reaction with a code the user may not use is `invalid_request`.
+- A guild's emoji are asked of its cell (`get_emoji`, which also says the
+  user is a member) and kept for a minute, forgotten sooner when this Edge
+  sees them change (`emoji_created`, `emoji_deleted`, which also reach the
+  guild's sessions).
 
 ## Language views
 

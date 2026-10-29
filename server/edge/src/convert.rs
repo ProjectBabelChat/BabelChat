@@ -21,6 +21,8 @@ pub fn cell_error(error: cell::MessageCellError) -> public::ApiError {
         }
         cell::MessageCellError::InvalidRequest => public::ApiError::InvalidRequest,
         cell::MessageCellError::Unavailable => public::ApiError::Unavailable,
+        cell::MessageCellError::NameTaken => public::ApiError::NameTaken,
+        cell::MessageCellError::LimitExceeded => public::ApiError::LimitExceeded,
         // Edges follow a moved guild; this is what is left if it keeps moving.
         cell::MessageCellError::Moved => public::ApiError::Unavailable,
     }
@@ -184,6 +186,18 @@ pub fn attachment(guild: &str, channel: &str, file: &cell::Attachment) -> public
         width: file.width,
         height: file.height,
         url: format!("/media/{guild}/{channel}/{}", file.id),
+    }
+}
+
+/// A guild's emoji, with where anyone signed in reads its image.
+pub fn emoji(emoji: &cell::Emoji) -> public::Emoji {
+    public::Emoji {
+        id: emoji.id.clone(),
+        guild_id: emoji.guild_id.clone(),
+        name: emoji.name.clone(),
+        url: format!("/media/{}/-/{}", emoji.guild_id, emoji.id),
+        created_by: emoji.created_by.clone(),
+        created_at: emoji.created_at,
     }
 }
 

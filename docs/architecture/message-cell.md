@@ -51,8 +51,9 @@ state change + guild log entry (+ outbox entry)
 | `channel_deleted` | Translation Cell `delete_node`; every Media service `delete_channel` |
 | `member_joined` | Directory `add_membership` |
 | `member_left`, `member_removed` | Directory `remove_membership` |
-| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer; not for a message of files alone); for a new message's files, Media `attach_blobs` |
+| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer; a guild's emoji as `:name:`; not for a message of files or emoji alone); for a new message's files, Media `attach_blobs` |
 | `message_deleted` | Translation Cell `delete_message`; its files, Media `delete_blobs` |
+| `emoji_created`, `emoji_deleted` | its image, Media `attach_blobs` or `delete_blobs` |
 | `reaction_added`, `reaction_removed`, `typing`, `read_state_updated`, `notifications_updated` | nothing: only Edges read them |
 
 Delivery is at least once; receivers are idempotent (`ingest` is keyed by
@@ -104,9 +105,38 @@ reacted, in order, at most 20 emoji). Reacting is not editing: `rev`,
 Cell. Each change is one `reaction_added` or `reaction_removed` entry
 naming the member and the emoji's new count, so applying it twice does no
 harm. Emoji are Unicode emoji in their fully qualified form (`❤` is stored
-as `❤️`), checked against the Unicode list; anything else is
-`invalid_request`. A guild's own emoji would be `custom:<id>`, usable in
-other guilds too, once images can be uploaded; nothing refers to them yet.
+as `❤️`), checked against the Unicode list, or the code of a guild's emoji
+(below), checked for its form only: the Edge has checked that the member
+may use it. Codes naming the same emoji are one reaction whatever name
+they give, kept as first used. Anything else is `invalid_request`.
+
+## A guild's emoji
+
+A guild keeps its own emoji (`emoji` table: ID, name, who added it, when),
+at most 50, with names of 2 to 32 letters, digits and underscores that are
+unique in the guild regardless of case (`name_taken`, `limit_exceeded`).
+Owners add them (`create_emoji`, once the Edge has put the image on a
+Media service; the image's ID is the emoji's) and delete them
+(`delete_emoji`); `emoji_created` and `emoji_deleted` log entries tell
+Edges, and the outbox tells the Media service (`attach_blobs`,
+`delete_blobs`). Members find them in the snapshot (`emoji`), and Edges
+ask `get_emoji` (members only) when someone writes one.
+
+Text and reactions name an emoji by a code that says everything a reader
+needs, in whichever guild the text is (`babel_emoji`):
+
+```
+<:name:guild_id.emoji_id>        <:party:3f9c…e1.media-0.8a2b…>
+```
+
+Its guild's members use it in any guild (the Edge checks it, as it may be
+another cell's guild); its image is for anyone signed in. A code of an
+emoji since deleted stays in the text, and readers show its `:name:`.
+
+Translators never see codes: the outbox hands the Translation Cell the
+text with `:name:` in place of each (`babel_emoji::plain`), and nothing of
+text that holds only emoji. Clients put the codes back into translations
+where `:name:` survived (`babel_emoji::restore`).
 
 ## Attachments
 
@@ -204,6 +234,7 @@ bans      guild / user                Ban
 reads     guild / user / channel      ReadState (read marker, unread mentions)
 notify    guild / user                NotificationSettings
 uploads   guild / user / attachment    Upload (a file not sent yet; a day)
+emoji     guild / emoji id            Emoji (the guild's own)
 log       guild / seq                 GuildEvent
 outbox    seq                         OutboxEntry
 ```

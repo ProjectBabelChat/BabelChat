@@ -27,7 +27,10 @@ source of truth, and the app remembers only what is on screen.
 | `chat/mod.rs` | The chat screen's state: selection, the message list, composer, toasts; SDK updates and notifications. |
 | `chat/sidebar.rs` | Guild rail with unread dots and mention badges, channel list, user panel, guild menu, member list. |
 | `chat/messages.rs` | Channel header, messages (grouping, replies, mentions, translation line, reactions, threads started from them), composer and who is writing. |
-| `chat/emoji.rs` | The emoji picker: common emoji, then all of them, searchable by name or shortcode. |
+| `chat/emoji.rs` | The emoji picker: the user's guilds' own emoji, common emoji, then all of them, searchable by name or shortcode. |
+| `chat/guild_emoji.rs` | A guild's own emoji: their pictures, in message text, the composer and reactions, for the picker, and the guild's emoji dialog. |
+| `chat/completion.rs` | Emoji in the composer: those matching a `:name` being typed, offered above it, and a `:name:` typed in full turned into its emoji. |
+| `chat/files.rs` | Files: attaching, uploading, pictures under messages, the large view, saving. |
 | `chat/dialogs.rs` | Add a guild (create or join), invite, create, edit or delete a channel, start a thread, the guild's settings, languages, notifications, settings, the password, confirmations. |
 | `i18n.rs` | The UI's own words in English and Japanese, and language names. |
 | `runtime.rs` | The Tokio runtime beside GPUI, the app's configuration, SDK errors in words. |
@@ -38,7 +41,8 @@ What a user can do: sign up or in; create a guild (with its languages and a
 delete channels (owners); rename and delete the guild (owners); start a
 thread from a message, and rename or delete it (its creator, or owners);
 write messages of several lines (Shift+Enter), reply, edit and delete
-them; react with any emoji; see who is writing; `@name` mentions; see
+them; react with any emoji; add the guild's own emoji (owners) and use
+the emoji of any of their guilds anywhere; see who is writing; `@name` mentions; see
 each message in their language, with where the translation came from and
 the original on request; unread markers and mention counts per channel and
 guild; notification levels per guild and channel; invite people; leave;
@@ -91,6 +95,40 @@ picker opens where it was asked for, kept inside the window, with eight
 common emoji above every Unicode emoji (a virtualized grid); typing
 searches names and shortcodes, Enter takes the first match, Esc or a click
 outside closes it. Messages a thread was started from link to it.
+
+## A guild's emoji
+
+The guild menu's Emoji dialog lists the guild's own emoji; owners delete
+them there, and add one in two steps: an image first (chosen, or dropped
+on the dialog), shown beside a name field offered from the file's name
+(empty when the file's name has too few letters), then Add (or Enter)
+once it is named. A name that is not 2 to 32 letters, digits and `_` is
+marked on the field before anything is sent; a taken one comes back from
+the guild. The picker shows the user's guilds' emoji first, the open
+guild's leading, from the reactions' smiley and from a smiley beside the
+composer, which writes the emoji at the caret.
+
+In the composer, as on Discord, typing `:` and two letters of a name
+offers up to ten emoji above it (the user's guilds' own, then Unicode
+emoji by shortcode; exact matches, then those starting with the letters,
+then the rest). Up and Down choose, Enter or Tab writes the emoji in place
+of the name, Esc closes the list, and a click takes one. A `:name:` typed
+in full (after a space, punctuation or the start, so not `10:30:`)
+becomes its emoji at once: one of the user's guilds' emoji first, as when
+sending, then a Unicode shortcode (`:smile:` → 😄). A guild's emoji goes
+into the text as its code, which the composer shows as its picture
+(`TextField::inline_pictures`): the caret moves past it and Backspace
+deletes it as one character. Editing a message puts its codes back the
+same way.
+
+In messages, a guild's emoji stand in the text, a line high, and large
+when a message is nothing else; reactions show them too. Their pictures
+are fetched once per run through the SDK (`emoji_image`) and are seen
+whatever guild they come from; one that is deleted, or gone when fetched,
+shows as `:name:`. `SelectableText` does the inline part
+(`TextPart::Image`): each picture stands on a placeholder word in the
+text, faded out and painted over, so it wraps like a word, is selected
+with the text, and copies as `:name:`.
 
 The composer is a several-line `TextField`: Enter sends, Shift+Enter
 starts a new line, and it grows to eight lines before it scrolls. Typing in
@@ -181,7 +219,8 @@ screen in its own pixels, so convert with the window's origin and scale
 
 ## Not yet
 
-- A guild's own emoji (next), and pasting images from the clipboard.
+- Pasting images from the clipboard; animated GIF emoji (the first frame
+  shows); renaming emoji.
 - Who reacted with an emoji, and skin tones in the picker.
 - Creating categories and moving channels between them from the UI
   (categories made elsewhere are listed).

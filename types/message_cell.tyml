@@ -71,10 +71,22 @@ type Attachment {
     height: int?
 }
 
+/// A guild's own emoji. Its members use it in any guild, in text and in
+/// reactions, as `<:name:guild_id.id>`; its image is on a Media service.
+type Emoji {
+    /// The image's ID on its Media service ("media-0.8a2b…").
+    id: string
+    guild_id: string
+    /// 2 to 32 ASCII letters, digits and underscores; unique in the guild.
+    name: string
+    created_by: string
+    created_at: int
+}
+
 /// Everyone who reacted to a message with one emoji.
 type Reaction {
-    /// A Unicode emoji. Room is left for a guild's own emoji as
-    /// `custom:<id>`, usable in other guilds too; none exist yet.
+    /// A Unicode emoji, or a guild's emoji as `<:name:guild_id.id>` (the
+    /// same emoji whatever name it gives).
     emoji: string
     /// In the order they reacted.
     user_ids: [string]
@@ -152,6 +164,8 @@ type GuildSnapshot {
     /// The requesting member's, one per channel.
     read_states: [ReadState]
     notifications: NotificationSettings
+    /// The guild's own emoji, oldest first.
+    emoji: [Emoji]
     /// Sequence number of the last event included in this snapshot.
     last_seq: int
 }
@@ -250,6 +264,14 @@ type NewUpload {
     attachment: Attachment
 }
 
+/// A guild's new emoji, its image already on a Media service.
+type NewEmoji {
+    guild_id: string
+    user_id: string
+    id: string
+    name: string
+}
+
 /// One member added or took back one reaction.
 type ReactionChange {
     channel_id: string
@@ -289,6 +311,9 @@ enum GuildEventKind {
     "message_deleted"
     "reaction_added"
     "reaction_removed"
+    /// The guild's emoji (`emoji`).
+    "emoji_created"
+    "emoji_deleted"
     /// Not kept anywhere but the log; Edges pass it on and forget it.
     "typing"
     /// One member's read marker moved (`user_id`, `read_state`). Edges pass
@@ -310,6 +335,7 @@ type GuildEvent {
     message: Message?
     deleted: DeletedMessage?
     reaction: ReactionChange?
+    emoji: Emoji?
     typing: Typing?
     user_id: string?
     read_state: ReadState?
@@ -359,6 +385,10 @@ enum MessageCellError {
     "forbidden"
     "invalid_request"
     "unavailable"
+    /// A name already in use (emoji).
+    "name_taken"
+    /// The guild holds as many as it may (50 emoji).
+    "limit_exceeded"
     /// The guild lives on another cell now: ask the Directory again.
     "moved"
 }
@@ -424,6 +454,19 @@ interface MessageCell {
     /// must be allowed to write in the channel. Sending a message takes it.
     function add_upload(@body: NewUpload) throws MessageCellError
 
+    /// Managers only. The image is on a Media service already (kind
+    /// `emoji`); the outbox tells it the emoji took it in.
+    function create_emoji(@body: NewEmoji) -> Emoji throws MessageCellError
+
+    /// Managers only. The outbox deletes the image; texts and reactions
+    /// naming the emoji show its name instead.
+    function delete_emoji(guild_id: string, emoji_id: string, user_id: string) throws MessageCellError
+
+    /// Members only: Edges ask it whether a writer may use the guild's
+    /// emoji, here or in another guild.
+    #[kind = "get"]
+    function get_emoji(guild_id: string, user_id: string) -> [Emoji] throws MessageCellError
+
     function send_message(@body: NewMessage) -> Message throws MessageCellError
 
     function edit_message(@body: MessageEdit) -> Message throws MessageCellError
@@ -431,7 +474,8 @@ interface MessageCell {
     function delete_message(guild_id: string, channel_id: string, message_id: string, user_id: string) throws MessageCellError
 
     /// Adding a reaction already there, or removing one that is not, changes
-    /// nothing. A message holds at most 20 different emoji.
+    /// nothing. A message holds at most 20 different emoji. Edges check
+    /// that the user may use a guild's emoji; the cell checks its form only.
     function add_reaction(guild_id: string, channel_id: string, message_id: string, user_id: string, emoji: string) -> Message throws MessageCellError
 
     function remove_reaction(guild_id: string, channel_id: string, message_id: string, user_id: string, emoji: string) -> Message throws MessageCellError

@@ -93,7 +93,9 @@ guild creation.
 | Translation pipeline, context, policy | `server/translation-cell` | `types/translation_cell.tyml` |
 | Prompts, caching, backends | `server/engine` | `types/engine.tyml` |
 | Accounts (stub) | `server/account` | `types/account.tyml` |
+| Uploaded files, a guild's emoji images | `server/media` | `types/media.tyml` |
 | Language normalization | `crates/babel-lang` | — |
+| A guild's emoji in text (codes) | `crates/babel-emoji` | — |
 | Storage | `server/store` | — |
 | Wiring, all in one process | `server/all-in-one` | — |
 | Running apart: cluster file, mutual TLS, remote clients, standbys, egress proxy | `server/net` | — |
@@ -108,7 +110,7 @@ guild creation.
 |---|---|
 | Edge, Directory, Message Cell, Translation Cell | Account service (billing, Discord linking) |
 | Engine API and the reference engine | BabelChat Cloud engine (tuned prompts, model routing) |
-| `babel-lang`, the API definitions | |
+| `babel-lang`, `babel-emoji`, the API definitions | |
 
 The closed parts implement the same APIs as their open counterparts, so
 everything here runs without them.

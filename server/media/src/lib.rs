@@ -47,6 +47,8 @@ pub const BLOB_TABLES: &[Table] = &[BLOBS];
 
 /// The largest file taken.
 pub const MAX_FILE_BYTES: i64 = 10 * 1024 * 1024;
+/// The largest emoji image taken.
+pub const MAX_EMOJI_BYTES: i64 = 256 * 1024;
 /// Files are stored in pieces of this size, read back one at a time.
 const CHUNK_BYTES: usize = 1024 * 1024;
 /// Files no message took in are deleted after this long.
@@ -71,8 +73,9 @@ pub struct NewBlob {
 /// File contents in and out of a Media service, next to its API.
 #[async_trait]
 pub trait Blobs: MediaApi {
-    /// Stores the file `body` holds, up to [`MAX_FILE_BYTES`]
-    /// (`limit_exceeded`). Empty files are `invalid_request`.
+    /// Stores the file `body` holds, up to [`MAX_FILE_BYTES`] (emoji:
+    /// [`MAX_EMOJI_BYTES`]; more is `limit_exceeded`). Empty files are
+    /// `invalid_request`.
     async fn put(&self, blob: NewBlob, body: ByteStream) -> Result<Blob, MediaError>;
 
     /// A file and its record.
@@ -277,7 +280,11 @@ impl Inner {
                 }
                 None => ended = true,
             }
-            if blob.size + buffer.len() as i64 > MAX_FILE_BYTES {
+            let max = match blob.kind {
+                BlobKind::Attachment => MAX_FILE_BYTES,
+                BlobKind::Emoji => MAX_EMOJI_BYTES,
+            };
+            if blob.size + buffer.len() as i64 > max {
                 return Err(MediaError::LimitExceeded);
             }
             while buffer.len() >= CHUNK_BYTES || (ended && !buffer.is_empty()) {

@@ -9,10 +9,12 @@ use babel_api_directory::types::{
 use babel_api_media::types::{BlobKind, Media as MediaApi, MediaError};
 use babel_api_message_cell::types::{
     Attachment, ChannelKind, ChannelNotify, ChannelUpdate, GuildEventKind, GuildUpdate,
-    MessageCell as _, MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
-    NewUpload, NotificationSettings, NotifyLevel, Permission, ReadState,
+    MessageCell as _, MessageCellError, MessageEdit, NewChannel, NewEmoji, NewGuild, NewInvite,
+    NewMessage, NewUpload, NotificationSettings, NotifyLevel, Permission, ReadState,
 };
-use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
+use babel_api_translation_cell::types::{
+    MessageRef, Plan, PolicyUpdate, RegionMode, TranslationCell as _, TranslationQuery,
+};
 use babel_engine::mock::MockConfig;
 use babel_media::{Blobs, Media, NewBlob};
 use babel_message_cell::MessageCell;
@@ -1435,4 +1437,220 @@ async fn files_go_with_their_message_and_leave_with_it() {
         .await
         .unwrap();
     assert!(!on_media(&f, &guild, &channel, &flyer, false).await);
+}
+
+/// Puts an image on the Media service as an Edge does for a new emoji.
+async fn emoji_image(f: &Fixture, guild: &str) -> String {
+    let png = [
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13,
+    ];
+    f.media
+        .put(
+            NewBlob {
+                guild_id: guild.into(),
+                channel_id: None,
+                kind: BlobKind::Emoji,
+                uploader: "owner".into(),
+                name: "party".into(),
+            },
+            Box::pin(futures::stream::iter([Ok(bytes::Bytes::copy_from_slice(
+                &png,
+            ))])),
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+/// Waits until the Media service took the emoji's image in (`kept`) or
+/// deleted it.
+async fn emoji_on_media(f: &Fixture, guild: &str, id: &str, kept: bool) {
+    for _ in 0..200 {
+        let blob = f.media.get_blob(guild.into(), None, id.into()).await;
+        match (&blob, kept) {
+            (Ok(blob), true) if blob.attached_at.is_some() => return,
+            (Err(MediaError::NotFound), false) => return,
+            _ => tokio::time::sleep(Duration::from_millis(5)).await,
+        }
+    }
+    panic!("the media service never caught up with emoji {id}");
+}
+
+#[tokio::test]
+async fn emoji_belong_to_their_guild_and_their_images_follow_them() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let image = emoji_image(&f, &guild).await;
+    let new = |user: &str, id: &str, name: &str| NewEmoji {
+        guild_id: guild.clone(),
+        user_id: user.into(),
+        id: id.into(),
+        name: name.into(),
+    };
+    let start = head(&f.cell, &guild).await;
+
+    // Managers add them, with names fit to type.
+    assert_eq!(
+        f.cell.create_emoji(new("alice", &image, "party")).await,
+        Err(MessageCellError::Forbidden)
+    );
+    assert_eq!(
+        f.cell.create_emoji(new("owner", &image, "p")).await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    let party = f
+        .cell
+        .create_emoji(new("owner", &image, "party"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (party.name.as_str(), party.id.as_str()),
+        ("party", image.as_str())
+    );
+    // Again is the same emoji; another under the same name is not.
+    assert_eq!(
+        f.cell.create_emoji(new("owner", &image, "party")).await,
+        Ok(party.clone())
+    );
+    let other = emoji_image(&f, &guild).await;
+    assert_eq!(
+        f.cell.create_emoji(new("owner", &other, "Party")).await,
+        Err(MessageCellError::NameTaken)
+    );
+    assert_eq!(
+        events_after(&f.cell, &guild, start).await,
+        [GuildEventKind::EmojiCreated]
+    );
+    // Members see them; the Media service keeps the image.
+    let snapshot = f.cell.get_guild(guild.clone(), "bob".into()).await.unwrap();
+    assert_eq!(snapshot.emoji, std::slice::from_ref(&party));
+    assert_eq!(
+        f.cell.get_emoji(guild.clone(), "alice".into()).await,
+        Ok(vec![party.clone()])
+    );
+    assert_eq!(
+        f.cell.get_emoji(guild.clone(), "stranger".into()).await,
+        Err(MessageCellError::Forbidden)
+    );
+    emoji_on_media(&f, &guild, &image, true).await;
+
+    // A reaction by code is one emoji whatever name the code gives it.
+    let code = babel_emoji::code("party", &guild, &image);
+    let id = send(
+        &f.cell,
+        &guild,
+        &channel,
+        "owner",
+        &format!("Tonight {code}"),
+    )
+    .await;
+    f.cell
+        .add_reaction(
+            guild.clone(),
+            channel.clone(),
+            id.clone(),
+            "alice".into(),
+            code.clone(),
+        )
+        .await
+        .unwrap();
+    let renamed = babel_emoji::code("cake", &guild, &image);
+    let message = f
+        .cell
+        .add_reaction(
+            guild.clone(),
+            channel.clone(),
+            id.clone(),
+            "bob".into(),
+            renamed.clone(),
+        )
+        .await
+        .unwrap();
+    let reactions = message.reactions.unwrap();
+    assert_eq!(reactions.len(), 1);
+    assert_eq!(reactions[0].emoji, code);
+    assert_eq!(reactions[0].user_ids, ["alice", "bob"]);
+    let message = f
+        .cell
+        .remove_reaction(
+            guild.clone(),
+            channel.clone(),
+            id.clone(),
+            "bob".into(),
+            renamed,
+        )
+        .await
+        .unwrap();
+    assert_eq!(message.reactions.unwrap()[0].user_ids, ["alice"]);
+
+    // Translators read names, never codes.
+    f.translation
+        .set_plan(guild.clone(), Plan::Paid3)
+        .await
+        .unwrap();
+    f.translation
+        .put_policy(PolicyUpdate {
+            space: guild.clone(),
+            languages: vec!["en-US".into(), "ja-JP".into()],
+            llm_languages: vec!["en-US".into(), "ja-JP".into()],
+            region_mode: RegionMode::Merged,
+            aliases: Vec::new(),
+            translate_regional_variants: false,
+            model: None,
+        })
+        .await
+        .unwrap();
+    let id = send(
+        &f.cell,
+        &guild,
+        &channel,
+        "owner",
+        &format!("Party tonight {code}"),
+    )
+    .await;
+    let reference = MessageRef {
+        space: guild.clone(),
+        conversation: channel.clone(),
+        id,
+    };
+    let mut translated = None;
+    for _ in 0..200 {
+        let found = f
+            .translation
+            .get_translations(TranslationQuery {
+                messages: vec![reference.clone()],
+                langs: vec!["ja-JP".into()],
+            })
+            .await
+            .unwrap();
+        if let Some(text) = found
+            .first()
+            .and_then(|message| message.translations.first())
+            .map(|translation| translation.text.clone())
+        {
+            translated = Some(text);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let translated = translated.expect("the message was never translated");
+    assert!(translated.contains(":party:"), "{translated}");
+    assert!(!translated.contains("<:"), "{translated}");
+
+    // Deleting an emoji deletes its image.
+    assert_eq!(
+        f.cell
+            .delete_emoji(guild.clone(), image.clone(), "alice".into())
+            .await,
+        Err(MessageCellError::Forbidden)
+    );
+    f.cell
+        .delete_emoji(guild.clone(), image.clone(), "owner".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.cell.get_emoji(guild.clone(), "bob".into()).await,
+        Ok(Vec::new())
+    );
+    emoji_on_media(&f, &guild, &image, false).await;
 }

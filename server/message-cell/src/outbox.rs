@@ -20,7 +20,13 @@
 //!                     Media attach_blobs (its attachments)
 //! message_edited   ─▶ Translation Cell ingest (new revision)
 //! message_deleted  ─▶ Translation Cell delete_message, Media delete_blobs
+//! emoji_created    ─▶ Media attach_blobs (its image)
+//! emoji_deleted    ─▶ Media delete_blobs
 //! ```
+//!
+//! Translation Cells get message text with `:name:` in place of a guild's
+//! emoji codes (`babel_emoji::plain`). Text holding only emoji, like empty
+//! text, is not translated.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
@@ -144,13 +150,13 @@ where
     Delivery::Done
 }
 
-/// Attaches (`attach`) or deletes a message's files, on the Media services
-/// their IDs name.
+/// Attaches (`attach`) or deletes files (a message's, or an emoji's without
+/// a channel), on the Media services their IDs name.
 async fn message_files(
     inner: &Inner,
     entry: &OutboxEntry,
     guild_id: &str,
-    channel_id: &str,
+    channel_id: Option<&str>,
     ids: Vec<String>,
     attach: bool,
 ) -> Delivery {
@@ -159,7 +165,7 @@ async fn message_files(
         let name = id.split_once('.').map_or("", |(name, _)| name);
         by_media.entry(name).or_default().push(BlobRef {
             guild_id: guild_id.to_string(),
-            channel_id: Some(channel_id.to_string()),
+            channel_id: channel_id.map(str::to_string),
             id: id.clone(),
         });
     }
@@ -306,14 +312,21 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                 && let Some(attachments) = &message.attachments
             {
                 let ids = attachments.iter().map(|file| file.id.clone()).collect();
-                let attached =
-                    message_files(inner, entry, &guild_id, &message.channel_id, ids, true).await;
+                let attached = message_files(
+                    inner,
+                    entry,
+                    &guild_id,
+                    Some(&message.channel_id),
+                    ids,
+                    true,
+                )
+                .await;
                 if let Delivery::Retry = attached {
                     return Delivery::Retry;
                 }
             }
-            // Files alone: nothing to translate.
-            if message.text.trim().is_empty() {
+            // Files or emoji alone: nothing to translate.
+            if message.text.trim().is_empty() || babel_emoji::only_emoji(&message.text) {
                 return Delivery::Done;
             }
             outcome(
@@ -332,7 +345,7 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                         rev: message.rev.to_string(),
                         author: message.author_name,
                         author_locale: message.author_locale,
-                        text: message.text,
+                        text: babel_emoji::plain(&message.text),
                         sent_at: message.created_at,
                     })
                     .await,
@@ -356,9 +369,23 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             let ids = deleted.attachments.unwrap_or_default();
             then(
                 forgotten,
-                message_files(inner, entry, &guild_id, &deleted.channel_id, ids, false),
+                message_files(
+                    inner,
+                    entry,
+                    &guild_id,
+                    Some(&deleted.channel_id),
+                    ids,
+                    false,
+                ),
             )
             .await
+        }
+        GuildEventKind::EmojiCreated | GuildEventKind::EmojiDeleted => {
+            let Some(emoji) = event.emoji else {
+                return Delivery::Done;
+            };
+            let attach = event.kind == GuildEventKind::EmojiCreated;
+            message_files(inner, entry, &guild_id, None, vec![emoji.id], attach).await
         }
         // Only Edges care about these.
         GuildEventKind::ReactionAdded

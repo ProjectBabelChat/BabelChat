@@ -4,21 +4,28 @@
 //! Text editing follows GPUI's `input` example: the field implements
 //! [`EntityInputHandler`], so composition from fcitx5, IBus, macOS and
 //! Windows input methods flows through the platform's text input protocol.
+//!
+//! Runs of the text may show as pictures ([`TextField::inline_pictures`], a
+//! chat's emoji codes): each stands on a placeholder, painted over, and the
+//! caret moves past it and deletes it as one character.
 
-use std::{ops::Range, rc::Rc, time::Duration};
+use std::{ops::Range, rc::Rc, sync::Arc, time::Duration};
 
 use gpui::{
     App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, ExternalText, FocusHandle,
-    Focusable, Font, GlobalElementId, Hsla, InteractiveElement, IntoElement, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
-    Render, ScrollEvent, SharedString, StatefulInteractiveElement as _, Style, Styled as _, Task,
-    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, point, px,
-    relative, size,
+    Focusable, Font, GlobalElementId, Hsla, Image, InteractiveElement, IntoElement, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    Pixels, Point, Render, ScrollEvent, SharedString, StatefulInteractiveElement as _, Style,
+    Styled as _, Task, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div,
+    fill, point, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
-use super::DraggedText;
+use super::{
+    DraggedText,
+    selectable_text::{IMAGE_PLACEHOLDER, paint_picture},
+};
 use crate::{
     ActiveTheme as _, Icon, StyledExt as _, icon,
     motion::{MotionToken, animate},
@@ -112,6 +119,18 @@ pub enum TextFieldEvent {
 }
 
 impl EventEmitter<TextFieldEvent> for TextField {}
+
+/// A run of a field's text shown as a picture.
+#[derive(Clone)]
+pub struct InlinePicture {
+    /// Where the run is in the text.
+    pub range: Range<usize>,
+    /// None while loading: the run takes its room and shows nothing.
+    pub image: Option<Arc<Image>>,
+}
+
+/// Finds the runs of a text shown as pictures.
+type FindPictures = Rc<dyn Fn(&str, &App) -> Vec<InlinePicture>>;
 
 /// The field's text as shaped: one wrapped line per line of the text.
 #[derive(Clone)]
@@ -234,6 +253,9 @@ pub struct TextField {
     /// The color behind an outlined field, used to cut the label's notch.
     surface: Option<Hsla>,
     on_submit: Option<SubmitHandler>,
+    find_pictures: Option<FindPictures>,
+    /// The pictures in the text, in order, found when it last changed.
+    pictures: Vec<InlinePicture>,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -281,6 +303,8 @@ impl TextField {
             reveal_caret: false,
             surface: None,
             on_submit: None,
+            find_pictures: None,
+            pictures: Vec::new(),
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -353,8 +377,70 @@ impl TextField {
         self
     }
 
+    /// Shows runs of the text as pictures: `find` gives them, in order and
+    /// apart, for the text, and is asked again whenever the text changes or
+    /// the field renders (when a picture may have arrived).
+    pub fn inline_pictures(
+        mut self,
+        find: impl Fn(&str, &App) -> Vec<InlinePicture> + 'static,
+    ) -> Self {
+        self.find_pictures = Some(Rc::new(find));
+        self
+    }
+
     pub fn text(&self) -> &SharedString {
         &self.content
+    }
+
+    /// Where the caret is in the text.
+    pub fn caret(&self) -> usize {
+        self.cursor_offset()
+    }
+
+    /// Whether an input method is composing text in the field.
+    pub fn is_composing(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
+    /// Replaces `range` of the text, as the user would, and puts the caret
+    /// after the new text.
+    pub fn replace(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let range = self.range_to_utf16(&range);
+        self.replace_text_in_range(Some(range), text, window, cx);
+    }
+
+    fn find_pictures(&mut self, cx: &App) {
+        let Some(find) = self.find_pictures.clone() else {
+            return;
+        };
+        let content = self.content.clone();
+        let mut end = 0;
+        self.pictures = find(&content, cx)
+            .into_iter()
+            .filter(|picture| {
+                let ok = end <= picture.range.start
+                    && picture.range.start < picture.range.end
+                    && content.get(picture.range.clone()).is_some();
+                if ok {
+                    end = picture.range.end;
+                }
+                ok
+            })
+            .collect();
+    }
+
+    /// The picture `offset` falls inside of, if any.
+    fn picture_around(&self, offset: usize) -> Option<Range<usize>> {
+        self.pictures
+            .iter()
+            .map(|picture| picture.range.clone())
+            .find(|range| range.start < offset && offset < range.end)
     }
 
     pub fn set_text(
@@ -366,6 +452,7 @@ impl TextField {
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
         self.marked_range = None;
+        self.find_pictures(cx);
         window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
     }
@@ -570,8 +657,16 @@ impl TextField {
         }
     }
 
-    /// The word (or run of punctuation or space) around `ix`.
+    /// The word (or run of punctuation or space) around `ix`; a picture
+    /// is one.
     fn word_at(&self, ix: usize) -> Range<usize> {
+        if let Some(picture) = self
+            .pictures
+            .iter()
+            .find(|picture| picture.range.start <= ix && ix < picture.range.end)
+        {
+            return picture.range.clone();
+        }
         self.content
             .split_word_bound_indices()
             .map(|(start, word)| start..start + word.len())
@@ -592,11 +687,11 @@ impl TextField {
             return None;
         }
         let shaped = self.last_layout.as_ref()?;
-        if shaped.text != self.content {
+        if shaped.text != self.display_text() {
             return None;
         }
-        let start = shaped.position(self.selected_range.start);
-        let end = shaped.position(self.selected_range.end);
+        let start = shaped.position(self.display_offset(self.selected_range.start));
+        let end = shaped.position(self.display_offset(self.selected_range.end));
         (start.y == end.y)
             .then(|| Bounds::from_corners(start, point(end.x, end.y + shaped.line_height)))
     }
@@ -626,6 +721,7 @@ impl TextField {
         }
         self.selection_reversed = false;
         self.marked_range = None;
+        self.find_pictures(cx);
         window.focus(&self.focus_handle, cx);
         window.notify_text_input_changed(&self.focus_handle);
         self.edited(cx);
@@ -749,34 +845,82 @@ impl TextField {
         cx.notify()
     }
 
-    /// The text as painted: the content, or a bullet per character.
+    /// The text as painted: the content with placeholders for pictures,
+    /// or a bullet per character.
     fn display_text(&self) -> SharedString {
         if self.masked {
-            MASK.to_string().repeat(self.content.chars().count()).into()
-        } else {
-            self.content.clone()
+            return MASK.to_string().repeat(self.content.chars().count()).into();
         }
+        if self.pictures.is_empty() {
+            return self.content.clone();
+        }
+        let mut display = String::with_capacity(self.content.len());
+        let mut at = 0;
+        for picture in &self.pictures {
+            display.push_str(&self.content[at..picture.range.start]);
+            display.push_str(IMAGE_PLACEHOLDER);
+            at = picture.range.end;
+        }
+        display.push_str(&self.content[at..]);
+        display.into()
     }
 
-    /// Where a content offset falls in the painted text.
+    /// Where the pictures' placeholders are in the painted text.
+    fn placeholders(&self) -> Vec<Range<usize>> {
+        if self.masked {
+            return Vec::new();
+        }
+        self.pictures
+            .iter()
+            .map(|picture| {
+                let start = self.display_offset(picture.range.start);
+                start..start + IMAGE_PLACEHOLDER.len()
+            })
+            .collect()
+    }
+
+    /// Where a content offset falls in the painted text (inside a picture:
+    /// before it).
     fn display_offset(&self, offset: usize) -> usize {
         if self.masked {
-            self.content[..offset].chars().count() * MASK.len_utf8()
-        } else {
-            offset
+            return self.content[..offset].chars().count() * MASK.len_utf8();
         }
+        let mut display = offset;
+        for picture in &self.pictures {
+            if offset <= picture.range.start {
+                break;
+            }
+            if offset < picture.range.end {
+                return display - (offset - picture.range.start);
+            }
+            display = display - picture.range.len() + IMAGE_PLACEHOLDER.len();
+        }
+        display
     }
 
-    /// The content offset of an offset in the painted text.
+    /// The content offset of an offset in the painted text (inside a
+    /// picture's placeholder: after the picture).
     fn content_offset(&self, display: usize) -> usize {
         if self.masked {
-            self.content
+            return self
+                .content
                 .char_indices()
                 .nth(display / MASK.len_utf8())
-                .map_or(self.content.len(), |(ix, _)| ix)
-        } else {
-            display
+                .map_or(self.content.len(), |(ix, _)| ix);
         }
+        // How far the content runs ahead of the painted text.
+        let mut ahead = 0;
+        for picture in &self.pictures {
+            let start = picture.range.start - ahead;
+            if display <= start {
+                break;
+            }
+            if display < start + IMAGE_PLACEHOLDER.len() {
+                return picture.range.end;
+            }
+            ahead += picture.range.len() - IMAGE_PLACEHOLDER.len();
+        }
+        display + ahead
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
@@ -814,18 +958,24 @@ impl TextField {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
+        let previous = self
+            .content
             .grapheme_indices(true)
             .rev()
             .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+            .unwrap_or(0);
+        self.picture_around(previous)
+            .map_or(previous, |picture| picture.start)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
+        let next = self
+            .content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+            .unwrap_or(self.content.len());
+        self.picture_around(next)
+            .map_or(next, |picture| picture.end)
     }
 }
 
@@ -901,6 +1051,7 @@ impl EntityInputHandler for TextField {
         self.selection_reversed = false;
         self.marked_range.take();
         self.cursor_visible = true;
+        self.find_pictures(cx);
         window.notify_text_input_changed(&self.focus_handle);
         self.edited(cx);
         cx.notify();
@@ -935,6 +1086,7 @@ impl EntityInputHandler for TextField {
             })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.selection_reversed = false;
+        self.find_pictures(cx);
         window.notify_text_input_changed(&self.focus_handle);
         self.edited(cx);
         cx.notify();
@@ -1013,6 +1165,8 @@ impl Render for TextField {
         let theme = cx.md();
         let c = theme.colors;
         let typography = theme.typography.clone();
+        // A picture may have arrived.
+        self.find_pictures(cx);
         let focused = self.focus_handle.is_focused(window);
         if focused != self.was_focused {
             self.was_focused = focused;
@@ -1303,43 +1457,47 @@ impl TextLine {
             .as_ref()
             .map(|marked| field.display_offset(marked.start)..field.display_offset(marked.end));
         let font = cx.md().typography.font(style.text);
-        let (display, color) = match (&field.placeholder, content.is_empty()) {
+        let (display, color, hidden) = match (&field.placeholder, content.is_empty()) {
             (Some(placeholder), true) if style.show_placeholder => {
-                (placeholder.clone(), style.placeholder)
+                (placeholder.clone(), style.placeholder, Vec::new())
             }
-            _ => (content, style.color),
+            _ => (content, style.color, field.placeholders()),
         };
-        let run = TextRun {
-            len: display.len(),
-            font,
-            color,
-            ..Default::default()
-        };
-        let runs = match marked_range.as_ref() {
-            Some(marked) => [
+        // Runs end wherever the composition or a picture's placeholder
+        // starts or ends.
+        let mut cuts = vec![0, display.len()];
+        cuts.extend(
+            marked_range
+                .iter()
+                .flat_map(|marked| [marked.start, marked.end]),
+        );
+        cuts.extend(hidden.iter().flat_map(|range| [range.start, range.end]));
+        cuts.sort_unstable();
+        cuts.dedup();
+        let runs = cuts
+            .windows(2)
+            .map(|cut| {
+                let within = |range: &Range<usize>| range.start <= cut[0] && cut[1] <= range.end;
                 TextRun {
-                    len: marked.start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked.end - marked.start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display.len() - marked.end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect(),
-            None => vec![run],
-        };
+                    len: cut[1] - cut[0],
+                    font: font.clone(),
+                    color: if hidden.iter().any(within) {
+                        color.opacity(0.0)
+                    } else {
+                        color
+                    },
+                    underline: marked_range
+                        .as_ref()
+                        .filter(|marked| within(marked))
+                        .map(|_| UnderlineStyle {
+                            color: Some(color),
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
         Shaped::new(
             display,
             &runs,
@@ -1536,6 +1694,25 @@ impl Element for TextLine {
             }
             top += height;
         }
+        let field = self.field.read(cx);
+        let pictures = field
+            .pictures
+            .iter()
+            .zip(field.placeholders())
+            .filter_map(|(picture, range)| Some((picture.image.clone()?, range)))
+            .collect::<Vec<_>>();
+        let origin = point(bounds.left() - scroll.x, bounds.top() - scroll.y);
+        for (image, range) in pictures {
+            let (start, end) = (shaped.position(range.start), shaped.position(range.end));
+            paint_picture(
+                &image,
+                origin + start,
+                origin + end,
+                line_height,
+                window,
+                cx,
+            );
+        }
         let blink_on = self.field.read(cx).cursor_visible;
         if self.focused
             && blink_on
@@ -1634,6 +1811,43 @@ mod tests {
             });
         });
         assert!(submitted.get());
+    }
+
+    /// A run shown as a picture stands on a placeholder, and the caret
+    /// moves past it and deletes it as one character.
+    #[gpui::test]
+    fn pictures_move_and_delete_as_one_character(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(SchemeConfig::default(), cx));
+        let (field, cx) = cx.add_window_view(|_, cx| {
+            TextField::new(cx).inline_pictures(|text, _| {
+                text.match_indices("<cat>")
+                    .map(|(at, run)| super::InlinePicture {
+                        range: at..at + run.len(),
+                        image: None,
+                    })
+                    .collect()
+            })
+        });
+        cx.update(|window, cx| {
+            field.update(cx, |field, cx| {
+                field.replace_text_in_range(None, "a<cat>b", window, cx);
+                assert_eq!(field.display_text(), "aMMb");
+                assert_eq!(field.display_offset(6), 3);
+                assert_eq!(field.display_offset(3), 1);
+                assert_eq!(field.content_offset(2), 6);
+                assert_eq!(field.content_offset(4), 7);
+                field.left(&super::Left, window, cx);
+                field.left(&super::Left, window, cx);
+                assert_eq!(field.caret(), 1);
+                field.right(&super::Right, window, cx);
+                assert_eq!(field.caret(), 6);
+                field.backspace(&super::Backspace, window, cx);
+                assert_eq!(field.text(), "ab");
+                field.replace(1..1, "<cat>", window, cx);
+                assert_eq!(field.text(), "a<cat>b");
+                assert_eq!(field.caret(), 6);
+            });
+        });
     }
 
     /// Text dragged in from another application arrives as the platform's

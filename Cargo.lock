@@ -1085,6 +1085,7 @@ dependencies = [
  "babel-api-message-cell",
  "babel-api-translation-cell",
  "babel-common",
+ "babel-emoji",
  "babel-lang",
  "babel-media",
  "babel-net",
@@ -1098,6 +1099,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "babel-emoji"
+version = "0.1.0"
 
 [[package]]
 name = "babel-engine"
@@ -1168,6 +1173,7 @@ dependencies = [
  "babel-api-message-cell",
  "babel-api-translation-cell",
  "babel-common",
+ "babel-emoji",
  "babel-engine",
  "babel-media",
  "babel-net",
@@ -1232,6 +1238,7 @@ dependencies = [
  "async-trait",
  "babel-api-edge-client",
  "babel-api-translation-cell",
+ "babel-emoji",
  "babel-lang",
  "babel-server",
  "bytes",

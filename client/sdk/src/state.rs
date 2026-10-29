@@ -8,7 +8,7 @@ use std::{
 };
 
 use babel_api_edge_client::types::{
-    Channel, Event, EventKind, GuildView, Member, Message, MessageTranslation, NotifyLevel,
+    Channel, Emoji, Event, EventKind, GuildView, Member, Message, MessageTranslation, NotifyLevel,
     Reaction, ReactionChange, ReadState, UserSettings,
 };
 
@@ -111,6 +111,28 @@ impl State {
                 true
             }
         }
+    }
+
+    /// Adds a guild's emoji. True if it is new.
+    pub fn put_emoji(&mut self, emoji: Emoji) -> bool {
+        let Some(view) = self.guild_mut(&emoji.guild_id) else {
+            return false;
+        };
+        if view.emoji.iter().any(|known| known.id == emoji.id) {
+            return false;
+        }
+        view.emoji.push(emoji);
+        true
+    }
+
+    /// Forgets a guild's emoji. True if it was known.
+    pub fn remove_emoji(&mut self, guild: &str, id: &str) -> bool {
+        let Some(view) = self.guild_mut(guild) else {
+            return false;
+        };
+        let count = view.emoji.len();
+        view.emoji.retain(|known| known.id != id);
+        view.emoji.len() != count
     }
 
     /// Forgets a guild the user is no longer in. True if it was known.
@@ -657,6 +679,20 @@ impl State {
                     message_id: change.message_id,
                     change: MessageChange::Reactions,
                 }]
+            }
+            EventKind::EmojiCreated | EventKind::EmojiDeleted => {
+                let Some(emoji) = event.emoji else {
+                    return Vec::new();
+                };
+                let changed = if event.kind == EventKind::EmojiCreated {
+                    self.put_emoji(emoji)
+                } else {
+                    self.remove_emoji(&guild_id, &emoji.id)
+                };
+                if !changed {
+                    return Vec::new();
+                }
+                guild_update(GuildChange::Emoji)
             }
             EventKind::Typing => {
                 let Some(typing) = event.typing else {
