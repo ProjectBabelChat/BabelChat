@@ -8,6 +8,7 @@ mod emoji;
 mod files;
 mod guild_emoji;
 mod messages;
+mod pending;
 mod sidebar;
 
 use std::{
@@ -113,6 +114,7 @@ pub struct ChatView {
     picker: Option<Picker>,
     guild_menu: bool,
     files: files::Files,
+    outbox: pending::Outbox,
     emoji_pictures: Entity<guild_emoji::EmojiPictures>,
     /// Emoji offered for the name being typed in the composer.
     completion: Option<completion::Completion>,
@@ -237,6 +239,7 @@ impl ChatView {
             picker: None,
             guild_menu: false,
             files: files::Files::default(),
+            outbox: pending::Outbox::default(),
             emoji_pictures,
             completion: None,
             dialog: None,
@@ -517,11 +520,13 @@ impl ChatView {
         let Some(channel) = &self.channel else {
             return;
         };
+        // Messages on their way come last.
         let new: Vec<String> = self
             .session
             .messages(channel)
             .into_iter()
             .map(|chat| chat.message.id)
+            .chain(self.pending_rows(channel))
             .collect();
         let old = &self.rows;
         let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
@@ -589,54 +594,38 @@ impl ChatView {
         let Some(channel) = self.channel.clone() else {
             return false;
         };
-        // Attached files go with a message or a reply, not an edit.
-        let files = match &self.compose {
-            Compose::Edit(_) => Vec::new(),
-            _ => match self.ready_files(&channel) {
-                Some(files) => files,
-                None => {
-                    let text = self.t().wait_for_uploads.to_string();
-                    self.show_toast(text, None, cx);
+        // Messages and replies go on their way (`pending.rs`), with the
+        // files attached, uploaded or not; edits are sent at once.
+        let reply_to = match &self.compose {
+            Compose::Edit(id) => {
+                if text.is_empty() {
                     return false;
                 }
-            },
+                let (session, id) = (self.session.clone(), id.clone());
+                let task =
+                    runtime::spawn(cx, async move { session.edit(&channel, &id, &text).await });
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = task.await {
+                        let _ = this.update(cx, |this, cx| {
+                            let text = describe(&error, this.t());
+                            this.show_toast(text, None, cx);
+                        });
+                    }
+                })
+                .detach();
+                self.compose = Compose::Message;
+                self.completion = None;
+                cx.notify();
+                return true;
+            }
+            Compose::Reply(id) => Some(id.clone()),
+            Compose::Message => None,
         };
-        if text.is_empty() && files.is_empty() {
+        if !self.queue_message(channel, text, reply_to, cx) {
             return false;
         }
-        let compose = std::mem::replace(&mut self.compose, Compose::Message);
+        self.compose = Compose::Message;
         self.completion = None;
-        let session = self.session.clone();
-        let sending = files.clone();
-        let task = runtime::spawn(cx, async move {
-            match compose {
-                Compose::Message => session
-                    .send_with(&channel, &text, None, &sending)
-                    .await
-                    .map(drop),
-                Compose::Reply(id) => session
-                    .send_with(&channel, &text, Some(&id), &sending)
-                    .await
-                    .map(drop),
-                Compose::Edit(id) => session.edit(&channel, &id, &text).await.map(drop),
-            }
-        });
-        self.list.scroll_to_end();
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| match result {
-                Ok(()) => {
-                    this.sent_files(&files);
-                    cx.notify();
-                }
-                Err(error) => {
-                    let text = describe(&error, this.t());
-                    this.show_toast(text, None, cx);
-                }
-            });
-        })
-        .detach();
-        cx.notify();
         true
     }
 

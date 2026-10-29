@@ -31,6 +31,7 @@ source of truth, and the app remembers only what is on screen.
 | `chat/guild_emoji.rs` | A guild's own emoji: their pictures, in message text, the composer and reactions, for the picker, and the guild's emoji dialog. |
 | `chat/completion.rs` | Emoji in the composer: those matching a `:name` being typed, offered above it, and a `:name:` typed in full turned into its emoji. |
 | `chat/files.rs` | Files: attaching, uploading, pictures under messages, the large view, saving. |
+| `chat/pending.rs` | Messages on their way: shown greyed until the server has them, sent in order once their files are uploaded. |
 | `chat/dialogs.rs` | Add a guild (create or join), invite, create, edit or delete a channel, start a thread, the guild's settings, languages, notifications, settings, the password, confirmations. |
 | `i18n.rs` | The UI's own words in English and Japanese, and language names. |
 | `runtime.rs` | The Tokio runtime beside GPUI, the app's configuration, SDK errors in words. |
@@ -187,10 +188,19 @@ side, one window each.
 
 The paperclip beside the composer opens the system's file dialog
 (several at once), and files dropped anywhere on the channel are attached
-too. Each is uploaded at once and waits above the composer as a chip
-(name, then its size once uploaded; ✕ takes it back) until the next
-message or reply in that channel takes it; Enter waits for uploads still
-going. Files larger than 10 MB are refused before they are read.
+too, as is a picture pasted into the composer (Ctrl+V with no text on the
+clipboard; named `image.png`, or the picture's format). Each is
+uploaded at once and waits above the composer as a chip (name, then its
+size once uploaded; ✕ takes it back) until the next message or reply in
+that channel takes it, uploaded or not. Files larger than 10 MB are
+refused before they are read.
+
+Enter never waits (`chat/pending.rs`): the message goes at once to the
+end of the channel, greyed, with its files by name, as on Discord, and
+leaves when the server has it and the real one takes its place. It is
+sent once its files are uploaded, after the channel's messages written
+before it. One that could not be sent says why, with Retry and Delete.
+Edits are sent at once.
 
 Under a message, pictures (PNG, JPEG, GIF, WebP) show at their own size up
 to 360 × 280, fitted to the column, laid out from the size the server

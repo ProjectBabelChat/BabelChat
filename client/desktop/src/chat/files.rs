@@ -1,5 +1,5 @@
-//! Files: attached in the composer (button or drag and drop), uploaded at
-//! once, sent with the next message; shown under messages, images as
+//! Files: attached in the composer (button, drag and drop, or a picture
+//! pasted), uploaded at once, sent with the next message; shown under messages, images as
 //! pictures (opened large on click), anything else as a card to save.
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -28,6 +28,8 @@ pub(super) struct Upload {
     channel_id: String,
     name: String,
     state: UploadState,
+    /// The message on its way that took it (`pending.rs`), if any.
+    message: Option<u64>,
 }
 
 enum UploadState {
@@ -59,6 +61,20 @@ fn image_format(content_type: &str) -> Option<ImageFormat> {
         "image/gif" => Some(ImageFormat::Gif),
         "image/webp" => Some(ImageFormat::Webp),
         _ => None,
+    }
+}
+
+fn picture_extension(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Svg => "svg",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Tiff => "tiff",
+        ImageFormat::Ico => "ico",
+        ImageFormat::Pnm => "pnm",
     }
 }
 
@@ -118,9 +134,6 @@ impl ChatView {
 
     /// Uploads files for the next message in the open channel.
     fn attach_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let Some(channel) = self.channel.clone() else {
-            return;
-        };
         for path in paths {
             let name = path
                 .file_name()
@@ -134,55 +147,93 @@ impl ChatView {
                 self.show_toast(text, None, cx);
                 continue;
             }
-            let key = self.files.next_key;
-            self.files.next_key += 1;
-            self.files.uploads.push(Upload {
-                key,
-                channel_id: channel.clone(),
-                name: name.clone(),
-                state: UploadState::Uploading,
-            });
-            let (session, path, channel) = (self.session.clone(), path.clone(), channel.clone());
-            let task = runtime::spawn(cx, async move {
-                let read = tokio::task::spawn_blocking(move || std::fs::read(path)).await;
-                match read {
-                    Ok(Ok(bytes)) => session.upload(&channel, &name, bytes).await,
-                    Ok(Err(error)) => Err(Error::Transport(error.to_string())),
-                    Err(error) => Err(Error::Transport(error.to_string())),
-                }
-            });
-            cx.spawn(async move |this, cx| {
-                let result = task.await;
-                let _ = this.update(cx, |this, cx| {
-                    let Some(index) = this.files.uploads.iter().position(|up| up.key == key) else {
-                        return;
-                    };
-                    match result {
-                        Ok(file) => this.files.uploads[index].state = UploadState::Ready(file),
-                        Err(error) => {
-                            this.files.uploads.remove(index);
-                            let text = describe(&error, this.t());
-                            this.show_toast(text, None, cx);
-                        }
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
+            let path = path.clone();
+            self.attach(name, move || std::fs::read(path), cx);
         }
+    }
+
+    /// Attaches a picture pasted into the composer, as Discord does
+    /// (`image.png`).
+    pub(super) fn attach_picture(&mut self, picture: &Image, cx: &mut Context<Self>) {
+        let name = format!("image.{}", picture_extension(picture.format));
+        if picture.bytes.len() as i64 > MAX_UPLOAD_BYTES {
+            let text = fill(self.t().too_large, &[&name]);
+            self.show_toast(text, None, cx);
+            return;
+        }
+        let bytes = picture.bytes.clone();
+        self.attach(name, move || Ok(bytes), cx);
+    }
+
+    /// Uploads the file `read` gives, as `name`, for the next message in
+    /// the open channel.
+    fn attach(
+        &mut self,
+        name: String,
+        read: impl FnOnce() -> std::io::Result<Vec<u8>> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(channel) = self.channel.clone() else {
+            return;
+        };
+        let key = self.files.next_key;
+        self.files.next_key += 1;
+        self.files.uploads.push(Upload {
+            key,
+            channel_id: channel.clone(),
+            name: name.clone(),
+            state: UploadState::Uploading,
+            message: None,
+        });
+        let session = self.session.clone();
+        let task = runtime::spawn(cx, async move {
+            let read = tokio::task::spawn_blocking(read).await;
+            match read {
+                Ok(Ok(bytes)) => session.upload(&channel, &name, bytes).await,
+                Ok(Err(error)) => Err(Error::Transport(error.to_string())),
+                Err(error) => Err(Error::Transport(error.to_string())),
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(index) = this.files.uploads.iter().position(|up| up.key == key) else {
+                    return;
+                };
+                match result {
+                    Ok(file) => this.files.uploads[index].state = UploadState::Ready(file),
+                    Err(error) => {
+                        this.files.uploads.remove(index);
+                        let text = describe(&error, this.t());
+                        this.show_toast(text, None, cx);
+                    }
+                }
+                // A message may have been waiting for it.
+                this.send_pending(cx);
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    /// The files ready to go with a message in `channel`, or `None` while
-    /// some are still uploading.
-    pub(super) fn ready_files(&self, channel: &str) -> Option<Vec<Attachment>> {
+    /// Hands the composer's files in `channel` to `message`; returns how
+    /// many there were.
+    pub(super) fn take_uploads(&mut self, channel: &str, message: u64) -> usize {
+        let mut taken = 0;
+        for upload in &mut self.files.uploads {
+            if upload.channel_id == channel && upload.message.is_none() {
+                upload.message = Some(message);
+                taken += 1;
+            }
+        }
+        taken
+    }
+
+    /// The files of `message`, or `None` while some are still uploading.
+    pub(super) fn message_files(&self, message: u64) -> Option<Vec<Attachment>> {
         let mut ready = Vec::new();
-        for upload in self
-            .files
-            .uploads
-            .iter()
-            .filter(|up| up.channel_id == channel)
-        {
+        for upload in self.message_uploads(message) {
             match &upload.state {
                 UploadState::Uploading => return None,
                 UploadState::Ready(file) => ready.push(file.clone()),
@@ -191,12 +242,28 @@ impl ChatView {
         Some(ready)
     }
 
-    /// Forgets uploads that went with a message.
-    pub(super) fn sent_files(&mut self, sent: &[Attachment]) {
-        self.files.uploads.retain(|upload| match &upload.state {
-            UploadState::Ready(file) => !sent.iter().any(|sent| sent.id == file.id),
-            UploadState::Uploading => true,
-        });
+    /// The names of `message`'s files, and whether each is still uploading.
+    pub(super) fn message_file_names(&self, message: u64) -> Vec<(String, bool)> {
+        self.message_uploads(message)
+            .map(|upload| {
+                let uploading = matches!(upload.state, UploadState::Uploading);
+                (upload.name.clone(), uploading)
+            })
+            .collect()
+    }
+
+    fn message_uploads(&self, message: u64) -> impl Iterator<Item = &Upload> {
+        self.files
+            .uploads
+            .iter()
+            .filter(move |upload| upload.message == Some(message))
+    }
+
+    /// Forgets the files of a message sent or thrown away.
+    pub(super) fn forget_uploads(&mut self, message: u64) {
+        self.files
+            .uploads
+            .retain(|upload| upload.message != Some(message));
     }
 
     /// The composer's attached files, if any.
@@ -208,7 +275,7 @@ impl ChatView {
             .files
             .uploads
             .iter()
-            .filter(|upload| upload.channel_id == channel)
+            .filter(|upload| upload.channel_id == channel && upload.message.is_none())
             .collect::<Vec<_>>();
         if uploads.is_empty() {
             return None;

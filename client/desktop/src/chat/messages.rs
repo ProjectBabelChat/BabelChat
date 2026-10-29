@@ -3,7 +3,10 @@
 use babel_sdk::{ChannelKind, ChatMessage, GuildView, Shown, emoji as codes};
 use chrono::{DateTime, Local, TimeZone as _};
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ExternalPaths, IntoElement, SharedString, Window, div, list, px};
+use gpui::{
+    AnyElement, ClipboardEntry, Context, ExternalPaths, IntoElement, SharedString, Window, div,
+    list, px,
+};
 use gpui_md3e::prelude::*;
 
 use super::{ChatView, Compose, Dialog, PickerTarget};
@@ -13,7 +16,7 @@ use crate::{
 };
 
 /// Messages from one author this close together share a header.
-const GROUP_MS: i64 = 5 * 60 * 1000;
+pub(super) const GROUP_MS: i64 = 5 * 60 * 1000;
 
 impl ChatView {
     pub(super) fn render_channel(
@@ -283,12 +286,27 @@ impl ChatView {
     }
 
     /// The composer. While emoji are offered for a name being typed, Up,
-    /// Down, Enter and Tab choose among them (see `completion.rs`).
+    /// Down, Enter and Tab choose among them (see `completion.rs`). A
+    /// picture pasted is attached.
     fn render_composer_field(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_md3e::components::text_field::{Down, Submit, Up};
+        use gpui_md3e::components::text_field::{Down, Paste, Submit, Up};
         div()
             .flex_1()
             .min_w_0()
+            .capture_action(cx.listener(|this, _: &Paste, _, cx| {
+                // Text comes first: gpui reads a picture only when there is
+                // no text to paste.
+                let picture = cx.read_from_clipboard().and_then(|item| {
+                    item.into_entries().find_map(|entry| match entry {
+                        ClipboardEntry::Image(picture) => Some(picture),
+                        _ => None,
+                    })
+                });
+                if let Some(picture) = picture {
+                    this.attach_picture(&picture, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action(cx.listener(|this, _: &Up, _, cx| {
                 if this.completing(cx) {
                     this.move_completion(-1, cx);
@@ -328,6 +346,9 @@ impl ChatView {
         let (Some(channel), Some(id)) = (self.channel.clone(), self.rows.get(ix).cloned()) else {
             return div().into_any_element();
         };
+        if let Some(key) = super::pending::pending_key(&id) {
+            return self.render_pending(ix, key, cx);
+        }
         let Some(chat) = self.session.message(&channel, &id) else {
             return div().h(px(1.0)).into_any_element();
         };
@@ -355,33 +376,7 @@ impl ChatView {
 
         let mut content = div().flex_1().min_w_0().flex().flex_col();
         if let Some(reply_to) = &message.reply_to {
-            let (author, text) = match self.session.message(&channel, reply_to) {
-                Some(replied) => (
-                    replied.message.author_name,
-                    codes::plain(&replied.display.text),
-                ),
-                None => (String::new(), t.deleted_message.to_string()),
-            };
-            content = content.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .md_type(TypeRole::BodySmall, cx)
-                    .text_color(colors.on_surface_variant)
-                    .child(
-                        icon(Icon::Reply)
-                            .size(px(14.0))
-                            .color(colors.on_surface_variant),
-                    )
-                    .child(
-                        div()
-                            .md_type_emphasized(TypeRole::LabelMedium, cx)
-                            .child(author),
-                    )
-                    .child(div().min_w_0().truncate().child(text)),
-            );
+            content = content.child(self.reply_preview(&channel, reply_to, cx));
         }
         if !grouped {
             let mut header = div()
@@ -573,6 +568,42 @@ impl ChatView {
         row.into_any_element()
     }
 
+    /// The message replied to, in one line above a reply.
+    pub(super) fn reply_preview(
+        &self,
+        channel: &str,
+        reply_to: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.md().colors;
+        let (author, text) = match self.session.message(channel, reply_to) {
+            Some(replied) => (
+                replied.message.author_name,
+                codes::plain(&replied.display.text),
+            ),
+            None => (String::new(), self.t().deleted_message.to_string()),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .md_type(TypeRole::BodySmall, cx)
+            .text_color(colors.on_surface_variant)
+            .child(
+                icon(Icon::Reply)
+                    .size(px(14.0))
+                    .color(colors.on_surface_variant),
+            )
+            .child(
+                div()
+                    .md_type_emphasized(TypeRole::LabelMedium, cx)
+                    .child(author),
+            )
+            .child(div().min_w_0().truncate().child(text))
+            .into_any_element()
+    }
+
     /// "👍 2" for each emoji people reacted with; the user's own stand
     /// out. Clicking one adds or takes back the user's reaction.
     fn reaction_chips(&mut self, chat: &ChatMessage, cx: &mut Context<Self>) -> AnyElement {
@@ -762,7 +793,7 @@ impl ChatView {
 }
 
 /// "Today at 23:30", "Yesterday at 08:15", "2026/10/24 21:03".
-fn format_time(ms: i64, t: &Strings) -> String {
+pub(super) fn format_time(ms: i64, t: &Strings) -> String {
     let Some(time): Option<DateTime<Local>> = Local.timestamp_millis_opt(ms).single() else {
         return String::new();
     };
