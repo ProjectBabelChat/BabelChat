@@ -225,9 +225,13 @@ impl ChatView {
             return;
         };
         let text = format!("{} ", chosen.text);
-        self.composer.update(cx, |field, cx| {
-            field.replace(open.range.clone(), &text, window, cx)
-        });
+        // A closing colon typed first (`::`, then the name) goes too.
+        let mut range = open.range.clone();
+        if self.composer.read(cx).text()[range.end..].starts_with(':') {
+            range.end += 1;
+        }
+        self.composer
+            .update(cx, |field, cx| field.replace(range, &text, window, cx));
         window.focus(&self.composer.focus_handle(cx), cx);
         cx.notify();
     }

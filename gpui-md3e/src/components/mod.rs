@@ -41,6 +41,8 @@ pub use text_field::{InlinePicture, TextField, TextFieldEvent, TextFieldStyle};
 
 /// Installs key bindings used by gpui-md3e components.
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
-    text_field::bind_keys(cx);
+    // Of two bindings for one key, gpui runs the one bound last first:
+    // fields copy their own selection, before the page's.
     selectable_text::bind_keys(cx);
+    text_field::bind_keys(cx);
 }
