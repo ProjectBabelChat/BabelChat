@@ -1,6 +1,6 @@
 //! The open channel: its header, the message list and the composer.
 
-use babel_sdk::{ChatMessage, GuildView, Shown};
+use babel_sdk::{ChannelKind, ChatMessage, GuildView, Shown};
 use chrono::{DateTime, Local, TimeZone as _};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, IntoElement, SharedString, Window, div, list, px};
@@ -69,6 +69,22 @@ impl ChatView {
                 .text_color(colors.on_surface_variant)
                 .children(channel.topic.clone()),
         );
+        if self.session.may_manage(&channel.id) {
+            let channel_id = channel.id.clone();
+            let label = if channel.kind == ChannelKind::Thread {
+                t.edit_thread
+            } else {
+                t.edit_channel
+            };
+            header = header.child(
+                IconButton::new("channel-settings", Icon::Settings)
+                    .label(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.dialog = Dialog::edit_channel(this, &channel_id, window, cx);
+                        cx.notify();
+                    })),
+            );
+        }
         header = header
             .child(
                 IconButton::new("channel-notifications", Icon::Notifications)
@@ -186,27 +202,41 @@ impl ChatView {
         }
 
         let composer = self.composer.clone();
+        // A line kept for it, so the composer does not jump.
+        let typing = div()
+            .h(px(18.0))
+            .px_4()
+            .pt_1()
+            .md_type(TypeRole::LabelSmall, cx)
+            .text_color(colors.on_surface_variant)
+            .truncate()
+            .children(self.typing_text());
         column
             .child(
                 div()
                     .flex()
                     .flex_row()
-                    .items_center()
+                    .items_end()
                     .gap_3()
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                    // Level with the composer's last line as it grows.
                     .child(
-                        IconButton::new("send", Icon::Send)
-                            .style(IconButtonStyle::Filled)
-                            .size(ButtonSize::Medium)
-                            .width(IconButtonWidth::Wide)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                let text = composer.read(cx).text().clone();
-                                if this.submit(&text, window, cx) {
-                                    composer.update(cx, |field, cx| field.set_text("", window, cx));
-                                }
-                            })),
+                        div().pb(px(8.0)).child(
+                            IconButton::new("send", Icon::Send)
+                                .style(IconButtonStyle::Filled)
+                                .size(ButtonSize::Medium)
+                                .width(IconButtonWidth::Wide)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let text = composer.read(cx).text().clone();
+                                    if this.submit(&text, window, cx) {
+                                        composer
+                                            .update(cx, |field, cx| field.set_text("", window, cx));
+                                    }
+                                })),
+                        ),
                     ),
             )
+            .child(typing)
             .into_any_element()
     }
 
@@ -334,6 +364,12 @@ impl ChatView {
         if let Some(meta) = self.translation_meta(&chat, show_original, cx) {
             content = content.child(meta);
         }
+        if let Some(threads) = self.thread_links(&channel, &id, cx) {
+            content = content.child(threads);
+        }
+        if !message.reactions.is_empty() {
+            content = content.child(self.reaction_chips(&chat, cx));
+        }
 
         let mut row = div()
             .id(SharedString::from(format!("message-{id}")))
@@ -371,19 +407,54 @@ impl ChatView {
         });
         row = row.child(content);
 
-        if hovered {
+        let picking = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.message_id == id);
+        if hovered || picking {
             let guild_owner = self
                 .current_guild()
                 .is_some_and(|guild| guild.guild.owner_id == me);
-            let mut tools = Toolbar::new().child(
-                IconButton::new("reply", Icon::Reply)
-                    .size(ButtonSize::XSmall)
-                    .label(t.reply)
-                    .on_click(cx.listener({
-                        let id = id.clone();
-                        move |this, _, window, cx| this.start_reply(id.clone(), window, cx)
-                    })),
-            );
+            let in_text_channel = self
+                .session
+                .channel(&channel)
+                .is_some_and(|channel| channel.kind == ChannelKind::Text);
+            let mut tools = Toolbar::new()
+                .child(
+                    IconButton::new("react", Icon::AddReaction)
+                        .size(ButtonSize::XSmall)
+                        .label(t.add_reaction)
+                        .on_click(cx.listener({
+                            let id = id.clone();
+                            move |this, event: &gpui::ClickEvent, window, cx| {
+                                this.open_picker(id.clone(), event.position(), window, cx)
+                            }
+                        })),
+                )
+                .child(
+                    IconButton::new("reply", Icon::Reply)
+                        .size(ButtonSize::XSmall)
+                        .label(t.reply)
+                        .on_click(cx.listener({
+                            let id = id.clone();
+                            move |this, _, window, cx| this.start_reply(id.clone(), window, cx)
+                        })),
+                );
+            // Threads grow from messages of text channels, not of threads.
+            if in_text_channel {
+                tools = tools.child(
+                    IconButton::new("thread", Icon::Forum)
+                        .size(ButtonSize::XSmall)
+                        .label(t.start_thread)
+                        .on_click(cx.listener({
+                            let id = id.clone();
+                            move |this, _, window, cx| {
+                                this.dialog = Some(Dialog::start_thread(this, &id, window, cx));
+                                cx.notify();
+                            }
+                        })),
+                );
+            }
             if mine {
                 tools = tools.child(
                     IconButton::new("edit", Icon::Edit)
@@ -409,6 +480,123 @@ impl ChatView {
             row = row.child(div().absolute().top(px(-8.0)).right(px(24.0)).child(tools));
         }
         row.into_any_element()
+    }
+
+    /// "👍 2" for each emoji people reacted with; the user's own stand
+    /// out. Clicking one adds or takes back the user's reaction.
+    fn reaction_chips(&self, chat: &ChatMessage, cx: &mut Context<Self>) -> AnyElement {
+        let colors = cx.md().colors;
+        let id = chat.message.id.clone();
+        let mut row = div().flex().flex_row().flex_wrap().gap_1().pt_1();
+        for (ix, reaction) in chat.message.reactions.iter().enumerate() {
+            let (bg, border, fg) = if reaction.me {
+                (
+                    colors.secondary_container,
+                    colors.secondary,
+                    colors.on_secondary_container,
+                )
+            } else {
+                (
+                    colors.surface_container,
+                    colors.outline_variant,
+                    colors.on_surface_variant,
+                )
+            };
+            let (message_id, emoji) = (id.clone(), reaction.emoji.clone());
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("reaction-{id}-{ix}")))
+                    .h(px(28.0))
+                    .px_2()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_container_highest))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_reaction(message_id.clone(), emoji.clone(), cx)
+                    }))
+                    .child(div().text_size(px(16.0)).child(reaction.emoji.clone()))
+                    .child(
+                        div()
+                            .md_type(TypeRole::LabelMedium, cx)
+                            .child(reaction.count.to_string()),
+                    ),
+            );
+        }
+        row.child(
+            IconButton::new(
+                SharedString::from(format!("more-reactions-{id}")),
+                Icon::AddReaction,
+            )
+            .size(ButtonSize::XSmall)
+            .label(self.t().add_reaction)
+            .on_click(cx.listener(
+                move |this, event: &gpui::ClickEvent, window, cx| {
+                    this.open_picker(id.clone(), event.position(), window, cx)
+                },
+            )),
+        )
+        .into_any_element()
+    }
+
+    /// Threads started from a message, each opening on click.
+    fn thread_links(
+        &self,
+        channel: &str,
+        message_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let colors = cx.md().colors;
+        let threads = self
+            .current_guild()?
+            .channels
+            .into_iter()
+            .filter(|thread| {
+                thread.kind == ChannelKind::Thread
+                    && thread.parent_id.as_deref() == Some(channel)
+                    && thread.starter_message_id.as_deref() == Some(message_id)
+            })
+            .collect::<Vec<_>>();
+        if threads.is_empty() {
+            return None;
+        }
+        // Each link as wide as its name.
+        let mut column = div().flex().flex_col().items_start().gap_1().pt_1();
+        for thread in threads {
+            let thread_id = thread.id.clone();
+            column = column.child(
+                div()
+                    .id(SharedString::from(format!("thread-link-{}", thread.id)))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .rounded(px(12.0))
+                    .bg(colors.surface_container)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(colors.surface_container_high))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_channel(&thread_id, window, cx)
+                    }))
+                    .child(icon(Icon::Forum).size(px(16.0)).color(colors.primary))
+                    .child(
+                        div()
+                            .md_type(TypeRole::LabelLarge, cx)
+                            .text_color(colors.primary)
+                            .child(thread.name),
+                    ),
+            );
+        }
+        Some(column.into_any_element())
     }
 
     /// "Translated from Japanese · Show original" under a message.

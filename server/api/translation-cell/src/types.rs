@@ -258,6 +258,9 @@ use async_trait::async_trait;
 pub trait TranslationCell: Send + Sync + 'static {
     async fn put_space(&self, body: SpaceContext) -> Result<(), TranslationCellError>;
     async fn put_node(&self, body: ContextNode) -> Result<(), TranslationCellError>;
+    /// A conversation ended: its node, window and translations go. Other
+    /// nodes naming it as their parent keep theirs.
+    async fn delete_node(&self, space: String, node: String) -> Result<(), TranslationCellError>;
     async fn delete_space(&self, space: String) -> Result<(), TranslationCellError>;
     async fn get_policy(&self, space: String) -> Result<SpacePolicy, TranslationCellError>;
     /// Called by the platform after it checked the caller may manage the

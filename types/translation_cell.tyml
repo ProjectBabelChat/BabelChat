@@ -230,6 +230,10 @@ interface TranslationCell {
 
     function put_node(@body: ContextNode) throws TranslationCellError
 
+    /// A conversation ended: its node, window and translations go. Other
+    /// nodes naming it as their parent keep theirs.
+    function delete_node(space: string, node: string) throws TranslationCellError
+
     function delete_space(space: string) throws TranslationCellError
 
     // ---- Language policy --------------------------------------------------

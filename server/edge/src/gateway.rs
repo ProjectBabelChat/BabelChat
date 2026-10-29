@@ -52,10 +52,13 @@ pub fn event(kind: EventKind, guild_id: &str) -> Event {
         kind,
         guild_id: guild_id.to_string(),
         guild: None,
+        guild_info: None,
         member: None,
         channel: None,
         message: None,
         deleted: None,
+        reaction: None,
+        typing: None,
         translation: None,
         policy: None,
         language: None,
@@ -135,6 +138,17 @@ impl Sessions {
                 if let Some(ids) = by_guild.get_mut(guild) {
                     ids.remove(id);
                 }
+            }
+        }
+    }
+
+    /// Takes `guild` from every session: it was deleted.
+    pub fn forget_guild(&self, guild: &str) {
+        let ids = self.by_guild.lock().remove(guild).unwrap_or_default();
+        let mut sessions = self.sessions.lock();
+        for id in ids {
+            if let Some(session) = sessions.get_mut(&id) {
+                session.guilds.remove(guild);
             }
         }
     }

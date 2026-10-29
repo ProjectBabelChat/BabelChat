@@ -146,7 +146,7 @@ can share a machine: putting several on one is naming the same `machine`.
 ```sh
 deploy/nixos/deploy.sh init                # WireGuard keys, CA, certificates
 deploy/nixos/deploy.sh install core        # Debian -> NixOS (erases the disk)
-deploy/nixos/deploy.sh switch              # build here, copy, activate: all machines
+deploy/nixos/deploy.sh switch              # build here once, copy to all at once, activate one by one
 deploy/nixos/deploy.sh admin health        # babel-admin on the operator's machine
 deploy/nixos/deploy.sh admin signup-code --uses 5
 deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f

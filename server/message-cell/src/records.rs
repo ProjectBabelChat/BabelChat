@@ -104,6 +104,11 @@ pub struct GuildRecord {
     /// about the guild answer `moved`.
     #[serde(default)]
     pub moved: bool,
+    /// Deleted by its owner: only this record and the log are left, until
+    /// the log is trimmed, so Edges read the deletion before the guild
+    /// answers `not_found`.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 /// A pointer to a log entry that other services have not seen yet.

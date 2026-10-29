@@ -45,7 +45,8 @@ cargo run -p babel-desktop -- --profile bob              # terminal 2
    in English. The first message of each direction downloads its model
    (35–55 MB) into `~/.cache/babelchat/models`.
 
-Hover a message to reply, edit or delete it; `@bob` mentions Bob. Other
+Hover a message to react, reply, start a thread, edit or delete it;
+Shift+Enter starts a new line; `@bob` mentions Bob. Other
 channels show unread dots and mention counts; while the window is in the
 background, new messages become desktop notifications.
 
@@ -143,7 +144,9 @@ or any reader of a `--plan free` server, sees them:
 `--device mock` swaps in a mock that marks device translations instead
 (`[device fr-FR] [en-US] …` is French on device, from the LLM's English). `/help` lists the commands: channels,
 threads (`/thread #1 name`), `/reply #1 …`, `/edit #1 …`, `/delete #1`,
-`/locale fr-FR`, `/original on` and more.
+`/react #1 👍` (or `:thumbsup:`), renaming and deleting channels and
+guilds, `/locale fr-FR`, `/original on` and more. A line ending in `\`
+goes on on the next one, for messages of several lines.
 
 The open channel prints its messages; other channels speak up through
 notifications, already translated:
@@ -309,12 +312,12 @@ nix build .#checks.x86_64-linux.cluster      # the NixOS module, on two VMs
 | `babel-directory` | the membership stream, and its trimming |
 | `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; plain prompts sharing their background across targets; models files; requests choosing a model; OpenAI-compatible and Anthropic request shapes (thinking turned off, cache markers); remote engine over HTTP |
 | `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming; spaces choosing a model; one catalog from several engines; a space sticking to one replica until it fails |
-| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries |
+| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries; reactions counted once per member; typing through the log only; renaming; deleted channels taking their threads and messages (and their Translation Cell conversations), deleted categories freeing their channels; deleted guilds read to the end of their log, then gone from the Directory and the Translation Cell |
 | `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart; split up over mutual TLS: people on different Edges chatting, a user's devices on two Edges staying in step, guilds moving between cells while people write |
-| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling; signing the other devices out (they are signed out, this one carries on live) and changing the password |
+| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling; signing the other devices out (they are signed out, this one carries on live) and changing the password; reactions with each reader's own marked; others writing, until their message (of several lines) arrives; threads, channels and guilds renamed and deleted for everyone |
 | `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
-| `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks |
+| `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks; lines continued with `\`, reactions by emoji or shortcode, renaming and deleting with the name typed to confirm |
 | `babel-desktop` | channel order, avatars, the UI's words in both languages; the screens themselves are checked by scripted runs (`BABEL_SCRIPT`) |
 
 ## Changing an API

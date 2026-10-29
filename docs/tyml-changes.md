@@ -123,3 +123,17 @@ No TYML changes. An open server's account basics needed:
 
 Health checks are a hand-written route next to the generated ones, like
 replication and the WebSocket gateway.
+
+## Phase 7 (everyday chat)
+
+No TYML changes. Reactions, typing, and renaming and deleting guilds and
+channels needed:
+
+| Need | How |
+|---|---|
+| Fields added to stored types (who made a channel, a message's reactions) | Optional fields (`created_by: string?`, `reactions: [Reaction]?`), as in phase 2; the public `Message` keeps `reactions` required and the Edge fills in an empty list |
+| Reactions as each reader sees them ("did I react?") | Two types for one idea: the cell stores who reacted (`Reaction { emoji, user_ids }`), the public API gives `Reaction { emoji, count, me }`, which the Edge computes per reader |
+| Reaction events that can be applied twice | The event carries the emoji's count after the change (`ReactionChange.count`) |
+| Typing, which nothing should keep | A log entry like any other (`typing`), not forwarded by the outbox and trimmed with the log |
+| New events | More `kind` values with one optional payload field each (`guild_info`, `reaction`, `typing`), as before |
+| Room for a guild's own emoji later | `emoji: string`, with `custom:<id>` reserved in its doc comment; no union type needed |

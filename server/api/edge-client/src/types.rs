@@ -116,6 +116,9 @@ pub struct Channel {
     /// Newest message ever sent here. The channel is unread while it is
     /// newer than the read state's `last_read_id`.
     pub last_message_id: Option<String>,
+    /// Who made it, when known. A thread's creator may rename and
+    /// delete it.
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -238,6 +241,13 @@ pub struct Invite {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildUpdate {
+    pub guild_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewChannel {
     pub guild_id: String,
     pub kind: ChannelKind,
@@ -245,6 +255,14 @@ pub struct NewChannel {
     pub topic: Option<String>,
     pub parent_id: Option<String>,
     pub starter_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ChannelUpdate {
+    pub guild_id: String,
+    pub channel_id: String,
+    pub name: String,
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -304,6 +322,20 @@ pub struct Message {
     pub rev: i64,
     pub created_at: i64,
     pub edited_at: Option<i64>,
+    /// In the order first used. Reacting changes neither `rev` nor
+    /// `edited_at`.
+    pub reactions: Vec<Reaction>,
+}
+
+/// One emoji people reacted with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Reaction {
+    /// A Unicode emoji. Later also `custom:<id>`, a guild's own emoji
+    /// (usable in other guilds too); none exist yet.
+    pub emoji: String,
+    pub count: i64,
+    /// The user is among them.
+    pub me: bool,
 }
 
 /// Translations of one message, filtered to what the user needs: their own
@@ -362,10 +394,14 @@ pub struct Event {
     pub kind: EventKind,
     pub guild_id: String,
     pub guild: Option<GuildView>,
+    /// For guild_updated.
+    pub guild_info: Option<Guild>,
     pub member: Option<Member>,
     pub channel: Option<Channel>,
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
+    pub reaction: Option<ReactionChange>,
+    pub typing: Option<Typing>,
     pub translation: Option<MessageTranslation>,
     /// For policy_updated: the new policy and the user's resulting view.
     pub policy: Option<LanguagePolicy>,
@@ -378,6 +414,12 @@ pub struct Event {
 pub enum EventKind {
     #[serde(rename = "guild_joined")]
     GuildJoined,
+    /// Renamed, or a new description (`guild_info`).
+    #[serde(rename = "guild_updated")]
+    GuildUpdated,
+    /// The owner deleted it: forget it.
+    #[serde(rename = "guild_deleted")]
+    GuildDeleted,
     #[serde(rename = "member_joined")]
     MemberJoined,
     /// For the leaving user too: their last event from the guild.
@@ -388,12 +430,25 @@ pub enum EventKind {
     MemberRemoved,
     #[serde(rename = "channel_created")]
     ChannelCreated,
+    /// Renamed, a new topic, or out of a deleted category.
+    #[serde(rename = "channel_updated")]
+    ChannelUpdated,
+    /// With its messages. A channel's threads go first, each with its own
+    /// event.
+    #[serde(rename = "channel_deleted")]
+    ChannelDeleted,
     #[serde(rename = "message_created")]
     MessageCreated,
     #[serde(rename = "message_edited")]
     MessageEdited,
     #[serde(rename = "message_deleted")]
     MessageDeleted,
+    #[serde(rename = "reaction_added")]
+    ReactionAdded,
+    #[serde(rename = "reaction_removed")]
+    ReactionRemoved,
+    #[serde(rename = "typing")]
+    Typing,
     #[serde(rename = "message_translated")]
     MessageTranslated,
     #[serde(rename = "policy_updated")]
@@ -409,6 +464,25 @@ pub enum EventKind {
 pub struct DeletedMessage {
     pub channel_id: String,
     pub message_id: String,
+}
+
+/// Someone added or took back a reaction.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ReactionChange {
+    pub channel_id: String,
+    pub message_id: String,
+    pub emoji: String,
+    pub user_id: String,
+    /// How many reacted with `emoji` after the change: set it, do not add.
+    pub count: i64,
+}
+
+/// Someone is writing. Show it for about 10 seconds, or until their
+/// message arrives.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Typing {
+    pub channel_id: String,
+    pub user_id: String,
 }
 
 
@@ -682,6 +756,46 @@ impl Guilds {
             }
         }
     }
+    /// Owner only.
+    pub async fn update_guild(&self, __token: impl Into<String>, __body: GuildUpdate) -> Result<Guild, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/guilds/update_guild", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Owner only. Deletes everything the guild holds, for good.
+    pub async fn delete_guild(&self, __token: impl Into<String>, guild_id: String) -> Result<(), ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/guilds/delete_guild", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(())
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
     pub async fn create_channel(&self, __token: impl Into<String>, __body: NewChannel) -> Result<Channel, ThrowsOrOtherError<ApiError>> {
         let mut request = self.client.post(format!("{}/guilds/create_channel", &self.url));
         request = request.bearer_auth(__token.into());
@@ -692,6 +806,47 @@ impl Guilds {
         match response.error_for_status_ref() {
             Ok(_) => {
                 response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// The owner; for a thread, its creator too.
+    pub async fn update_channel(&self, __token: impl Into<String>, __body: ChannelUpdate) -> Result<Channel, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/guilds/update_channel", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.header("Accept", "application/json");
+        request = request.json(&__body);
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// The owner; for a thread, its creator too. A channel's threads and
+    /// messages go with it; a category's channels stay, outside it.
+    pub async fn delete_channel(&self, __token: impl Into<String>, guild_id: String, channel_id: String) -> Result<(), ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/guilds/delete_channel", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(())
             }
             Err(error) => {
                 match response.json().await {
@@ -894,6 +1049,67 @@ impl Messages {
         let mut request = self.client.post(format!("{}/messages/delete_message", &self.url));
         request = request.bearer_auth(__token.into());
         request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap()), ("message_id", serde_json::to_string(&message_id).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(())
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// `emoji` is one Unicode emoji. Reacting twice with the same one
+    /// changes nothing. A message holds at most 20 different emoji.
+    pub async fn add_reaction(&self, __token: impl Into<String>, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/messages/add_reaction", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap()), ("message_id", serde_json::to_string(&message_id).unwrap()), ("emoji", serde_json::to_string(&emoji).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    pub async fn remove_reaction(&self, __token: impl Into<String>, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/messages/remove_reaction", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap()), ("message_id", serde_json::to_string(&message_id).unwrap()), ("emoji", serde_json::to_string(&emoji).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                response.json().await.map_err(|error| ThrowsOrOtherError::Other(error))
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
+    /// Tells the channel's readers the user is writing. Send it at most every
+    /// 8 seconds while they do; sending the message ends it.
+    pub async fn typing(&self, __token: impl Into<String>, guild_id: String, channel_id: String) -> Result<(), ThrowsOrOtherError<ApiError>> {
+        let mut request = self.client.post(format!("{}/messages/typing", &self.url));
+        request = request.bearer_auth(__token.into());
+        request = request.query(&[("guild_id", serde_json::to_string(&guild_id).unwrap()), ("channel_id", serde_json::to_string(&channel_id).unwrap())]);
         request = request.header("Accept", "application/json");
         let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
 

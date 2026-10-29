@@ -306,6 +306,26 @@ impl TranslationCell {
             }
         }
     }
+    /// A conversation ended: its node, window and translations go. Other
+    /// nodes naming it as their parent keep theirs.
+    pub async fn delete_node(&self, space: String, node: String) -> Result<(), ThrowsOrOtherError<TranslationCellError>> {
+        let mut request = self.client.post(format!("{}/translation_cell/delete_node", &self.url));
+        request = request.query(&[("space", serde_json::to_string(&space).unwrap()), ("node", serde_json::to_string(&node).unwrap())]);
+        request = request.header("Accept", "application/json");
+        let response = request.send().await.map_err(|error| ThrowsOrOtherError::Other(error))?;
+
+        match response.error_for_status_ref() {
+            Ok(_) => {
+                Ok(())
+            }
+            Err(error) => {
+                match response.json().await {
+                    Ok(value) => Err(ThrowsOrOtherError::Throws(value)),
+                    Err(_) => Err(ThrowsOrOtherError::Other(error)),
+                }
+            }
+        }
+    }
     pub async fn delete_space(&self, space: String) -> Result<(), ThrowsOrOtherError<TranslationCellError>> {
         let mut request = self.client.post(format!("{}/translation_cell/delete_space", &self.url));
         request = request.query(&[("space", serde_json::to_string(&space).unwrap())]);

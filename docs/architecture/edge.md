@@ -65,6 +65,17 @@ Translation log ───┘   (one per guild)└─▶ session C queue (carol, 
   to each Edge once, however many users read it.
 - Translations are filtered per session: the reader's effective language plus
   the guild's English (the pivot for on-device translation).
+- Messages are converted per session too: a message carries each emoji's
+  count and whether this reader reacted (`me`), never who else did. A
+  reaction's own event (`reaction_added`, `reaction_removed`) carries the
+  new count and who changed it, so clients set the count instead of adding
+  to it.
+- `typing` passes through like any other event, to every session reading
+  the guild; clients ignore their own and forget it after about ten
+  seconds. Edges keep nothing of it.
+- A deleted guild's log ends with `guild_deleted`: the Edge passes it to
+  every session reading the guild and takes the guild from them, so the
+  members' removals that follow reach nobody.
 - A session's guilds are registered **before** its snapshot is taken, so no
   event falls between the snapshot and the stream. The cost is an occasional
   duplicate, which clients drop by message ID.

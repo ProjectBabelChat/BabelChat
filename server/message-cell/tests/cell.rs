@@ -7,9 +7,9 @@ use babel_api_directory::types::{
     Directory, DirectoryError, GuildRequest, MembershipBatch, Placement, PlacementBatch,
 };
 use babel_api_message_cell::types::{
-    ChannelKind, ChannelNotify, GuildEventKind, MessageCell as _, MessageCellError, MessageEdit,
-    NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings, NotifyLevel, Permission,
-    ReadState,
+    ChannelKind, ChannelNotify, ChannelUpdate, GuildEventKind, GuildUpdate, MessageCell as _,
+    MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
+    NotificationSettings, NotifyLevel, Permission, ReadState,
 };
 use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
 use babel_engine::mock::MockConfig;
@@ -819,4 +819,404 @@ async fn undelivered_entries_are_kept() {
     let batch = cell.poll_events(guild, 0, 0).await.unwrap();
     assert_eq!(batch.trimmed, 0);
     assert_eq!(batch.events[0].kind, GuildEventKind::GuildCreated);
+}
+
+async fn events_after(cell: &MessageCell, guild: &str, after: i64) -> Vec<GuildEventKind> {
+    cell.poll_events(guild.into(), after, 0)
+        .await
+        .unwrap()
+        .events
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
+}
+
+async fn head(cell: &MessageCell, guild: &str) -> i64 {
+    cell.poll_events(guild.into(), i64::MAX, 0)
+        .await
+        .unwrap()
+        .head
+}
+
+#[tokio::test]
+async fn reactions_count_each_member_once() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let id = send(&f.cell, &guild, &channel, "owner", "Rehearsal at seven").await;
+    let react = |user: &str, emoji: &str, add: bool| {
+        let (cell, guild, channel, id) =
+            (f.cell.clone(), guild.clone(), channel.clone(), id.clone());
+        let (user, emoji) = (user.to_string(), emoji.to_string());
+        async move {
+            if add {
+                cell.add_reaction(guild, channel, id, user, emoji).await
+            } else {
+                cell.remove_reaction(guild, channel, id, user, emoji).await
+            }
+        }
+    };
+    let start = head(&f.cell, &guild).await;
+
+    react("alice", "👍", true).await.unwrap();
+    react("alice", "👍", true).await.unwrap();
+    // The unqualified heart is the same emoji as the qualified one.
+    react("bob", "❤", true).await.unwrap();
+    let message = react("alice", "❤️", true).await.unwrap();
+    let reactions = message.reactions.unwrap();
+    assert_eq!(reactions.len(), 2);
+    assert_eq!(reactions[0].emoji, "👍");
+    assert_eq!(reactions[0].user_ids, ["alice"]);
+    assert_eq!(reactions[1].emoji, "❤️");
+    assert_eq!(reactions[1].user_ids, ["bob", "alice"]);
+    // Not an edit.
+    assert_eq!(message.rev, 1);
+    assert_eq!(message.edited_at, None);
+
+    let batch = f.cell.poll_events(guild.clone(), start, 0).await.unwrap();
+    let counts = batch
+        .events
+        .iter()
+        .map(|event| {
+            let reaction = event.reaction.as_ref().unwrap();
+            (reaction.user_id.as_str(), reaction.count)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(counts, [("alice", 1), ("bob", 1), ("alice", 2)]);
+
+    let message = react("alice", "👍", false).await.unwrap();
+    assert_eq!(message.reactions.unwrap().len(), 1);
+    assert_eq!(
+        events_after(&f.cell, &guild, batch.next).await,
+        [GuildEventKind::ReactionRemoved]
+    );
+
+    assert_eq!(
+        react("alice", "not an emoji", true).await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    assert_eq!(
+        react("stranger", "👍", true).await,
+        Err(MessageCellError::Forbidden)
+    );
+    for emoji in emojis::iter().skip(1).take(19) {
+        react("alice", emoji.as_str(), true).await.unwrap();
+    }
+    assert_eq!(
+        react("alice", "🎉", true).await,
+        Err(MessageCellError::InvalidRequest)
+    );
+}
+
+#[tokio::test]
+async fn typing_only_passes_through_the_log() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let start = head(&f.cell, &guild).await;
+    f.cell
+        .typing(guild.clone(), channel.clone(), "alice".into())
+        .await
+        .unwrap();
+    let batch = f.cell.poll_events(guild.clone(), start, 0).await.unwrap();
+    assert_eq!(batch.events.len(), 1);
+    let typing = batch.events[0].typing.as_ref().unwrap();
+    assert_eq!(
+        (typing.channel_id.as_str(), typing.user_id.as_str()),
+        (channel.as_str(), "alice")
+    );
+    assert_eq!(
+        f.cell
+            .typing(guild.clone(), channel, "stranger".into())
+            .await,
+        Err(MessageCellError::Forbidden)
+    );
+}
+
+async fn thread(cell: &MessageCell, guild: &str, channel: &str, user: &str) -> String {
+    let starter = send(cell, guild, channel, user, "Shall we split the setlist?").await;
+    cell.create_channel(NewChannel {
+        guild_id: guild.into(),
+        user_id: user.into(),
+        kind: ChannelKind::Thread,
+        name: "setlist".into(),
+        topic: None,
+        parent_id: Some(channel.into()),
+        starter_message_id: Some(starter),
+    })
+    .await
+    .unwrap()
+    .id
+}
+
+fn channel_update(guild: &str, channel: &str, user: &str, name: &str) -> ChannelUpdate {
+    ChannelUpdate {
+        guild_id: guild.into(),
+        channel_id: channel.into(),
+        user_id: user.into(),
+        name: name.into(),
+        topic: Some("What we play".into()),
+    }
+}
+
+#[tokio::test]
+async fn guilds_and_channels_are_renamed() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let rename = |user: &str| GuildUpdate {
+        guild_id: guild.clone(),
+        user_id: user.into(),
+        name: "Jazz Club".into(),
+        description: Some("Fridays".into()),
+    };
+    assert_eq!(
+        f.cell.update_guild(rename("alice")).await,
+        Err(MessageCellError::Forbidden)
+    );
+    let start = head(&f.cell, &guild).await;
+    let renamed = f.cell.update_guild(rename("owner")).await.unwrap();
+    assert_eq!(renamed.name, "Jazz Club");
+    assert_eq!(
+        f.cell
+            .get_guild(guild.clone(), "alice".into())
+            .await
+            .unwrap()
+            .guild
+            .description
+            .as_deref(),
+        Some("Fridays")
+    );
+    assert_eq!(
+        events_after(&f.cell, &guild, start).await,
+        [GuildEventKind::GuildUpdated]
+    );
+
+    // Channels are the owner's; a thread is its creator's too.
+    let thread = thread(&f.cell, &guild, &channel, "alice").await;
+    assert_eq!(
+        f.cell
+            .update_channel(channel_update(&guild, &channel, "alice", "lounge"))
+            .await,
+        Err(MessageCellError::Forbidden)
+    );
+    assert_eq!(
+        f.cell
+            .update_channel(channel_update(&guild, &thread, "bob", "covers"))
+            .await,
+        Err(MessageCellError::Forbidden)
+    );
+    let renamed = f
+        .cell
+        .update_channel(channel_update(&guild, &thread, "alice", "covers"))
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "covers");
+    assert_eq!(renamed.created_by.as_deref(), Some("alice"));
+    f.cell
+        .update_channel(channel_update(&guild, &channel, "owner", "lounge"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn deleted_channels_take_their_threads_and_messages() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let thread = thread(&f.cell, &guild, &channel, "alice").await;
+    let id = send(&f.cell, &guild, &thread, "bob", "I can sing the second one").await;
+    delivered(&f, &guild, &thread, &id).await;
+
+    assert_eq!(
+        f.cell
+            .delete_channel(guild.clone(), channel.clone(), "alice".into())
+            .await,
+        Err(MessageCellError::Forbidden)
+    );
+    let start = head(&f.cell, &guild).await;
+    f.cell
+        .delete_channel(guild.clone(), channel.clone(), "owner".into())
+        .await
+        .unwrap();
+    let batch = f.cell.poll_events(guild.clone(), start, 0).await.unwrap();
+    let deleted = batch
+        .events
+        .iter()
+        .map(|event| (event.kind, event.channel.as_ref().unwrap().id.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deleted,
+        [
+            (GuildEventKind::ChannelDeleted, thread.clone()),
+            (GuildEventKind::ChannelDeleted, channel.clone()),
+        ]
+    );
+    let snapshot = f.cell.get_guild(guild.clone(), "bob".into()).await.unwrap();
+    assert!(snapshot.channels.is_empty());
+    assert!(snapshot.read_states.is_empty());
+    assert_eq!(
+        f.cell
+            .get_messages(guild.clone(), thread.clone(), "bob".into(), None, 10)
+            .await,
+        Err(MessageCellError::NotFound)
+    );
+
+    // The Translation Cell forgets the conversation.
+    let reference = MessageRef {
+        space: guild.clone(),
+        conversation: thread,
+        id,
+    };
+    for _ in 0..200 {
+        let found = f
+            .translation
+            .get_translations(TranslationQuery {
+                messages: vec![reference.clone()],
+                langs: Vec::new(),
+            })
+            .await
+            .unwrap();
+        if found.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        f.translation
+            .get_translations(TranslationQuery {
+                messages: vec![reference],
+                langs: Vec::new(),
+            })
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A deleted category leaves its channels outside it.
+    let category = f
+        .cell
+        .create_channel(NewChannel {
+            guild_id: guild.clone(),
+            user_id: "owner".into(),
+            kind: ChannelKind::Category,
+            name: "music".into(),
+            topic: None,
+            parent_id: None,
+            starter_message_id: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let inside = f
+        .cell
+        .create_channel(NewChannel {
+            guild_id: guild.clone(),
+            user_id: "owner".into(),
+            kind: ChannelKind::Text,
+            name: "jams".into(),
+            topic: None,
+            parent_id: Some(category.clone()),
+            starter_message_id: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    let start = head(&f.cell, &guild).await;
+    f.cell
+        .delete_channel(guild.clone(), category, "owner".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        events_after(&f.cell, &guild, start).await,
+        [
+            GuildEventKind::ChannelUpdated,
+            GuildEventKind::ChannelDeleted
+        ]
+    );
+    let channels = f
+        .cell
+        .get_guild(guild.clone(), "bob".into())
+        .await
+        .unwrap()
+        .channels;
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0].id, inside);
+    assert_eq!(channels[0].parent_id, None);
+}
+
+#[tokio::test]
+async fn deleted_guilds_are_read_to_the_end() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let id = send(&f.cell, &guild, &channel, "alice", "See you Friday").await;
+    delivered(&f, &guild, &channel, &id).await;
+
+    assert_eq!(
+        f.cell.delete_guild(guild.clone(), "alice".into()).await,
+        Err(MessageCellError::Forbidden)
+    );
+    let start = head(&f.cell, &guild).await;
+    f.cell
+        .delete_guild(guild.clone(), "owner".into())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        f.cell.get_guild(guild.clone(), "owner".into()).await,
+        Err(MessageCellError::NotFound)
+    );
+    assert_eq!(
+        f.cell
+            .send_message(NewMessage {
+                guild_id: guild.clone(),
+                channel_id: channel.clone(),
+                user_id: "owner".into(),
+                author_locale: None,
+                text: "Anyone?".into(),
+                reply_to: None,
+            })
+            .await,
+        Err(MessageCellError::NotFound)
+    );
+    // Followers read the deletion, then every member's removal.
+    let batch = f.cell.poll_events(guild.clone(), start, 0).await.unwrap();
+    let kinds = batch
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            GuildEventKind::GuildDeleted,
+            GuildEventKind::MemberRemoved,
+            GuildEventKind::MemberRemoved,
+            GuildEventKind::MemberRemoved,
+        ]
+    );
+    assert_eq!(
+        f.cell.poll_events(guild.clone(), batch.next, 0).await,
+        Err(MessageCellError::NotFound)
+    );
+
+    // The Directory and the Translation Cell forget it.
+    for _ in 0..200 {
+        if f.directory.memberships.lock().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(f.directory.memberships.lock().is_empty());
+    let reference = MessageRef {
+        space: guild,
+        conversation: channel,
+        id,
+    };
+    assert!(
+        f.translation
+            .get_translations(TranslationQuery {
+                messages: vec![reference],
+                langs: Vec::new(),
+            })
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

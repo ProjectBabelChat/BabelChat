@@ -33,6 +33,9 @@ state change + guild log entry (+ outbox entry)
   (`read_state_updated`) or their notification settings changed
   (`notifications_updated`). Edges pass those to that member's sessions
   only, so a user's devices stay in step on whichever Edge they are.
+  `typing` entries (a member is writing in a channel) exist only in the
+  log: they reach every Edge reading the guild and are trimmed with the
+  rest, nothing else keeps them.
   Entries older than an hour are trimmed, except those the outbox has not
   delivered; `trimmed` in each batch tells a follower that fell further
   behind (its Edge then drops the sessions concerned, which reload).
@@ -42,13 +45,15 @@ state change + guild log entry (+ outbox entry)
 
 | Event | Forwarded as |
 |---|---|
-| `guild_created` | Translation Cell `put_space` |
-| `channel_created` | Translation Cell `put_node` (threads carry their starter message) |
+| `guild_created`, `guild_updated` | Translation Cell `put_space` |
+| `guild_deleted` | Translation Cell `delete_space` |
+| `channel_created`, `channel_updated` | Translation Cell `put_node` (threads carry their starter message) |
+| `channel_deleted` | Translation Cell `delete_node` |
 | `member_joined` | Directory `add_membership` |
 | `member_left`, `member_removed` | Directory `remove_membership` |
 | `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer) |
 | `message_deleted` | Translation Cell `delete_message` |
-| `read_state_updated`, `notifications_updated` | nothing: only Edges read them |
+| `reaction_added`, `reaction_removed`, `typing`, `read_state_updated`, `notifications_updated` | nothing: only Edges read them |
 
 Delivery is at least once; receivers are idempotent (`ingest` is keyed by
 message and revision). An unavailable receiver stops the worker at that entry
@@ -61,9 +66,11 @@ Roles are guild data, so permission checks live here. Phase 0 has two roles:
 
 | | owner | member |
 |---|---|---|
-| view, send messages, start threads, invite | ✓ | ✓ |
+| view, send messages, react, start threads, invite | ✓ | ✓ |
 | leave the guild | | ✓ |
-| create categories and channels, change the language policy | ✓ | |
+| create, rename and delete categories and channels; change the language policy | ✓ | |
+| rename and delete a thread | any | own |
+| rename the guild, delete it | ✓ | |
 | remove (kick or ban) members, list bans, unban, see every invite | ✓ | |
 | edit a message | own | own |
 | delete a message | any | own |
@@ -76,7 +83,41 @@ a guild's language policy on the Translation Cell).
 
 `category` > `text` > `thread`. A thread is created from a text channel and,
 optionally, a starter message in it; the Translation Cell uses both to give
-the thread context from its first message.
+the thread context from its first message. Channels remember who made them
+(`created_by`; absent on older ones), which lets a thread's creator manage
+it.
+
+- **Renaming** (`update_channel`) changes the name and topic; the outbox
+  passes the new title to the Translation Cell's node, whose thread fork
+  stays as it was.
+- **Deleting** (`delete_channel`) takes a text channel's threads first,
+  then the channel, each with its messages and every member's read marker
+  for it, and one `channel_deleted` entry each; the Translation Cell drops
+  their nodes, windows and translations. A deleted category's channels stay,
+  moved out of it (`channel_updated`).
+
+## Reactions
+
+A message keeps its reactions (`reactions`: each emoji with the members who
+reacted, in order, at most 20 emoji). Reacting is not editing: `rev`,
+`edited_at` and the translations stay, and nothing goes to the Translation
+Cell. Each change is one `reaction_added` or `reaction_removed` entry
+naming the member and the emoji's new count, so applying it twice does no
+harm. Emoji are Unicode emoji in their fully qualified form (`❤` is stored
+as `❤️`), checked against the Unicode list; anything else is
+`invalid_request`. A guild's own emoji would be `custom:<id>`, usable in
+other guilds too, once images can be uploaded; nothing refers to them yet.
+
+## Deleting a guild
+
+`delete_guild` (owner only) drops everything the guild holds in one write
+but its record and its log, marks the record deleted and appends
+`guild_deleted`, then a `member_removed` for every member. Edges read the
+log to its end (polling past it answers `not_found`) and forget the guild;
+the outbox removes the memberships from the Directory and the space from
+the Translation Cell. Every other call about the guild answers
+`not_found`. The record stays, and the log until it is trimmed; the
+Directory keeps the placement, which leads nowhere.
 
 ## Invites
 
@@ -135,10 +176,10 @@ stores a `Ban`, and a banned user's invites fail like invalid ones until
 
 ```
 guilds    guild                       GuildRecord (guild, translation cell, last seq, last message id,
-                                      trimmed up to, frozen, moved)
+                                      trimmed up to, frozen, moved, deleted)
 members   guild / user                Member
-channels  guild / channel             Channel (with its newest message id)
-messages  guild / channel / id        Message
+channels  guild / channel             Channel (with its newest message id and creator)
+messages  guild / channel / id        Message (with its reactions)
 invites   guild / secret              Invite (expiry, uses)
 bans      guild / user                Ban
 reads     guild / user / channel      ReadState (read marker, unread mentions)

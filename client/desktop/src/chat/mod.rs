@@ -3,6 +3,7 @@
 //! remembers what is on screen.
 
 mod dialogs;
+mod emoji;
 mod messages;
 mod sidebar;
 
@@ -18,12 +19,14 @@ use babel_sdk::{
 use gpui::prelude::*;
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ListAlignment, ListState,
-    Render, SharedString, Subscription, SystemNotification, Task, Window, actions, div, px,
+    Pixels, Point, Render, SharedString, Subscription, SystemNotification, Task, Window, actions,
+    anchored, deferred, div, px,
 };
 use gpui_md3e::prelude::*;
 use tokio::sync::broadcast::error::RecvError;
 
 pub use dialogs::Dialog;
+use emoji::{EmojiEvent, EmojiPicker};
 
 use crate::{
     i18n::{self, Strings, fill},
@@ -57,6 +60,17 @@ struct Toast {
     visible: bool,
 }
 
+/// The emoji picker, open for one message.
+struct Picker {
+    message_id: String,
+    view: Entity<EmojiPicker>,
+    /// Where it was asked for, on screen.
+    position: Point<Pixels>,
+    _subscription: Subscription,
+}
+
+/// Lines the composer grows to before it scrolls.
+const COMPOSER_LINES: usize = 8;
 /// How long a toast stays up.
 const TOAST_TIME: Duration = Duration::from_secs(5);
 /// Messages fetched per history page.
@@ -83,6 +97,7 @@ pub struct ChatView {
     hovered_message: Option<String>,
     hovered_member: Option<String>,
     members_open: bool,
+    picker: Option<Picker>,
     guild_menu: bool,
     dialog: Option<Dialog>,
     toast: Option<Toast>,
@@ -133,17 +148,35 @@ impl ChatView {
 
         let this = cx.entity().downgrade();
         let composer = cx.new(|cx| {
-            gpui_md3e::components::TextField::new(cx).on_submit(move |text, window, cx| {
-                this.update(cx, |this, cx| this.submit(text, window, cx))
-                    .unwrap_or(false)
-            })
+            gpui_md3e::components::TextField::new(cx)
+                .multiline(COMPOSER_LINES)
+                .on_submit(move |text, window, cx| {
+                    this.update(cx, |this, cx| this.submit(text, window, cx))
+                        .unwrap_or(false)
+                })
         });
 
-        let subscriptions = vec![cx.observe_window_activation(window, |this, window, cx| {
-            this.active = window.is_window_active();
-            this.update_focus();
-            cx.notify();
-        })];
+        let subscriptions = vec![
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.active = window.is_window_active();
+                this.update_focus();
+                cx.notify();
+            }),
+            // Others see the user writing; not while editing a message.
+            cx.subscribe(
+                &composer,
+                |this, composer, event: &gpui_md3e::components::TextFieldEvent, cx| {
+                    let writing = !composer.read(cx).text().trim().is_empty();
+                    if *event == gpui_md3e::components::TextFieldEvent::Edited
+                        && writing
+                        && !matches!(this.compose, Compose::Edit(_))
+                        && let Some(channel) = &this.channel
+                    {
+                        this.session.typing(channel);
+                    }
+                },
+            ),
+        ];
 
         let weak = cx.entity().downgrade();
         let window_handle = window.window_handle();
@@ -176,6 +209,7 @@ impl ChatView {
             hovered_message: None,
             hovered_member: None,
             members_open: true,
+            picker: None,
             guild_menu: false,
             dialog: None,
             toast: None,
@@ -227,13 +261,19 @@ impl ChatView {
             }) => {
                 if self.channel.as_deref() == Some(&channel_id) {
                     self.sync_rows(false);
-                    if matches!(change, MessageChange::Edited | MessageChange::Translated)
-                        && let Some(ix) = self.rows.iter().position(|id| *id == message_id)
+                    if matches!(
+                        change,
+                        MessageChange::Edited
+                            | MessageChange::Translated
+                            | MessageChange::Reactions
+                    ) && let Some(ix) = self.rows.iter().position(|id| *id == message_id)
                     {
                         self.list.remeasure_items(ix..ix + 1);
                     }
                 }
             }
+            // The line under the composer reads the session.
+            Some(Update::Typing { .. }) => {}
             Some(Update::Notification(notification)) => self.notify(notification, cx),
             Some(Update::Guild { guild_id, change }) => {
                 self.on_guild_change(guild_id, change, window, cx)
@@ -278,10 +318,26 @@ impl ChatView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Messages show the threads started from them.
+        if matches!(
+            change,
+            GuildChange::ChannelCreated { .. }
+                | GuildChange::ChannelUpdated { .. }
+                | GuildChange::ChannelDeleted { .. }
+        ) && self.guild.as_deref() == Some(&guild_id)
+        {
+            self.list.remeasure();
+        }
         match change {
             GuildChange::Removed => {
                 let name = self.guild_names.get(&guild_id).cloned().unwrap_or_default();
                 let text = fill(self.t().removed_from, &[&name]);
+                self.show_toast(text, None, cx);
+                self.ensure_selection(window, cx);
+            }
+            GuildChange::Deleted => {
+                let name = self.guild_names.get(&guild_id).cloned().unwrap_or_default();
+                let text = fill(self.t().guild_deleted, &[&name]);
                 self.show_toast(text, None, cx);
                 self.ensure_selection(window, cx);
             }
@@ -290,6 +346,20 @@ impl ChatView {
             GuildChange::ChannelCreated { .. } => {
                 if self.guild.as_deref() == Some(&guild_id) && self.channel.is_none() {
                     self.select_guild(&guild_id, window, cx);
+                }
+            }
+            GuildChange::ChannelDeleted { channel_id } => {
+                self.channel_of.retain(|_, channel| *channel != channel_id);
+                self.drafts.remove(&channel_id);
+                self.ensure_selection(window, cx);
+            }
+            GuildChange::ChannelUpdated { channel_id } => {
+                if self.channel.as_deref() == Some(&channel_id)
+                    && let Some(channel) = self.session.channel(&channel_id)
+                {
+                    let placeholder = fill(self.t().message_placeholder, &[&channel.name]);
+                    self.composer
+                        .update(cx, |field, cx| field.set_placeholder(placeholder, cx));
                 }
             }
             GuildChange::Languages => self.list.remeasure(),
@@ -535,8 +605,90 @@ impl ChatView {
         cx.notify();
     }
 
+    /// Adds the user's reaction, or takes it back if they already reacted
+    /// with this emoji.
+    fn toggle_reaction(&mut self, message_id: String, emoji: String, cx: &mut Context<Self>) {
+        let Some(channel) = self.channel.clone() else {
+            return;
+        };
+        let reacted = self
+            .session
+            .message(&channel, &message_id)
+            .is_some_and(|chat| {
+                chat.message
+                    .reactions
+                    .iter()
+                    .any(|reaction| reaction.emoji == emoji && reaction.me)
+            });
+        let session = self.session.clone();
+        let task = runtime::spawn(cx, async move {
+            if reacted {
+                session.unreact(&channel, &message_id, &emoji).await
+            } else {
+                session.react(&channel, &message_id, &emoji).await
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    let text = describe(&error, this.t());
+                    this.show_toast(text, None, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Opens the emoji picker for a message, where it was asked for.
+    fn open_picker(
+        &mut self,
+        message_id: String,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = self.t();
+        let view = cx.new(|cx| EmojiPicker::new(t.search_emoji, t.no_emoji, window, cx));
+        let subscription = cx.subscribe_in(&view, window, {
+            let message_id = message_id.clone();
+            move |this, _, event: &EmojiEvent, window, cx| {
+                let EmojiEvent::Picked(emoji) = event;
+                this.picker = None;
+                this.toggle_reaction(message_id.clone(), emoji.clone(), cx);
+                window.focus(&this.composer.focus_handle(cx), cx);
+                cx.notify();
+            }
+        });
+        self.picker = Some(Picker {
+            message_id,
+            view,
+            position,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// "alice is typing…" for the open channel, or nothing.
+    fn typing_text(&self) -> Option<String> {
+        let t = self.t();
+        let names = self
+            .session
+            .typing_members(self.channel.as_deref()?)
+            .into_iter()
+            .map(|member| member.name)
+            .collect::<Vec<_>>();
+        match names.as_slice() {
+            [] => None,
+            [one] => Some(fill(t.typing_one, &[one])),
+            [one, two] => Some(fill(t.typing_two, &[one, two])),
+            _ => Some(t.typing_many.to_string()),
+        }
+    }
+
     fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dialog.is_some() {
+        if self.picker.is_some() {
+            self.picker = None;
+        } else if self.dialog.is_some() {
             self.dialog = None;
         } else if self.guild_menu {
             self.guild_menu = false;
@@ -624,6 +776,7 @@ impl ChatView {
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.session.forget_cache();
         cx.emit(ChatEvent::SignedOut { expired: false });
     }
 }
@@ -699,6 +852,20 @@ impl Render for ChatView {
                     .justify_center()
                     .child(div().max_w(px(560.0)).child(snackbar)),
             );
+        }
+        if let Some(picker) = &self.picker {
+            // Above everything, kept inside the window.
+            root = root.child(deferred(
+                anchored().position(picker.position).snap_to_window().child(
+                    div()
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.picker = None;
+                            cx.notify();
+                        }))
+                        .child(picker.view.clone()),
+                ),
+            ));
         }
         if self.dialog.is_some() {
             root = root.child(self.render_dialog(window, cx));

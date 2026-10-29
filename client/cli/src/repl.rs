@@ -5,8 +5,9 @@
 //! translating after [`SETTLE_WAIT`] prints as it is and its translation
 //! follows on a `↳` line. Other channels speak up only through
 //! notifications (`🔔`), as the guild's notification settings say.
-//! Messages get short numbers (`#3`) for `/reply`, `/edit`, `/delete` and
-//! `/thread`.
+//! Messages get short numbers (`#3`) for `/reply`, `/edit`, `/delete`,
+//! `/react` and `/thread`. A line ending in `\` goes on on the next one,
+//! for messages of several lines.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -47,19 +48,30 @@ pub struct Repl {
     notifications: HashMap<String, String>,
     /// Channels whose history has been loaded.
     opened: HashSet<String>,
-    /// Names of guilds and people seen, for when they are gone.
+    /// Names of guilds, channels and people seen, for when they are gone.
     names: HashMap<String, String>,
+    /// Lines of a message still being typed (each ended in `\`).
+    continued: String,
+    /// Who was last shown writing in the open channel.
+    writing: Vec<String>,
 }
 
 pub const HELP: &str = "\
-Type to send to the current channel; @name notifies someone. Commands:
+Type to send to the current channel; @name notifies someone. End a line
+with \\ to go on on the next one. Commands:
   /guilds                      list your guilds          /guild <n|name>   switch guild
   /channels                    list channels             /open <n|name>    switch channel
   /unread                      unread channels           /read             mark this channel read
   /more                        older messages            /members          who is here
   /reply <#n> <text>           answer a message          /thread <#n> <name>  thread from it
   /edit <#n> <text>            /delete <#n>
+  /react <#n> <emoji>          react (👍 or :thumbsup:)  /unreact <#n> <emoji>
   /create <name>               create a guild            /channel <name>   create a channel
+  /rename <name>               rename this channel       /topic [text]     its topic
+  /delete-channel <name>       delete this channel, its threads and messages
+                               (channels: the owner, or a thread's creator)
+  /rename-guild <name>         rename this guild         /describe [text]  its description
+  /delete-guild <name>         delete this guild and everything in it (owner)
   /invite [days] [uses]        invite code (0 days = never expires)
   /invites                     list invites              /revoke <code>    revoke one
   /join <code>                 join with an invite code  /leave            leave this guild
@@ -87,6 +99,8 @@ impl Repl {
             languages: HashMap::new(),
             notifications: HashMap::new(),
             names: HashMap::new(),
+            continued: String::new(),
+            writing: Vec::new(),
         }
     }
 
@@ -120,6 +134,13 @@ impl Repl {
     }
 
     pub async fn line(&mut self, line: &str) -> Flow {
+        let line = line.trim_end();
+        if let Some(start) = line.strip_suffix('\\') {
+            self.continued.push_str(start);
+            self.continued.push('\n');
+            return Flow::Continue;
+        }
+        let line = std::mem::take(&mut self.continued) + line;
         let line = line.trim();
         if line.is_empty() {
             return Flow::Continue;
@@ -168,6 +189,14 @@ impl Repl {
                 None => self.say("/outside on|off"),
             },
             "edit" => self.edit(rest).await,
+            "react" => self.react(rest, true).await,
+            "unreact" => self.react(rest, false).await,
+            "rename" if !rest.is_empty() => self.rename_channel(Some(rest), None).await,
+            "topic" => self.rename_channel(None, Some(rest)).await,
+            "delete-channel" => self.delete_channel(rest).await,
+            "rename-guild" if !rest.is_empty() => self.rename_guild(Some(rest), None).await,
+            "describe" => self.rename_guild(None, Some(rest)).await,
+            "delete-guild" => self.delete_guild(rest).await,
             "delete" => self.delete(rest).await,
             "reply" | "r" => self.reply(rest).await,
             "unread" => self.unread(),
@@ -202,6 +231,7 @@ impl Repl {
             Update::Notification(notification) => self.notification(&notification),
             // Shown on request (/unread, /channels).
             Update::Unread { .. } => {}
+            Update::Typing { channel_id, .. } => self.say_writing(&channel_id),
             Update::Offline { error } => self.say(format!("! offline ({error}); retrying")),
             Update::Online { reloaded } => self.say(if reloaded {
                 "! in sync with the server"
@@ -277,7 +307,10 @@ impl Repl {
                     self.print(&message, "  ↳ ");
                 }
             }
-            MessageChange::Deleted => {}
+            MessageChange::Reactions if self.printed.contains_key(id) => {
+                self.say_reactions(&message)
+            }
+            MessageChange::Reactions | MessageChange::Deleted => {}
         }
     }
 
@@ -303,14 +336,16 @@ impl Repl {
             },
             None => String::new(),
         };
+        // Lines after the first line up under it.
         let mut text = format!(
-            "{lead}{label} #{number} {}{replying}: {}{}",
+            "{lead}{label} #{number} {}{replying}: {}{}{}",
             m.author_name,
-            message.display.text,
-            marker(&message.display.shown)
+            message.display.text.replace('\n', "\n      "),
+            marker(&message.display.shown),
+            reactions_text(message)
         );
         if message.display.is_translated() && self.session.settings().show_original {
-            text.push_str(&format!("\n      ┆ {}", m.text));
+            text.push_str(&format!("\n      ┆ {}", m.text.replace('\n', "\n      ┆ ")));
         }
         self.printed
             .insert(m.id.clone(), message.display.text.clone());
@@ -383,12 +418,155 @@ impl Repl {
         }
     }
 
+    async fn react(&mut self, rest: &str, add: bool) {
+        let (number, emoji) = rest.split_once(' ').unwrap_or((rest, ""));
+        let (Some((channel, message)), Some(emoji)) = (self.numbered(number), emoji_named(emoji))
+        else {
+            self.say(if add {
+                "/react <#n> <emoji>, e.g. 👍 or :thumbsup:"
+            } else {
+                "/unreact <#n> <emoji>"
+            });
+            return;
+        };
+        let result = if add {
+            self.session.react(&channel, &message, &emoji).await
+        } else {
+            self.session.unreact(&channel, &message, &emoji).await
+        };
+        if let Err(error) = result {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    /// Prints a message's reactions when they change.
+    fn say_reactions(&mut self, message: &ChatMessage) {
+        let m = &message.message;
+        let number = self.number(&m.channel_id, &m.id);
+        let label = self.channel_label(&m.channel_id);
+        let reactions = reactions_text(message);
+        self.say(if reactions.is_empty() {
+            format!("{label} #{number} (no reactions)")
+        } else {
+            format!("{label} #{number}{reactions}")
+        });
+    }
+
+    /// Says who started writing in the open channel.
+    fn say_writing(&mut self, channel: &str) {
+        if self.channel.as_deref() != Some(channel) {
+            return;
+        }
+        let writing = self
+            .session
+            .typing_members(channel)
+            .into_iter()
+            .map(|member| member.name)
+            .collect::<Vec<_>>();
+        let started = writing
+            .iter()
+            .filter(|name| !self.writing.contains(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.writing = writing;
+        if !started.is_empty() {
+            self.say(format!("… {} writing", started.join(", ")));
+        }
+    }
+
     // ---- Guilds and channels ---------------------------------------------
 
-    /// Keeps names around for when their guild or member is gone.
+    /// Renames the open channel, or sets its topic (empty: none).
+    async fn rename_channel(&mut self, name: Option<&str>, topic: Option<&str>) {
+        let Some(channel) = self
+            .channel
+            .clone()
+            .and_then(|id| self.session.channel(&id))
+        else {
+            self.say("Open a channel first.");
+            return;
+        };
+        let name = name
+            .map(|name| name.trim_start_matches('#'))
+            .unwrap_or(&channel.name);
+        let topic = match topic {
+            Some(topic) => Some(topic).filter(|topic| !topic.is_empty()),
+            None => channel.topic.as_deref(),
+        };
+        if let Err(error) = self.session.update_channel(&channel.id, name, topic).await {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    /// Deletes the open channel; its name must be typed to confirm.
+    async fn delete_channel(&mut self, confirm: &str) {
+        let Some(channel) = self
+            .channel
+            .clone()
+            .and_then(|id| self.session.channel(&id))
+        else {
+            self.say("Open a channel first.");
+            return;
+        };
+        if confirm.trim_start_matches('#') != channel.name {
+            self.say(format!(
+                "This deletes #{} with its threads and messages, for everyone. \
+                 To go ahead: /delete-channel {}",
+                channel.name, channel.name
+            ));
+            return;
+        }
+        if let Err(error) = self.session.delete_channel(&channel.id).await {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    /// Renames the current guild, or sets its description (empty: none).
+    async fn rename_guild(&mut self, name: Option<&str>, description: Option<&str>) {
+        let Some(view) = self.current_view() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        let name = name.unwrap_or(&view.guild.name);
+        let description = match description {
+            Some(description) => Some(description).filter(|text| !text.is_empty()),
+            None => view.guild.description.as_deref(),
+        };
+        if let Err(error) = self
+            .session
+            .update_guild(&view.guild.id, name, description)
+            .await
+        {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    /// Deletes the current guild; its name must be typed to confirm.
+    async fn delete_guild(&mut self, confirm: &str) {
+        let Some(view) = self.current_view() else {
+            self.say("Switch to a guild first.");
+            return;
+        };
+        if confirm != view.guild.name {
+            self.say(format!(
+                "This deletes {} and everything in it, for everyone. To go ahead: /delete-guild {}",
+                view.guild.name, view.guild.name
+            ));
+            return;
+        }
+        if let Err(error) = self.session.delete_guild(&view.guild.id).await {
+            self.say(format!("! {error}"));
+        }
+    }
+
+    /// Keeps names around for when their guild, channel or member is gone.
     fn remember(&mut self, view: &GuildView) {
         self.names
             .insert(view.guild.id.clone(), view.guild.name.clone());
+        for channel in &view.channels {
+            self.names
+                .insert(channel.id.clone(), format!("#{}", channel.name));
+        }
         for member in &view.members {
             self.names
                 .insert(member.user_id.clone(), member.name.clone());
@@ -408,6 +586,7 @@ impl Repl {
             match change {
                 GuildChange::Left => self.say(format!("! you are no longer in {name}")),
                 GuildChange::Removed => self.say(format!("! you were removed from {name}")),
+                GuildChange::Deleted => self.say(format!("! {name} was deleted")),
                 _ => return,
             }
             if self.guild.as_deref() == Some(guild_id) {
@@ -417,9 +596,32 @@ impl Repl {
             }
             return;
         };
+        let old_name = self.name_of(guild_id);
         self.remember(&view);
         let name = view.guild.name.clone();
         match change {
+            GuildChange::Updated if old_name != name => {
+                self.say(format!("✎ {old_name} is now {name}"))
+            }
+            GuildChange::Updated => {
+                let description = view.guild.description.as_deref().unwrap_or("(none)");
+                self.say(format!("✎ {name}: {description}"));
+            }
+            GuildChange::ChannelUpdated { channel_id } => {
+                if let Some(channel) = view.channels.iter().find(|c| c.id == channel_id) {
+                    let topic = channel.topic.as_deref().unwrap_or("(no topic)");
+                    self.say(format!("✎ #{} in {name}: {topic}", channel.name));
+                }
+            }
+            GuildChange::ChannelDeleted { channel_id } => {
+                let channel = self.name_of(&channel_id);
+                self.say(format!("- {channel} in {name} was deleted"));
+                if self.channel.as_deref() == Some(channel_id.as_str()) {
+                    self.channel = None;
+                    self.session.focus(None);
+                    self.say("Open another channel: /channels.");
+                }
+            }
             GuildChange::Joined if self.guild.as_deref() != Some(guild_id) => {
                 self.say(format!("★ you are in {name}"))
             }
@@ -446,6 +648,7 @@ impl Repl {
             }
             GuildChange::Languages => self.say_languages(&view),
             GuildChange::Joined
+            | GuildChange::Deleted
             | GuildChange::ChannelCreated { .. }
             | GuildChange::Left
             | GuildChange::Removed
@@ -611,6 +814,7 @@ impl Repl {
 
     async fn open(&mut self, channel_id: &str) {
         self.channel = Some(channel_id.to_string());
+        self.writing.clear();
         // Read as it grows, and quiet.
         self.session.focus(Some(channel_id));
         let label = self.channel_label(channel_id);
@@ -1070,6 +1274,35 @@ fn marker(shown: &Shown) -> String {
         }
         Shown::Untranslated { reason } => format!("  ‹untranslated: {reason}›"),
     }
+}
+
+/// `  [👍 2  ❤️ 1*]`, the user's own marked; empty without reactions.
+fn reactions_text(message: &ChatMessage) -> String {
+    let reactions = &message.message.reactions;
+    if reactions.is_empty() {
+        return String::new();
+    }
+    let list = reactions
+        .iter()
+        .map(|reaction| {
+            let me = if reaction.me { "*" } else { "" };
+            format!("{} {}{me}", reaction.emoji, reaction.count)
+        })
+        .collect::<Vec<_>>();
+    format!("  [{}]", list.join("  "))
+}
+
+/// An emoji typed as itself or by its shortcode (`:thumbsup:`).
+fn emoji_named(text: &str) -> Option<String> {
+    let text = text.trim();
+    let emoji = match text
+        .strip_prefix(':')
+        .and_then(|rest| rest.strip_suffix(':'))
+    {
+        Some(code) => emojis::get_by_shortcode(code),
+        None => emojis::get(text),
+    };
+    emoji.map(|emoji| emoji.as_str().to_string())
 }
 
 fn languages_summary(view: &GuildView) -> String {

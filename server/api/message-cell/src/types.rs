@@ -35,6 +35,14 @@ pub enum MessageCellError {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildUpdate {
+    pub guild_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GuildSnapshot {
     pub guild: Guild,
     pub channels: Vec<Channel>,
@@ -61,6 +69,9 @@ pub struct Channel {
     /// Newest message ever sent here; compared with read states to tell
     /// unread channels.
     pub last_message_id: Option<String>,
+    /// Who made it; absent on channels made before this was kept. A
+    /// thread's creator may rename and delete it.
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -180,6 +191,15 @@ pub struct NewChannel {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ChannelUpdate {
+    pub guild_id: String,
+    pub channel_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewMessage {
     pub guild_id: String,
     pub channel_id: String,
@@ -213,6 +233,19 @@ pub struct Message {
     pub rev: i64,
     pub created_at: i64,
     pub edited_at: Option<i64>,
+    /// In the order first used. Reacting changes neither `rev` nor
+    /// `edited_at`. Absent on messages stored before reactions existed.
+    pub reactions: Option<Vec<Reaction>>,
+}
+
+/// Everyone who reacted to a message with one emoji.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Reaction {
+    /// A Unicode emoji. Room is left for a guild's own emoji as
+    /// `custom:<id>`, usable in other guilds too; none exist yet.
+    pub emoji: String,
+    /// In the order they reacted.
+    pub user_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -248,6 +281,8 @@ pub struct GuildEvent {
     pub channel: Option<Channel>,
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
+    pub reaction: Option<ReactionChange>,
+    pub typing: Option<Typing>,
     pub user_id: Option<String>,
     pub read_state: Option<ReadState>,
     pub notifications: Option<NotificationSettings>,
@@ -257,6 +292,13 @@ pub struct GuildEvent {
 pub enum GuildEventKind {
     #[serde(rename = "guild_created")]
     GuildCreated,
+    /// Name or description (`guild`).
+    #[serde(rename = "guild_updated")]
+    GuildUpdated,
+    /// The guild's last event but its members' removals, which follow
+    /// (`member_removed`, one per member).
+    #[serde(rename = "guild_deleted")]
+    GuildDeleted,
     #[serde(rename = "member_joined")]
     MemberJoined,
     #[serde(rename = "member_left")]
@@ -266,12 +308,26 @@ pub enum GuildEventKind {
     MemberRemoved,
     #[serde(rename = "channel_created")]
     ChannelCreated,
+    /// Renamed, a new topic, or out of a deleted category.
+    #[serde(rename = "channel_updated")]
+    ChannelUpdated,
+    /// With its messages. A channel's threads go first, each with its own
+    /// event.
+    #[serde(rename = "channel_deleted")]
+    ChannelDeleted,
     #[serde(rename = "message_created")]
     MessageCreated,
     #[serde(rename = "message_edited")]
     MessageEdited,
     #[serde(rename = "message_deleted")]
     MessageDeleted,
+    #[serde(rename = "reaction_added")]
+    ReactionAdded,
+    #[serde(rename = "reaction_removed")]
+    ReactionRemoved,
+    /// Not kept anywhere but the log; Edges pass it on and forget it.
+    #[serde(rename = "typing")]
+    Typing,
     /// One member's read marker moved (`user_id`, `read_state`). Edges pass
     /// it to that member's sessions only, on whichever Edge they are.
     #[serde(rename = "read_state_updated")]
@@ -286,6 +342,25 @@ pub enum GuildEventKind {
 pub struct DeletedMessage {
     pub channel_id: String,
     pub message_id: String,
+}
+
+/// One member added or took back one reaction.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ReactionChange {
+    pub channel_id: String,
+    pub message_id: String,
+    pub emoji: String,
+    pub user_id: String,
+    /// How many reacted with `emoji` after the change, so applying the
+    /// same change twice does no harm.
+    pub count: i64,
+}
+
+/// One member is writing in a channel.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Typing {
+    pub channel_id: String,
+    pub user_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -318,6 +393,12 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait MessageCell: Send + Sync + 'static {
     async fn create_guild(&self, body: NewGuild) -> Result<Guild, MessageCellError>;
+    /// Managers only.
+    async fn update_guild(&self, body: GuildUpdate) -> Result<Guild, MessageCellError>;
+    /// The owner only. Everything the guild holds goes; only its log stays
+    /// a while, for Edges to read to the end, and its record, answering
+    /// `not_found`.
+    async fn delete_guild(&self, guild_id: String, user_id: String) -> Result<(), MessageCellError>;
     /// Fails with `forbidden` unless the user is a member.
     async fn get_guild(&self, guild_id: String, user_id: String) -> Result<GuildSnapshot, MessageCellError>;
     /// Fails with `not_found` unless the invite is valid. Members joining
@@ -340,9 +421,20 @@ pub trait MessageCell: Send + Sync + 'static {
     async fn put_notification_settings(&self, body: NotificationSettings, user_id: String) -> Result<NotificationSettings, MessageCellError>;
     async fn check_permission(&self, guild_id: String, user_id: String, permission: Permission) -> Result<(), MessageCellError>;
     async fn create_channel(&self, body: NewChannel) -> Result<Channel, MessageCellError>;
+    /// Managers; for a thread, its creator too.
+    async fn update_channel(&self, body: ChannelUpdate) -> Result<Channel, MessageCellError>;
+    /// Managers; for a thread, its creator too. A channel's threads and
+    /// messages go with it; a category's channels stay, outside it.
+    async fn delete_channel(&self, guild_id: String, channel_id: String, user_id: String) -> Result<(), MessageCellError>;
     async fn send_message(&self, body: NewMessage) -> Result<Message, MessageCellError>;
     async fn edit_message(&self, body: MessageEdit) -> Result<Message, MessageCellError>;
     async fn delete_message(&self, guild_id: String, channel_id: String, message_id: String, user_id: String) -> Result<(), MessageCellError>;
+    /// Adding a reaction already there, or removing one that is not, changes
+    /// nothing. A message holds at most 20 different emoji.
+    async fn add_reaction(&self, guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Result<Message, MessageCellError>;
+    async fn remove_reaction(&self, guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Result<Message, MessageCellError>;
+    /// Tells the guild's readers the member is writing in the channel.
+    async fn typing(&self, guild_id: String, channel_id: String, user_id: String) -> Result<(), MessageCellError>;
     /// Newest first, strictly before `before` when given.
     async fn get_messages(&self, guild_id: String, channel_id: String, user_id: String, before: Option<String>, limit: i64) -> Result<Vec<Message>, MessageCellError>;
     /// Long poll on the guild's event log, for Edges.

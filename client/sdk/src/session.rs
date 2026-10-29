@@ -13,7 +13,7 @@
 //! can start offline; it then connects as if reconnecting.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -23,9 +23,9 @@ use std::{
 };
 
 use babel_api_edge_client::types::{
-    ApiError, Ban, Channel, ChannelKind, GuildView, Invite, LanguagePolicy, LanguagePolicyUpdate,
-    MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings,
-    TranslationModel, UserSettings,
+    ApiError, Ban, Channel, ChannelKind, ChannelUpdate, Guild, GuildUpdate, GuildView, Invite,
+    LanguagePolicy, LanguagePolicyUpdate, Member, MessageEdit, NewChannel, NewGuild, NewInvite,
+    NewMessage, NotificationSettings, TranslationModel, UserSettings,
 };
 use babel_lang::Normalizer;
 use parking_lot::Mutex;
@@ -112,6 +112,11 @@ pub enum Update {
         guild_id: String,
         channel_id: String,
     },
+    /// Who is writing in the channel changed ([`Session::typing`]).
+    Typing {
+        guild_id: String,
+        channel_id: String,
+    },
     /// Something the user asked to hear about, ready to show: its
     /// translation has arrived, or `notify_wait` has passed.
     Notification(Notification),
@@ -127,6 +132,10 @@ pub enum Update {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GuildChange {
     Joined,
+    /// Renamed, or a new description.
+    Updated,
+    /// The owner deleted it.
+    Deleted,
     /// The user left (here or on another device), or the guild vanished
     /// while the session was away.
     Left,
@@ -145,6 +154,14 @@ pub enum GuildChange {
     ChannelCreated {
         channel_id: String,
     },
+    /// Renamed, a new topic, or out of a deleted category.
+    ChannelUpdated {
+        channel_id: String,
+    },
+    /// With its messages.
+    ChannelDeleted {
+        channel_id: String,
+    },
     /// The guild's languages, or how this user reads them.
     Languages,
     /// The user's notification settings for the guild.
@@ -161,6 +178,8 @@ pub enum MessageChange {
     /// may have changed.
     Translated,
     Deleted,
+    /// Someone reacted, or took a reaction back.
+    Reactions,
 }
 
 /// A message as this reader should see it.
@@ -202,6 +221,8 @@ const DEVICE_CACHE_LIMIT: usize = 10_000;
 /// How long a failed device translation waits before it may be tried again.
 const DEVICE_RETRY: Duration = Duration::from_secs(30);
 const UPDATE_CAPACITY: usize = 1024;
+/// How often the server hears that the user is still writing.
+const TYPING_EVERY: Duration = Duration::from_secs(8);
 
 pub struct Session {
     shared: Arc<Shared>,
@@ -233,6 +254,11 @@ struct Shared {
     focus: Mutex<Option<String>>,
     /// Channels with a read marker on its way.
     reading: Mutex<HashSet<String>>,
+    /// Channel -> when the server last heard the user is writing there.
+    typing_sent: Mutex<HashMap<String, Instant>>,
+    /// Held while the cache is written; true once it is forgotten, after
+    /// which nothing writes it again.
+    cache_forgotten: Mutex<bool>,
     websocket: AtomicBool,
     online: AtomicBool,
 }
@@ -264,6 +290,8 @@ impl Session {
             device_running: Mutex::default(),
             focus: Mutex::default(),
             reading: Mutex::default(),
+            typing_sent: Mutex::default(),
+            cache_forgotten: Mutex::new(false),
             websocket: AtomicBool::new(false),
             online: AtomicBool::new(false),
         });
@@ -426,6 +454,8 @@ impl Session {
                 },
             )
             .await?;
+        // Sending ends writing; the next keystroke says so again.
+        self.shared.typing_sent.lock().remove(channel_id);
         Ok(self.shared.put_own(view.message))
     }
 
@@ -479,6 +509,99 @@ impl Session {
             });
         }
         Ok(())
+    }
+
+    /// Reacts with one Unicode emoji; reacting twice changes nothing.
+    pub async fn react(&self, channel_id: &str, message_id: &str, emoji: &str) -> Result<()> {
+        self.set_reaction(channel_id, message_id, emoji, true).await
+    }
+
+    /// Takes the user's reaction back.
+    pub async fn unreact(&self, channel_id: &str, message_id: &str, emoji: &str) -> Result<()> {
+        self.set_reaction(channel_id, message_id, emoji, false)
+            .await
+    }
+
+    async fn set_reaction(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &str,
+        add: bool,
+    ) -> Result<()> {
+        let guild_id = self.shared.guild_of(channel_id)?;
+        let messages = self.shared.client.messages();
+        let (jwt, channel, id) = (
+            self.shared.client.jwt(),
+            channel_id.to_string(),
+            message_id.to_string(),
+        );
+        let message = if add {
+            messages
+                .add_reaction(jwt, guild_id.clone(), channel, id, emoji.to_string())
+                .await?
+        } else {
+            messages
+                .remove_reaction(jwt, guild_id.clone(), channel, id, emoji.to_string())
+                .await?
+        };
+        let change = self.shared.state.lock().put_message(message);
+        if let Some(change) = change {
+            self.shared.emit(Update::Message {
+                guild_id,
+                channel_id: channel_id.to_string(),
+                message_id: message_id.to_string(),
+                change,
+            });
+        }
+        Ok(())
+    }
+
+    /// Tells the channel the user is writing. Call it as they type: at most
+    /// one request goes out every few seconds, and none fails loudly.
+    pub fn typing(&self, channel_id: &str) {
+        let now = Instant::now();
+        {
+            let mut sent = self.shared.typing_sent.lock();
+            if sent
+                .get(channel_id)
+                .is_some_and(|at| now.duration_since(*at) < TYPING_EVERY)
+            {
+                return;
+            }
+            sent.insert(channel_id.to_string(), now);
+        }
+        let Ok(guild_id) = self.shared.guild_of(channel_id) else {
+            return;
+        };
+        let (shared, channel_id) = (self.shared.clone(), channel_id.to_string());
+        self.shared.runtime.spawn(async move {
+            let result = shared
+                .client
+                .messages()
+                .typing(shared.client.jwt(), guild_id, channel_id)
+                .await;
+            if let Err(error) = result {
+                tracing::debug!(error = %Error::from(error), "saying the user is writing failed");
+            }
+        });
+    }
+
+    /// Others writing in the channel now, earliest first.
+    pub fn typing_members(&self, channel_id: &str) -> Vec<Member> {
+        let state = self.shared.state.lock();
+        let Some(view) = state
+            .channel(channel_id)
+            .and_then(|channel| state.guild(&channel.guild_id))
+        else {
+            return Vec::new();
+        };
+        state
+            .typing(channel_id, Instant::now())
+            .iter()
+            .filter_map(|user| view.members.iter().find(|member| member.user_id == *user))
+            .cloned()
+            .collect()
     }
 
     // ---- Reading --------------------------------------------------------
@@ -722,6 +845,154 @@ impl Session {
             .await
     }
 
+    /// Whether the user may rename and delete a channel: the owner may
+    /// any, a thread's creator their thread.
+    pub fn may_manage(&self, channel_id: &str) -> bool {
+        let state = self.shared.state.lock();
+        let Some(channel) = state.channel(channel_id) else {
+            return false;
+        };
+        let owner = state
+            .guild(&channel.guild_id)
+            .is_some_and(|view| view.guild.owner_id == state.user_id);
+        owner
+            || (channel.kind == ChannelKind::Thread
+                && channel.created_by.as_deref() == Some(state.user_id.as_str()))
+    }
+
+    /// Owner only. Members see the new name at once.
+    pub async fn update_guild(
+        &self,
+        guild_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<Guild> {
+        let guild = self
+            .shared
+            .client
+            .guilds()
+            .update_guild(
+                self.shared.client.jwt(),
+                GuildUpdate {
+                    guild_id: guild_id.to_string(),
+                    name: name.to_string(),
+                    description: description.map(str::to_string),
+                },
+            )
+            .await?;
+        let changed = {
+            let mut state = self.shared.state.lock();
+            match state
+                .guilds
+                .iter_mut()
+                .find(|view| view.guild.id == guild.id)
+            {
+                Some(view) if view.guild != guild => {
+                    view.guild = guild.clone();
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            self.shared.emit(Update::Guild {
+                guild_id: guild.id.clone(),
+                change: GuildChange::Updated,
+            });
+        }
+        Ok(guild)
+    }
+
+    /// Owner only. Deletes the guild and everything in it, for everyone.
+    pub async fn delete_guild(&self, guild_id: &str) -> Result<()> {
+        self.shared
+            .client
+            .guilds()
+            .delete_guild(self.shared.client.jwt(), guild_id.to_string())
+            .await?;
+        if self.shared.state.lock().remove_guild(guild_id) {
+            self.shared.emit(Update::Guild {
+                guild_id: guild_id.to_string(),
+                change: GuildChange::Deleted,
+            });
+        }
+        Ok(())
+    }
+
+    /// See [`Self::may_manage`].
+    pub async fn update_channel(
+        &self,
+        channel_id: &str,
+        name: &str,
+        topic: Option<&str>,
+    ) -> Result<Channel> {
+        let guild_id = self.shared.guild_of(channel_id)?;
+        let channel = self
+            .shared
+            .client
+            .guilds()
+            .update_channel(
+                self.shared.client.jwt(),
+                ChannelUpdate {
+                    guild_id: guild_id.clone(),
+                    channel_id: channel_id.to_string(),
+                    name: name.to_string(),
+                    topic: topic.map(str::to_string),
+                },
+            )
+            .await?;
+        if self.shared.state.lock().put_channel(channel.clone()) {
+            self.shared.emit(Update::Guild {
+                guild_id,
+                change: GuildChange::ChannelUpdated {
+                    channel_id: channel.id.clone(),
+                },
+            });
+        }
+        Ok(channel)
+    }
+
+    /// See [`Self::may_manage`]. A channel's threads and messages go with
+    /// it; a category's channels stay, outside it.
+    pub async fn delete_channel(&self, channel_id: &str) -> Result<()> {
+        let guild_id = self.shared.guild_of(channel_id)?;
+        self.shared
+            .client
+            .guilds()
+            .delete_channel(
+                self.shared.client.jwt(),
+                guild_id.clone(),
+                channel_id.to_string(),
+            )
+            .await?;
+        let removed = {
+            let mut state = self.shared.state.lock();
+            let mut gone = state
+                .guild(&guild_id)
+                .map(|view| {
+                    view.channels
+                        .iter()
+                        .filter(|channel| {
+                            channel.kind == ChannelKind::Thread
+                                && channel.parent_id.as_deref() == Some(channel_id)
+                        })
+                        .map(|channel| channel.id.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            gone.push(channel_id.to_string());
+            gone.retain(|channel| state.remove_channel(&guild_id, channel));
+            gone
+        };
+        for channel_id in removed {
+            self.shared.emit(Update::Guild {
+                guild_id: guild_id.clone(),
+                change: GuildChange::ChannelDeleted { channel_id },
+            });
+        }
+        Ok(())
+    }
+
     /// Owner only. Tags are normalized by the server.
     pub async fn set_languages(&self, update: LanguagePolicyUpdate) -> Result<LanguagePolicy> {
         let guild_id = update.guild_id.clone();
@@ -791,6 +1062,21 @@ impl Session {
     /// things change, and when the session is dropped).
     pub fn save_cache(&self) {
         self.shared.save_cache();
+    }
+
+    /// Deletes the cache and writes it no more, for signing out: neither
+    /// a write under way nor dropping the session brings it back.
+    pub fn forget_cache(&self) {
+        let Some(path) = &self.shared.config.cache else {
+            return;
+        };
+        let mut forgotten = self.shared.cache_forgotten.lock();
+        *forgotten = true;
+        if let Err(error) = std::fs::remove_file(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, path = %path.display(), "could not delete the cache");
+        }
     }
 }
 
@@ -967,11 +1253,26 @@ impl Shared {
                     self.read_soon(channel_id);
                 }
             }
+            if let Update::Typing { .. } = &update {
+                self.typing_expires(update.clone());
+            }
             self.emit(update);
         }
         if let Some((message, reason)) = notify {
             self.notify_when_ready(message, reason);
         }
+    }
+
+    /// Says so again once someone's writing is no longer shown, unless they
+    /// said they still are.
+    fn typing_expires(self: &Arc<Self>, update: Update) {
+        let shared = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            tokio::time::sleep(crate::state::TYPING_SHOWN + Duration::from_millis(100)).await;
+            if let Some(shared) = shared.upgrade() {
+                shared.emit(update);
+            }
+        });
     }
 
     /// Sends a notification once the message's display has settled (or
@@ -1281,6 +1582,10 @@ impl Shared {
         let Some(path) = &self.config.cache else {
             return;
         };
+        let forgotten = self.cache_forgotten.lock();
+        if *forgotten {
+            return;
+        }
         let result = cache::save(path, self.client.server(), &self.state.lock());
         if let Err(error) = result {
             tracing::warn!(%error, path = %path.display(), "could not write the cache");

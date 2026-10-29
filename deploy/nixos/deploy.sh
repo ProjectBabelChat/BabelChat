@@ -4,7 +4,7 @@
 #
 #   deploy/nixos/deploy.sh init                 # keys and certificates, once
 #   deploy/nixos/deploy.sh install <machine>    # replace its OS with NixOS (erases it)
-#   deploy/nixos/deploy.sh switch [<machine>…]  # build and activate (all by default)
+#   deploy/nixos/deploy.sh switch [<machine>…]  # build, copy at once, activate in turn (all by default)
 #   deploy/nixos/deploy.sh admin <args…>        # babel-admin on the operator's machine
 #   deploy/nixos/deploy.sh dashboard            # Grafana at http://localhost:3000
 #   deploy/nixos/deploy.sh failover <service|machine>… [--primary-lost]
@@ -162,18 +162,30 @@ install_machine() {
   ssh-keygen -R "$address" -f "$secrets/known_hosts" >/dev/null 2>&1 || true
 }
 
-# Activates <name>'s system: $2 if built already (build_all).
+# Copies and activates <name>'s system: $2 if built already (build_all).
 switch_machine() {
-  local name=$1 toplevel=${2:-} address staging digest wireguard
-  address=$(address_of "$name")
+  local name=$1 toplevel=${2:-}
   if [ -z "$toplevel" ]; then
     say "Building $name"
     toplevel=$(build "toplevel.$name")
   fi
+  copy_machine "$name" "$toplevel"
+  activate_machine "$name" "$toplevel"
+}
+
+# Puts a built system on <name>, without activating it.
+copy_machine() {
+  local name=$1 toplevel=$2 address
+  address=$(address_of "$name")
   say "Copying to $name ($address)"
   NIX_SSHOPTS="${ssh_options[*]}" nix copy --substitute-on-destination \
     --to "ssh://root@$address" "$toplevel"
+}
 
+# Activates a system copied to <name>, with the secrets it needs.
+activate_machine() {
+  local name=$1 toplevel=$2 address staging digest wireguard
+  address=$(address_of "$name")
   staging=$(mktemp -d)
   trap 'rm -rf "$staging"; trap - RETURN' RETURN
   stage_secrets "$name" "$staging/secrets"
@@ -479,15 +491,37 @@ pki() {
   "$babel_pki" "$@" --dir "$secrets/pki"
 }
 
-# Activates every machine, one after another, with what one build made.
+# Switches the machines given (all by default) with what one build made:
+# copied to all at once, then activated one after another, so that the
+# services on the others answer while one restarts.
 switch_all() {
-  local built machine toplevel
+  local built machine toplevel failed=0 pids=()
+  local -A toplevel_of
   load_inventory
-  say "Building every machine"
-  built=$(build_all $(inventory | awk '{ print $1 }'))
+  [ $# -gt 0 ] || set -- $(inventory | awk '{ print $1 }')
+  for machine in "$@"; do
+    address_of "$machine" >/dev/null
+  done
+  say "Building $*"
+  built=$(build_all "$@")
   while read -r machine toplevel; do
-    switch_machine "$machine" "$toplevel" </dev/null
+    toplevel_of[$machine]=$toplevel
   done <<<"$built"
+  for machine in "$@"; do
+    copy_machine "$machine" "${toplevel_of[$machine]}" </dev/null 2>&1 \
+      | sed -u "s/^/[$machine] /" &
+    pids+=($!)
+  done
+  for machine in "${pids[@]}"; do
+    wait "$machine" || failed=1
+  done
+  if [ $failed = 1 ]; then
+    echo "copying failed (above); nothing was activated" >&2
+    exit 1
+  fi
+  for machine in "$@"; do
+    activate_machine "$machine" "${toplevel_of[$machine]}" </dev/null
+  done
 }
 
 renew() {
@@ -560,13 +594,7 @@ case $command in
     install_machine "$1"
     ;;
   switch)
-    load_inventory
-    if [ $# -eq 0 ]; then
-      set -- $(inventory | awk '{ print $1 }')
-    fi
-    for name in "$@"; do
-      switch_machine "$name"
-    done
+    switch_all "$@"
     ;;
   failover)
     failover "$@"

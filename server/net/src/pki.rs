@@ -94,14 +94,16 @@ pub fn pem_blocks(text: &str) -> Vec<String> {
 fn make_ca() -> anyhow::Result<(KeyPair, rcgen::Certificate)> {
     let now = OffsetDateTime::now_utc();
     let mut params = CertificateParams::new(Vec::<String>::new())?;
+    // Certificates name their CA by this: unique even within a second.
     params.distinguished_name.push(
         DnType::CommonName,
         format!(
-            "BabelChat cluster CA {} {:02}:{:02}:{:02}",
+            "BabelChat cluster CA {} {:02}:{:02}:{:02} {}",
             now.date(),
             now.hour(),
             now.minute(),
-            now.second()
+            now.second(),
+            &babel_common::random_id()[..8]
         ),
     );
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));

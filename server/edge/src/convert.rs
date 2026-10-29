@@ -102,6 +102,7 @@ pub fn channel(channel: &cell::Channel) -> public::Channel {
         starter_message_id: channel.starter_message_id.clone(),
         created_at: channel.created_at,
         last_message_id: channel.last_message_id.clone(),
+        created_by: channel.created_by.clone(),
     }
 }
 
@@ -138,7 +139,8 @@ pub fn parse_invite(code: &str) -> Option<(&str, &str)> {
     (hex(guild) && hex(secret)).then_some((guild, secret))
 }
 
-pub fn message(message: &cell::Message) -> public::Message {
+/// A message as `reader` sees it: whether they reacted, not who else did.
+pub fn message(message: &cell::Message, reader: &str) -> public::Message {
     // `author_locale` stays inside.
     public::Message {
         id: message.id.clone(),
@@ -152,6 +154,16 @@ pub fn message(message: &cell::Message) -> public::Message {
         rev: message.rev,
         created_at: message.created_at,
         edited_at: message.edited_at,
+        reactions: message
+            .reactions
+            .iter()
+            .flatten()
+            .map(|reaction| public::Reaction {
+                emoji: reaction.emoji.clone(),
+                count: reaction.user_ids.len() as i64,
+                me: reaction.user_ids.iter().any(|user| user == reader),
+            })
+            .collect(),
     }
 }
 

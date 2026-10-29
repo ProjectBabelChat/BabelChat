@@ -34,7 +34,7 @@ pub use shape_view::*;
 pub use slider::*;
 pub use split_button::*;
 pub use surfaces::*;
-pub use text_field::{TextField, TextFieldStyle};
+pub use text_field::{TextField, TextFieldEvent, TextFieldStyle};
 
 /// Installs key bindings used by gpui-md3e components.
 pub(crate) fn bind_keys(cx: &mut gpui::App) {

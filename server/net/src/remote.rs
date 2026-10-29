@@ -111,6 +111,8 @@ mod message_cell {
         /// A Message Cell.
         RemoteMessageCell: babel_api_message_cell::MessageCell via babel_api_message_cell_client, MessageCellError;
         fn create_guild(body: NewGuild) -> Guild;
+        fn update_guild(body: GuildUpdate) -> Guild;
+        fn delete_guild(guild_id: String, user_id: String) -> ();
         fn get_guild(guild_id: String, user_id: String) -> GuildSnapshot;
         fn join_guild(guild_id: String, invite: String, user_id: String, user_name: String) -> GuildSnapshot;
         fn create_invite(body: NewInvite) -> Invite;
@@ -124,9 +126,14 @@ mod message_cell {
         fn put_notification_settings(body: NotificationSettings, user_id: String) -> NotificationSettings;
         fn check_permission(guild_id: String, user_id: String, permission: Permission) -> ();
         fn create_channel(body: NewChannel) -> Channel;
+        fn update_channel(body: ChannelUpdate) -> Channel;
+        fn delete_channel(guild_id: String, channel_id: String, user_id: String) -> ();
         fn send_message(body: NewMessage) -> Message;
         fn edit_message(body: MessageEdit) -> Message;
         fn delete_message(guild_id: String, channel_id: String, message_id: String, user_id: String) -> ();
+        fn add_reaction(guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Message;
+        fn remove_reaction(guild_id: String, channel_id: String, message_id: String, user_id: String, emoji: String) -> Message;
+        fn typing(guild_id: String, channel_id: String, user_id: String) -> ();
         fn get_messages(guild_id: String, channel_id: String, user_id: String, before: Option<String>, limit: i64) -> Vec<Message>;
         fn poll_events(guild_id: String, after: i64, wait_ms: i64) -> GuildEventBatch;
         fn freeze_guild(guild_id: String) -> ();
@@ -147,6 +154,7 @@ mod translation_cell {
         RemoteTranslationCell: babel_api_translation_cell::TranslationCell via babel_api_translation_cell_client, TranslationCellError;
         fn put_space(body: SpaceContext) -> ();
         fn put_node(body: ContextNode) -> ();
+        fn delete_node(space: String, node: String) -> ();
         fn delete_space(space: String) -> ();
         fn get_policy(space: String) -> SpacePolicy;
         fn put_policy(body: PolicyUpdate) -> SpacePolicy;

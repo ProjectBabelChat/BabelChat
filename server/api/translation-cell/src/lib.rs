@@ -42,8 +42,22 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
         }
     }));
     let api3 = api.clone();
-    router = router.route("/translation_cell/delete_space", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+    router = router.route("/translation_cell/delete_node", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
         let api = api3;
+        let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let node = __query.get("node").map(|str| serde_json::from_str(str).ok()).flatten();
+        let Some(node) = node else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
+        let __raw = <T as crate::types::TranslationCell>::delete_node(&api, space, node, ).await;
+        let result = __raw;
+        match result {
+            Ok(_) => (StatusCode::OK, ()).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
+        }
+    }));
+    let api4 = api.clone();
+    router = router.route("/translation_cell/delete_space", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
+        let api = api4;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let __raw = <T as crate::types::TranslationCell>::delete_space(&api, space, ).await;
@@ -53,9 +67,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api4 = api.clone();
+    let api5 = api.clone();
     router = router.route("/translation_cell/get_policy", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api4;
+        let api = api5;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let __raw = <T as crate::types::TranslationCell>::get_policy(&api, space, ).await;
@@ -65,10 +79,10 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api5 = api.clone();
+    let api6 = api.clone();
     router = router.route("/translation_cell/put_policy", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api5;
+        let api = api6;
         let __raw = <T as crate::types::TranslationCell>::put_policy(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -76,9 +90,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api6 = api.clone();
+    let api7 = api.clone();
     router = router.route("/translation_cell/set_plan", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api6;
+        let api = api7;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let plan = __query.get("plan").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -90,9 +104,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api7 = api.clone();
+    let api8 = api.clone();
     router = router.route("/translation_cell/list_models", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api7;
+        let api = api8;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let __raw = <T as crate::types::TranslationCell>::list_models(&api, space, ).await;
@@ -102,9 +116,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api8 = api.clone();
+    let api9 = api.clone();
     router = router.route("/translation_cell/normalize", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api8;
+        let api = api9;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let tag = __query.get("tag").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -116,9 +130,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api9 = api.clone();
+    let api10 = api.clone();
     router = router.route("/translation_cell/resolve_viewer", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api9;
+        let api = api10;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let locale = __query.get("locale").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -132,10 +146,10 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api10 = api.clone();
+    let api11 = api.clone();
     router = router.route("/translation_cell/ingest", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api10;
+        let api = api11;
         let __raw = <T as crate::types::TranslationCell>::ingest(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -143,10 +157,10 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api11 = api.clone();
+    let api12 = api.clone();
     router = router.route("/translation_cell/delete_message", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api11;
+        let api = api12;
         let __raw = <T as crate::types::TranslationCell>::delete_message(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -154,10 +168,10 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api12 = api.clone();
+    let api13 = api.clone();
     router = router.route("/translation_cell/get_translations", axum::routing::post(async move |Query(__query): Query<HashMap<String, String>>, 
        Json(__body): Json<_>| {
-        let api = api12;
+        let api = api13;
         let __raw = <T as crate::types::TranslationCell>::get_translations(&api, __body, ).await;
         let result = __raw;
         match result {
@@ -165,9 +179,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api13 = api.clone();
+    let api14 = api.clone();
     router = router.route("/translation_cell/poll_events", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api13;
+        let api = api14;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let after = __query.get("after").map(|str| serde_json::from_str(str).ok()).flatten();
@@ -181,9 +195,9 @@ pub fn router<T: crate::types::TranslationCell>(api: T) -> Router {
             Err(error) => (StatusCode::BAD_REQUEST, Json(error)).into_response(),
         }
     }));
-    let api14 = api.clone();
+    let api15 = api.clone();
     router = router.route("/translation_cell/get_usage", axum::routing::get(async move |Query(__query): Query<HashMap<String, String>>, | {
-        let api = api14;
+        let api = api15;
         let space = __query.get("space").map(|str| serde_json::from_str(str).ok()).flatten();
         let Some(space) = space else { return Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(); };
         let __raw = <T as crate::types::TranslationCell>::get_usage(&api, space, ).await;

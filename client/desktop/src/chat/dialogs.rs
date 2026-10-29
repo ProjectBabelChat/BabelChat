@@ -34,10 +34,20 @@ pub enum Dialog {
         copied: bool,
         error: Option<String>,
     },
-    CreateChannel {
+    /// Creating or editing a channel, or starting a thread.
+    Channel {
+        target: ChannelTarget,
+        name: Entity<TextField>,
+        /// Threads have none.
+        topic: Option<Entity<TextField>>,
+        busy: bool,
+        error: Option<String>,
+    },
+    /// The guild's name and description (its owner).
+    Guild {
         guild_id: String,
         name: Entity<TextField>,
-        topic: Entity<TextField>,
+        description: Entity<TextField>,
         busy: bool,
         error: Option<String>,
     },
@@ -93,7 +103,28 @@ pub enum Confirm {
         channel_id: String,
         message_id: String,
     },
+    DeleteChannel {
+        channel_id: String,
+    },
+    DeleteGuild {
+        guild_id: String,
+    },
     SignOutOthers,
+}
+
+#[derive(Clone)]
+pub enum ChannelTarget {
+    Create {
+        guild_id: String,
+    },
+    Edit {
+        channel_id: String,
+        thread: bool,
+    },
+    Thread {
+        channel_id: String,
+        message_id: String,
+    },
 }
 
 fn field(label: &str, cx: &mut Context<ChatView>) -> Entity<TextField> {
@@ -191,10 +222,146 @@ impl Dialog {
         let name = field(t.channel_name, cx);
         let topic = field(t.channel_topic, cx);
         window.focus(&name.focus_handle(cx), cx);
-        Dialog::CreateChannel {
-            guild_id: chat.guild.clone().unwrap_or_default(),
+        Dialog::Channel {
+            target: ChannelTarget::Create {
+                guild_id: chat.guild.clone().unwrap_or_default(),
+            },
+            name,
+            topic: Some(topic),
+            busy: false,
+            error: None,
+        }
+    }
+
+    /// Renaming a channel or thread, or deleting it.
+    pub fn edit_channel(
+        chat: &ChatView,
+        channel_id: &str,
+        window: &mut Window,
+        cx: &mut Context<ChatView>,
+    ) -> Option<Self> {
+        let t = chat.t();
+        let channel = chat.session.channel(channel_id)?;
+        let thread = channel.kind == babel_sdk::ChannelKind::Thread;
+        let name = field(
+            if thread {
+                t.thread_name
+            } else {
+                t.channel_name
+            },
+            cx,
+        );
+        name.update(cx, |field, cx| {
+            field.set_text(channel.name.clone(), window, cx)
+        });
+        let topic = (!thread).then(|| {
+            let topic = field(t.channel_topic, cx);
+            let text = channel.topic.clone().unwrap_or_default();
+            topic.update(cx, |field, cx| field.set_text(text, window, cx));
+            topic
+        });
+        window.focus(&name.focus_handle(cx), cx);
+        Some(Dialog::Channel {
+            target: ChannelTarget::Edit {
+                channel_id: channel_id.to_string(),
+                thread,
+            },
             name,
             topic,
+            busy: false,
+            error: None,
+        })
+    }
+
+    /// Starting a thread from a message.
+    pub fn start_thread(
+        chat: &ChatView,
+        message_id: &str,
+        window: &mut Window,
+        cx: &mut Context<ChatView>,
+    ) -> Self {
+        let t = chat.t();
+        let name = field(t.thread_name, cx);
+        // Named after the message's start, as Discord does; easy to change.
+        let suggestion = chat
+            .channel
+            .as_deref()
+            .and_then(|channel| chat.session.message(channel, message_id))
+            .map(|chat| {
+                let line = chat.display.text.lines().next().unwrap_or_default();
+                line.chars().take(40).collect::<String>()
+            })
+            .unwrap_or_default();
+        name.update(cx, |field, cx| field.set_text(suggestion, window, cx));
+        window.focus(&name.focus_handle(cx), cx);
+        Dialog::Channel {
+            target: ChannelTarget::Thread {
+                channel_id: chat.channel.clone().unwrap_or_default(),
+                message_id: message_id.to_string(),
+            },
+            name,
+            topic: None,
+            busy: false,
+            error: None,
+        }
+    }
+
+    pub fn edit_guild(chat: &ChatView, window: &mut Window, cx: &mut Context<ChatView>) -> Self {
+        let t = chat.t();
+        let guild = chat.current_guild();
+        let name = field(t.guild_name, cx);
+        let description = field(t.guild_description, cx);
+        if let Some(guild) = &guild {
+            let (text, about) = (
+                guild.guild.name.clone(),
+                guild.guild.description.clone().unwrap_or_default(),
+            );
+            name.update(cx, |field, cx| field.set_text(text, window, cx));
+            description.update(cx, |field, cx| field.set_text(about, window, cx));
+        }
+        window.focus(&name.focus_handle(cx), cx);
+        Dialog::Guild {
+            guild_id: chat.guild.clone().unwrap_or_default(),
+            name,
+            description,
+            busy: false,
+            error: None,
+        }
+    }
+
+    pub fn delete_channel(chat: &ChatView, channel_id: &str) -> Self {
+        let t = chat.t();
+        let name = chat
+            .session
+            .channel(channel_id)
+            .map(|channel| channel.name)
+            .unwrap_or_default();
+        Dialog::Confirm {
+            title: t.delete_channel.to_string(),
+            body: fill(t.delete_channel_confirm, &[&name]),
+            action_label: t.delete,
+            action: Confirm::DeleteChannel {
+                channel_id: channel_id.to_string(),
+            },
+            busy: false,
+            error: None,
+        }
+    }
+
+    pub fn delete_guild(chat: &ChatView, guild_id: &str) -> Self {
+        let t = chat.t();
+        let name = chat
+            .session
+            .guild(guild_id)
+            .map(|view| view.guild.name)
+            .unwrap_or_default();
+        Dialog::Confirm {
+            title: t.delete_guild.to_string(),
+            body: fill(t.delete_guild_confirm, &[&name]),
+            action_label: t.delete,
+            action: Confirm::DeleteGuild {
+                guild_id: guild_id.to_string(),
+            },
             busy: false,
             error: None,
         }
@@ -348,11 +515,39 @@ impl Dialog {
     }
 }
 
+/// A text button in the error color, at the start of a dialog's actions:
+/// it opens a confirmation, never acts by itself.
+fn destructive(
+    id: &'static str,
+    label: &'static str,
+    on_click: impl Fn(&mut ChatView, &mut Window, &mut Context<ChatView>) + 'static,
+    cx: &mut Context<ChatView>,
+) -> AnyElement {
+    let colors = cx.md().colors;
+    div()
+        .flex_1()
+        .child(
+            div()
+                .id(id)
+                .px_3()
+                .py_2()
+                .rounded_full()
+                .cursor_pointer()
+                .text_color(colors.error)
+                .md_type(TypeRole::LabelLarge, cx)
+                .hover(move |style| style.bg(colors.error.opacity(0.08)))
+                .on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
+                .child(label),
+        )
+        .into_any_element()
+}
+
 /// Marks the open dialog busy or failed.
 fn set_status(dialog: &mut Option<Dialog>, now_busy: bool, failure: Option<String>) {
     let (busy, error) = match dialog {
         Some(Dialog::AddGuild { busy, error, .. })
-        | Some(Dialog::CreateChannel { busy, error, .. })
+        | Some(Dialog::Channel { busy, error, .. })
+        | Some(Dialog::Guild { busy, error, .. })
         | Some(Dialog::Languages { busy, error, .. })
         | Some(Dialog::Settings { busy, error, .. })
         | Some(Dialog::Password { busy, error, .. })
@@ -508,26 +703,65 @@ impl ChatView {
                     );
                 }
             }
-            Dialog::CreateChannel {
-                guild_id,
+            Dialog::Channel {
+                target,
                 name,
                 topic,
                 ..
             } => {
+                let name = name.read(cx).text().trim().to_string();
+                let topic = topic
+                    .as_ref()
+                    .map(|topic| topic.read(cx).text().trim().to_string())
+                    .filter(|topic| !topic.is_empty());
+                if name.is_empty() {
+                    return;
+                }
+                let target = target.clone();
+                self.run_dialog(
+                    async move {
+                        match target {
+                            ChannelTarget::Create { guild_id } => {
+                                session
+                                    .create_channel(&guild_id, &name, topic.as_deref())
+                                    .await
+                            }
+                            ChannelTarget::Edit { channel_id, .. } => {
+                                session
+                                    .update_channel(&channel_id, &name, topic.as_deref())
+                                    .await
+                            }
+                            ChannelTarget::Thread {
+                                channel_id,
+                                message_id,
+                            } => session.start_thread(&channel_id, &message_id, &name).await,
+                        }
+                    },
+                    |this, channel, window, cx| this.open_channel(&channel.id, window, cx),
+                    window,
+                    cx,
+                );
+            }
+            Dialog::Guild {
+                guild_id,
+                name,
+                description,
+                ..
+            } => {
                 let guild_id = guild_id.clone();
                 let name = name.read(cx).text().trim().to_string();
-                let topic = topic.read(cx).text().trim().to_string();
+                let description = description.read(cx).text().trim().to_string();
                 if name.is_empty() {
                     return;
                 }
                 self.run_dialog(
                     async move {
-                        let topic = (!topic.is_empty()).then_some(topic);
+                        let description = (!description.is_empty()).then_some(description);
                         session
-                            .create_channel(&guild_id, &name, topic.as_deref())
+                            .update_guild(&guild_id, &name, description.as_deref())
                             .await
                     },
-                    |this, channel, window, cx| this.open_channel(&channel.id, window, cx),
+                    |_, _, _, _| {},
                     window,
                     cx,
                 );
@@ -651,6 +885,24 @@ impl ChatView {
                         cx,
                     );
                 }
+                Confirm::DeleteChannel { channel_id } => {
+                    let channel_id = channel_id.clone();
+                    self.run_dialog(
+                        async move { session.delete_channel(&channel_id).await },
+                        |this, _, window, cx| this.ensure_selection(window, cx),
+                        window,
+                        cx,
+                    );
+                }
+                Confirm::DeleteGuild { guild_id } => {
+                    let guild_id = guild_id.clone();
+                    self.run_dialog(
+                        async move { session.delete_guild(&guild_id).await },
+                        |this, _, window, cx| this.ensure_selection(window, cx),
+                        window,
+                        cx,
+                    );
+                }
                 Confirm::SignOutOthers => {
                     let client = session.client().clone();
                     self.run_dialog(
@@ -723,7 +975,8 @@ impl ChatView {
                     let busy = matches!(
                         &this.dialog,
                         Some(Dialog::AddGuild { busy: true, .. })
-                            | Some(Dialog::CreateChannel { busy: true, .. })
+                            | Some(Dialog::Channel { busy: true, .. })
+                            | Some(Dialog::Guild { busy: true, .. })
                             | Some(Dialog::Languages { busy: true, .. })
                             | Some(Dialog::Settings { busy: true, .. })
                             | Some(Dialog::Password { busy: true, .. })
@@ -935,25 +1188,71 @@ impl ChatView {
                     cx,
                 )
             }
-            Dialog::CreateChannel {
+            Dialog::Channel {
+                target,
                 name,
                 topic,
                 busy,
                 error,
-                ..
             } => {
                 let body = div()
                     .flex()
                     .flex_col()
                     .gap_4()
                     .child(name.clone())
-                    .child(topic.clone())
+                    .children(topic.clone())
                     .children(error_line(error, cx));
+                let (title, action) = match target {
+                    ChannelTarget::Create { .. } => (t.create_channel, t.create),
+                    ChannelTarget::Edit { thread: false, .. } => (t.edit_channel, t.save),
+                    ChannelTarget::Edit { thread: true, .. } => (t.edit_thread, t.save),
+                    ChannelTarget::Thread { .. } => (t.start_thread, t.create),
+                };
+                let mut actions = Vec::new();
+                if let ChannelTarget::Edit { channel_id, .. } = target {
+                    let channel_id = channel_id.clone();
+                    actions.push(destructive(
+                        "delete-channel",
+                        t.delete_channel,
+                        move |this, _, cx| {
+                            this.dialog = Some(Dialog::delete_channel(this, &channel_id));
+                            cx.notify();
+                        },
+                        cx,
+                    ));
+                }
+                actions.extend([cancel(t.cancel, cx), confirm(action, *busy, cx)]);
+                widgets::dialog("channel", title, body, actions, dismiss, cx)
+            }
+            Dialog::Guild {
+                guild_id,
+                name,
+                description,
+                busy,
+                error,
+            } => {
+                let body = div()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(name.clone())
+                    .child(description.clone())
+                    .children(error_line(error, cx));
+                let guild_id = guild_id.clone();
+                let delete = destructive(
+                    "delete-guild",
+                    t.delete_guild,
+                    move |this, _, cx| {
+                        this.dialog = Some(Dialog::delete_guild(this, &guild_id));
+                        cx.notify();
+                    },
+                    cx,
+                );
                 widgets::dialog(
-                    "create-channel",
-                    t.create_channel,
+                    "guild",
+                    t.edit_guild,
                     body,
-                    vec![cancel(t.cancel, cx), confirm(t.create, *busy, cx)],
+                    vec![delete, cancel(t.cancel, cx), confirm(t.save, *busy, cx)],
                     dismiss,
                     cx,
                 )

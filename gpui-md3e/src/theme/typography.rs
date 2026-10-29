@@ -95,13 +95,17 @@ impl Default for Typography {
     fn default() -> Self {
         Self {
             family: "Roboto".into(),
+            // Color emoji before CJK: CJK fonts carry plain glyphs for
+            // many emoji (❤, 😀), and emoji fonts no CJK, so each script
+            // still finds its own font.
             fallbacks: FontFallbacks::from_fonts(vec![
+                "Noto Color Emoji".into(),
+                "Apple Color Emoji".into(),
+                "Segoe UI Emoji".into(),
                 "Noto Sans CJK JP".into(),
                 "Noto Sans JP".into(),
                 "Hiragino Sans".into(),
                 "Yu Gothic UI".into(),
-                "Noto Color Emoji".into(),
-                "Segoe UI Emoji".into(),
             ]),
         }
     }

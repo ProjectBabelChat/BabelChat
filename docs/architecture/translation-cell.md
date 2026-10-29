@@ -7,7 +7,8 @@ policies of spaces (guilds, workspaces). It is the part other platforms
 adopt: a platform keeps its own message store and only
 
 1. streams messages in (`ingest`, `delete_message`),
-2. optionally describes its spaces (`put_space`, `put_node`),
+2. optionally describes its spaces (`put_space`, `put_node`), and says
+   when a conversation or a space ends (`delete_node`, `delete_space`),
 3. reads translations (`get_translations`, `poll_events`).
 
 BabelChat's Message Cells use exactly this API.

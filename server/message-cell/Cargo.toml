@@ -20,6 +20,7 @@ babel-common.workspace = true
 babel-net.workspace = true
 babel-store.workspace = true
 clap.workspace = true
+emojis.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
@@ -27,6 +28,7 @@ metrics.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+emojis.workspace = true
 babel-engine.workspace = true
 babel-translation-cell.workspace = true
 reqwest.workspace = true

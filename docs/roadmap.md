@@ -168,13 +168,14 @@ Done so far:
   both old and new trusted until everything has the new; an alert 30
   days before a certificate expires.
 - Running it: the eight machines on Vultr, installed and updated with
-  `deploy.sh`, chatting over HTTPS with translations from Hy-MT2 on a CPU.
+  `deploy.sh`, chatting over HTTPS (the terminal client and the desktop
+  app) with translations from Hy-MT2 on a CPU.
 - Measured on a rented GPU (NVIDIA A16): what one GPU translates per
   second and per dollar, with a load test (`load_test`, `deploy/bench`).
 
 Next:
 
-- The desktop app on an `https://` server; GPU engines in the NixOS module.
+- GPU engines in the NixOS module.
 - Operations: automatic failover; sending alerts; backups in another
   region (object storage); moving a guild's Translation Cell space; a
   replicated Directory; machines without Nix (plain systemd units).
@@ -185,15 +186,38 @@ Next:
 
 ## Phase 7 — the product
 
+Done so far:
+
+- Everyday chat, in the SDK, the terminal client and the desktop app:
+  reactions with any Unicode emoji (a count each, the reader's own
+  marked, room left for a guild's own emoji usable in other guilds);
+  seeing who is writing; messages of several lines (a multi-line
+  `TextField` in `gpui-md3e`); renaming and deleting guilds and channels;
+  starting threads from messages, renaming and deleting them, from the
+  desktop app too.
+
+Next:
+
 - BabelChat Cloud engine; billing setting plans (and which models each
   plan may use; owners bringing their own API keys); Discord account linking.
 - Managed Translation Cells for platforms that do not want to host one.
 - Mirrored hosting for the on-device models, and model updates.
-- The desktop app: multi-line messages, editing guilds and channels,
-  threads and categories from the UI, keyboard navigation, tray icon.
-- Chat features not built yet: roles beyond owner and member, attachments,
-  reactions, typing indicators, renaming and deleting guilds and channels,
-  push notifications to devices that are offline.
+- The desktop app: categories from the UI, keyboard navigation, tray
+  icon.
+- Chat features not built yet: roles beyond owner and member, attachments
+  (and with them a guild's own emoji, usable in other guilds too), who
+  reacted, push notifications to devices that are offline.
+- Before the first release, protocol compatibility. Until then contracts
+  change freely, and a client only works against servers built from the
+  same tree. Then:
+  - generated code skips enum values it does not know (an event kind from
+    a newer server) and reads a missing array as empty;
+  - contracts only grow: new response fields optional, removals in two
+    steps (both, then the new one alone), written down in
+    `docs/tyml-changes.md`;
+  - clients send their version, and Edges answer a too-old one with
+    "update", which the apps show instead of "cannot connect";
+  - optionally, apigen warns when a contract breaks the released one.
 
 ## Open questions
 

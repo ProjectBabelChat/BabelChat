@@ -130,6 +130,24 @@ pub struct Strings {
     pub not_found: &'static str,
     pub invite_invalid: &'static str,
     pub not_allowed: &'static str,
+
+    pub edit_guild: &'static str,
+    pub guild_description: &'static str,
+    pub delete_guild: &'static str,
+    pub delete_guild_confirm: &'static str,
+    pub guild_deleted: &'static str,
+    pub edit_channel: &'static str,
+    pub edit_thread: &'static str,
+    pub delete_channel: &'static str,
+    pub delete_channel_confirm: &'static str,
+    pub start_thread: &'static str,
+    pub thread_name: &'static str,
+    pub add_reaction: &'static str,
+    pub search_emoji: &'static str,
+    pub no_emoji: &'static str,
+    pub typing_one: &'static str,
+    pub typing_two: &'static str,
+    pub typing_many: &'static str,
 }
 
 pub static EN: Strings = Strings {
@@ -259,6 +277,24 @@ pub static EN: Strings = Strings {
     not_found: "Not found.",
     invite_invalid: "That invite is invalid, expired or used up.",
     not_allowed: "You are not allowed to do that.",
+
+    edit_guild: "Guild settings",
+    guild_description: "Description (optional)",
+    delete_guild: "Delete guild",
+    delete_guild_confirm: "Delete {0}? Its channels and messages are deleted for everyone, for good.",
+    guild_deleted: "{0} was deleted.",
+    edit_channel: "Channel settings",
+    edit_thread: "Thread settings",
+    delete_channel: "Delete channel",
+    delete_channel_confirm: "Delete #{0}? Its threads and messages are deleted for everyone, for good.",
+    start_thread: "Start a thread",
+    thread_name: "Thread name",
+    add_reaction: "Add a reaction",
+    search_emoji: "Search emoji",
+    no_emoji: "No emoji found.",
+    typing_one: "{0} is typing…",
+    typing_two: "{0} and {1} are typing…",
+    typing_many: "Several people are typing…",
 };
 
 pub static JA: Strings = Strings {
@@ -388,6 +424,24 @@ pub static JA: Strings = Strings {
     not_found: "見つかりません。",
     invite_invalid: "招待が無効か、期限切れか、使用回数の上限に達しています。",
     not_allowed: "その操作は許可されていません。",
+
+    edit_guild: "ギルドの設定",
+    guild_description: "説明（任意）",
+    delete_guild: "ギルドを削除",
+    delete_guild_confirm: "{0} を削除しますか？チャンネルとメッセージは全員から完全に削除されます。",
+    guild_deleted: "{0} は削除されました。",
+    edit_channel: "チャンネルの設定",
+    edit_thread: "スレッドの設定",
+    delete_channel: "チャンネルを削除",
+    delete_channel_confirm: "#{0} を削除しますか？スレッドとメッセージは全員から完全に削除されます。",
+    start_thread: "スレッドを作成",
+    thread_name: "スレッド名",
+    add_reaction: "リアクションを追加",
+    search_emoji: "絵文字を検索",
+    no_emoji: "絵文字が見つかりません。",
+    typing_one: "{0} が入力中…",
+    typing_two: "{0} と {1} が入力中…",
+    typing_many: "複数の人が入力中…",
 };
 
 /// The strings for a reader of `locale` (a BCP 47 tag).

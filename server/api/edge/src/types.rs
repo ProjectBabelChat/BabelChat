@@ -117,6 +117,9 @@ pub struct Channel {
     /// Newest message ever sent here. The channel is unread while it is
     /// newer than the read state's `last_read_id`.
     pub last_message_id: Option<String>,
+    /// Who made it, when known. A thread's creator may rename and
+    /// delete it.
+    pub created_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -239,6 +242,13 @@ pub struct Invite {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GuildUpdate {
+    pub guild_id: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewChannel {
     pub guild_id: String,
     pub kind: ChannelKind,
@@ -246,6 +256,14 @@ pub struct NewChannel {
     pub topic: Option<String>,
     pub parent_id: Option<String>,
     pub starter_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ChannelUpdate {
+    pub guild_id: String,
+    pub channel_id: String,
+    pub name: String,
+    pub topic: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -305,6 +323,20 @@ pub struct Message {
     pub rev: i64,
     pub created_at: i64,
     pub edited_at: Option<i64>,
+    /// In the order first used. Reacting changes neither `rev` nor
+    /// `edited_at`.
+    pub reactions: Vec<Reaction>,
+}
+
+/// One emoji people reacted with.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Reaction {
+    /// A Unicode emoji. Later also `custom:<id>`, a guild's own emoji
+    /// (usable in other guilds too); none exist yet.
+    pub emoji: String,
+    pub count: i64,
+    /// The user is among them.
+    pub me: bool,
 }
 
 /// Translations of one message, filtered to what the user needs: their own
@@ -363,10 +395,14 @@ pub struct Event {
     pub kind: EventKind,
     pub guild_id: String,
     pub guild: Option<GuildView>,
+    /// For guild_updated.
+    pub guild_info: Option<Guild>,
     pub member: Option<Member>,
     pub channel: Option<Channel>,
     pub message: Option<Message>,
     pub deleted: Option<DeletedMessage>,
+    pub reaction: Option<ReactionChange>,
+    pub typing: Option<Typing>,
     pub translation: Option<MessageTranslation>,
     /// For policy_updated: the new policy and the user's resulting view.
     pub policy: Option<LanguagePolicy>,
@@ -379,6 +415,12 @@ pub struct Event {
 pub enum EventKind {
     #[serde(rename = "guild_joined")]
     GuildJoined,
+    /// Renamed, or a new description (`guild_info`).
+    #[serde(rename = "guild_updated")]
+    GuildUpdated,
+    /// The owner deleted it: forget it.
+    #[serde(rename = "guild_deleted")]
+    GuildDeleted,
     #[serde(rename = "member_joined")]
     MemberJoined,
     /// For the leaving user too: their last event from the guild.
@@ -389,12 +431,25 @@ pub enum EventKind {
     MemberRemoved,
     #[serde(rename = "channel_created")]
     ChannelCreated,
+    /// Renamed, a new topic, or out of a deleted category.
+    #[serde(rename = "channel_updated")]
+    ChannelUpdated,
+    /// With its messages. A channel's threads go first, each with its own
+    /// event.
+    #[serde(rename = "channel_deleted")]
+    ChannelDeleted,
     #[serde(rename = "message_created")]
     MessageCreated,
     #[serde(rename = "message_edited")]
     MessageEdited,
     #[serde(rename = "message_deleted")]
     MessageDeleted,
+    #[serde(rename = "reaction_added")]
+    ReactionAdded,
+    #[serde(rename = "reaction_removed")]
+    ReactionRemoved,
+    #[serde(rename = "typing")]
+    Typing,
     #[serde(rename = "message_translated")]
     MessageTranslated,
     #[serde(rename = "policy_updated")]
@@ -410,6 +465,25 @@ pub enum EventKind {
 pub struct DeletedMessage {
     pub channel_id: String,
     pub message_id: String,
+}
+
+/// Someone added or took back a reaction.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct ReactionChange {
+    pub channel_id: String,
+    pub message_id: String,
+    pub emoji: String,
+    pub user_id: String,
+    /// How many reacted with `emoji` after the change: set it, do not add.
+    pub count: i64,
+}
+
+/// Someone is writing. Show it for about 10 seconds, or until their
+/// message arrives.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Typing {
+    pub channel_id: String,
+    pub user_id: String,
 }
 
 
@@ -479,7 +553,16 @@ pub trait Guilds: Send + Sync + 'static {
     /// `not_found`.
     async fn join_guild(&self, claim: Claim, invite: String) -> Result<GuildView, ApiError>;
     async fn get_guild(&self, claim: Claim, guild_id: String) -> Result<GuildView, ApiError>;
+    /// Owner only.
+    async fn update_guild(&self, claim: Claim, body: GuildUpdate) -> Result<Guild, ApiError>;
+    /// Owner only. Deletes everything the guild holds, for good.
+    async fn delete_guild(&self, claim: Claim, guild_id: String) -> Result<(), ApiError>;
     async fn create_channel(&self, claim: Claim, body: NewChannel) -> Result<Channel, ApiError>;
+    /// The owner; for a thread, its creator too.
+    async fn update_channel(&self, claim: Claim, body: ChannelUpdate) -> Result<Channel, ApiError>;
+    /// The owner; for a thread, its creator too. A channel's threads and
+    /// messages go with it; a category's channels stay, outside it.
+    async fn delete_channel(&self, claim: Claim, guild_id: String, channel_id: String) -> Result<(), ApiError>;
     /// Only the owner may change the policy. Languages are normalized and
     /// counted after normalization.
     async fn put_language_policy(&self, claim: Claim, body: LanguagePolicyUpdate) -> Result<LanguagePolicy, ApiError>;
@@ -500,6 +583,13 @@ pub trait Messages: Send + Sync + 'static {
     async fn send_message(&self, claim: Claim, body: NewMessage) -> Result<MessageView, ApiError>;
     async fn edit_message(&self, claim: Claim, body: MessageEdit) -> Result<MessageView, ApiError>;
     async fn delete_message(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String) -> Result<(), ApiError>;
+    /// `emoji` is one Unicode emoji. Reacting twice with the same one
+    /// changes nothing. A message holds at most 20 different emoji.
+    async fn add_reaction(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ApiError>;
+    async fn remove_reaction(&self, claim: Claim, guild_id: String, channel_id: String, message_id: String, emoji: String) -> Result<Message, ApiError>;
+    /// Tells the channel's readers the user is writing. Send it at most every
+    /// 8 seconds while they do; sending the message ends it.
+    async fn typing(&self, claim: Claim, guild_id: String, channel_id: String) -> Result<(), ApiError>;
     /// Newest first, with translations for the user's language and English.
     async fn get_messages(&self, claim: Claim, guild_id: String, channel_id: String, before: Option<String>, limit: i64) -> Result<Vec<MessageView>, ApiError>;
     /// Marks the channel read up to `message_id`; never moves backwards.

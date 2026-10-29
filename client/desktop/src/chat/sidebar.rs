@@ -440,6 +440,13 @@ impl ChatView {
                     this.dialog = Some(Dialog::create_channel(this, window, cx));
                 }),
             ));
+            items.push((
+                t.edit_guild,
+                Icon::Settings,
+                Box::new(|this, window, cx| {
+                    this.dialog = Some(Dialog::edit_guild(this, window, cx));
+                }),
+            ));
         } else {
             items.push((
                 t.leave_guild,
@@ -654,6 +661,7 @@ mod tests {
             starter_message_id: None,
             created_at: 0,
             last_message_id: None,
+            created_by: None,
         }
     }
 

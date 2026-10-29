@@ -26,15 +26,19 @@ source of truth, and the app remembers only what is on screen.
 | `sign_in.rs` | Sign in or create an account (server, name, password, the language you read, a sign-up code on invitation-only servers). |
 | `chat/mod.rs` | The chat screen's state: selection, the message list, composer, toasts; SDK updates and notifications. |
 | `chat/sidebar.rs` | Guild rail with unread dots and mention badges, channel list, user panel, guild menu, member list. |
-| `chat/messages.rs` | Channel header, messages (grouping, replies, mentions, translation line), composer. |
-| `chat/dialogs.rs` | Add a guild (create or join), invite, create a channel, languages, notifications, settings, the password, confirmations. |
+| `chat/messages.rs` | Channel header, messages (grouping, replies, mentions, translation line, reactions, threads started from them), composer and who is writing. |
+| `chat/emoji.rs` | The emoji picker: common emoji, then all of them, searchable by name or shortcode. |
+| `chat/dialogs.rs` | Add a guild (create or join), invite, create, edit or delete a channel, start a thread, the guild's settings, languages, notifications, settings, the password, confirmations. |
 | `i18n.rs` | The UI's own words in English and Japanese, and language names. |
 | `runtime.rs` | The Tokio runtime beside GPUI, the app's configuration, SDK errors in words. |
 | `widgets.rs` | Avatars, badges, the dialog frame. |
 
 What a user can do: sign up or in; create a guild (with its languages and a
-`#general` channel) or join one with an invite code; create channels
-(owners); write, reply, edit and delete messages; `@name` mentions; see
+`#general` channel) or join one with an invite code; create, rename and
+delete channels (owners); rename and delete the guild (owners); start a
+thread from a message, and rename or delete it (its creator, or owners);
+write messages of several lines (Shift+Enter), reply, edit and delete
+them; react with any emoji; see who is writing; `@name` mentions; see
 each message in their language, with where the translation came from and
 the original on request; unread markers and mention counts per channel and
 guild; notification levels per guild and channel; invite people; leave;
@@ -76,6 +80,28 @@ line under a translated message names the source language and whether the
 server or this device translated it; "Show original" swaps the text in
 place. With the "also show the original" setting, the original is printed
 in small type under every translation.
+
+## Reactions, threads and writing
+
+Hovering a message shows its tools: react, reply, start a thread (in text
+channels), edit and delete. Reactions sit under the message as chips with
+their counts, the user's own highlighted; clicking one adds or takes back
+the user's reaction, and the smiley after them opens the picker. The
+picker opens where it was asked for, kept inside the window, with eight
+common emoji above every Unicode emoji (a virtualized grid); typing
+searches names and shortcodes, Enter takes the first match, Esc or a click
+outside closes it. Messages a thread was started from link to it.
+
+The composer is a several-line `TextField`: Enter sends, Shift+Enter
+starts a new line, and it grows to eight lines before it scrolls. Typing in
+it tells the channel the user is writing (not while editing a message);
+the line under it says who else is ("alice is typing…", two names, or
+"several people").
+
+The channel header has a settings button for those who may manage the
+channel (its owner; a thread's creator), with renaming, the topic and
+deleting it. The guild's settings (its name and description, and deleting
+it) are in the guild menu, for its owner. Deleting always asks first.
 
 ## Selecting, copying and dragging text
 
@@ -135,9 +161,10 @@ screen in its own pixels, so convert with the window's origin and scale
 
 ## Not yet
 
-- Multi-line messages, attachments, reactions, typing indicators.
-- Editing guild and channel names, categories and threads from the UI
-  (threads and categories made elsewhere are listed).
+- Attachments, and a guild's own emoji (both need uploads).
+- Who reacted with an emoji, and skin tones in the picker.
+- Creating categories and moving channels between them from the UI
+  (categories made elsewhere are listed).
 - The ban list and unbanning, and listing or revoking invites, from the
   UI (the SDK and `babel` have them).
 - Keyboard navigation between channels and guilds.

@@ -475,6 +475,20 @@ impl Inner {
         self.store.write(batch).map_err(storage)
     }
 
+    async fn delete_node(&self, tenant: &str, space: String, node: String) -> CellResult<()> {
+        check_id(&space)?;
+        check_id(&node)?;
+        let _guard = self.lock(tenant, &space).await;
+        // A conversation's translations share the window's key as prefix.
+        let conversation = window_key(tenant, &space, &node);
+        let mut batch = Batch::new();
+        batch.delete(NODES, node_key(tenant, &space, &node));
+        batch.delete(WINDOWS, conversation.clone());
+        batch.delete_prefix(TRANSLATIONS, conversation);
+        // Queued jobs find their records gone and drop themselves.
+        self.store.write(batch).map_err(storage)
+    }
+
     async fn delete_space(&self, tenant: &str, space: String) -> CellResult<()> {
         let _guard = self.lock(tenant, &space).await;
         let prefix = space_key(tenant, &space);
@@ -1039,6 +1053,10 @@ impl babel_api_translation_cell::types::TranslationCell for TranslationCell {
 
     async fn put_node(&self, body: ContextNode) -> CellResult<()> {
         self.inner.put_node(&tenant(), body).await
+    }
+
+    async fn delete_node(&self, space: String, node: String) -> CellResult<()> {
+        self.inner.delete_node(&tenant(), space, node).await
     }
 
     async fn delete_space(&self, space: String) -> CellResult<()> {

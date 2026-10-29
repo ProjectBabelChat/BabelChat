@@ -41,6 +41,9 @@ type Channel {
     /// Newest message ever sent here; compared with read states to tell
     /// unread channels.
     last_message_id: string?
+    /// Who made it; absent on channels made before this was kept. A
+    /// thread's creator may rename and delete it.
+    created_by: string?
 }
 
 enum Role {
@@ -53,6 +56,15 @@ type Member {
     name: string
     role: Role
     joined_at: int
+}
+
+/// Everyone who reacted to a message with one emoji.
+type Reaction {
+    /// A Unicode emoji. Room is left for a guild's own emoji as
+    /// `custom:<id>`, usable in other guilds too; none exist yet.
+    emoji: string
+    /// In the order they reacted.
+    user_ids: [string]
 }
 
 type Message {
@@ -76,6 +88,9 @@ type Message {
     rev: int
     created_at: int
     edited_at: int?
+    /// In the order first used. Reacting changes neither `rev` nor
+    /// `edited_at`. Absent on messages stored before reactions existed.
+    reactions: [Reaction]?
 }
 
 /// How far one member has read one channel.
@@ -158,6 +173,21 @@ type NewMessage {
     reply_to: string?
 }
 
+type GuildUpdate {
+    guild_id: string
+    user_id: string
+    name: string
+    description: string?
+}
+
+type ChannelUpdate {
+    guild_id: string
+    channel_id: string
+    user_id: string
+    name: string
+    topic: string?
+}
+
 type MessageEdit {
     guild_id: string
     channel_id: string
@@ -191,16 +221,47 @@ type DeletedMessage {
     message_id: string
 }
 
+/// One member added or took back one reaction.
+type ReactionChange {
+    channel_id: string
+    message_id: string
+    emoji: string
+    user_id: string
+    /// How many reacted with `emoji` after the change, so applying the
+    /// same change twice does no harm.
+    count: int
+}
+
+/// One member is writing in a channel.
+type Typing {
+    channel_id: string
+    user_id: string
+}
+
 enum GuildEventKind {
     "guild_created"
+    /// Name or description (`guild`).
+    "guild_updated"
+    /// The guild's last event but its members' removals, which follow
+    /// (`member_removed`, one per member).
+    "guild_deleted"
     "member_joined"
     "member_left"
     /// Kicked or banned.
     "member_removed"
     "channel_created"
+    /// Renamed, a new topic, or out of a deleted category.
+    "channel_updated"
+    /// With its messages. A channel's threads go first, each with its own
+    /// event.
+    "channel_deleted"
     "message_created"
     "message_edited"
     "message_deleted"
+    "reaction_added"
+    "reaction_removed"
+    /// Not kept anywhere but the log; Edges pass it on and forget it.
+    "typing"
     /// One member's read marker moved (`user_id`, `read_state`). Edges pass
     /// it to that member's sessions only, on whichever Edge they are.
     "read_state_updated"
@@ -219,6 +280,8 @@ type GuildEvent {
     channel: Channel?
     message: Message?
     deleted: DeletedMessage?
+    reaction: ReactionChange?
+    typing: Typing?
     user_id: string?
     read_state: ReadState?
     notifications: NotificationSettings?
@@ -274,6 +337,14 @@ enum MessageCellError {
 interface MessageCell {
     function create_guild(@body: NewGuild) -> Guild throws MessageCellError
 
+    /// Managers only.
+    function update_guild(@body: GuildUpdate) -> Guild throws MessageCellError
+
+    /// The owner only. Everything the guild holds goes; only its log stays
+    /// a while, for Edges to read to the end, and its record, answering
+    /// `not_found`.
+    function delete_guild(guild_id: string, user_id: string) throws MessageCellError
+
     /// Fails with `forbidden` unless the user is a member.
     #[kind = "get"]
     function get_guild(guild_id: string, user_id: string) -> GuildSnapshot throws MessageCellError
@@ -313,11 +384,27 @@ interface MessageCell {
 
     function create_channel(@body: NewChannel) -> Channel throws MessageCellError
 
+    /// Managers; for a thread, its creator too.
+    function update_channel(@body: ChannelUpdate) -> Channel throws MessageCellError
+
+    /// Managers; for a thread, its creator too. A channel's threads and
+    /// messages go with it; a category's channels stay, outside it.
+    function delete_channel(guild_id: string, channel_id: string, user_id: string) throws MessageCellError
+
     function send_message(@body: NewMessage) -> Message throws MessageCellError
 
     function edit_message(@body: MessageEdit) -> Message throws MessageCellError
 
     function delete_message(guild_id: string, channel_id: string, message_id: string, user_id: string) throws MessageCellError
+
+    /// Adding a reaction already there, or removing one that is not, changes
+    /// nothing. A message holds at most 20 different emoji.
+    function add_reaction(guild_id: string, channel_id: string, message_id: string, user_id: string, emoji: string) -> Message throws MessageCellError
+
+    function remove_reaction(guild_id: string, channel_id: string, message_id: string, user_id: string, emoji: string) -> Message throws MessageCellError
+
+    /// Tells the guild's readers the member is writing in the channel.
+    function typing(guild_id: string, channel_id: string, user_id: string) throws MessageCellError
 
     /// Newest first, strictly before `before` when given.
     #[kind = "get"]

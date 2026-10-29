@@ -22,7 +22,7 @@ use crate::{
 };
 
 /// Bump when the layout changes; older files are ignored.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// Newest messages kept per channel.
 const MESSAGES_PER_CHANNEL: usize = 100;
 

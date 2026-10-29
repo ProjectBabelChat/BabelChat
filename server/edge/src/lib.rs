@@ -497,6 +497,17 @@ impl Inner {
     fn on_guild_event(&self, guild: &str, guild_event: cell::GuildEvent) {
         let public_event = match guild_event.kind {
             cell::GuildEventKind::GuildCreated => return,
+            cell::GuildEventKind::GuildUpdated => public::Event {
+                guild_info: guild_event.guild.as_ref().map(convert::guild),
+                ..event(EventKind::GuildUpdated, guild)
+            },
+            cell::GuildEventKind::GuildDeleted => {
+                // Its members' removals follow; nobody needs to hear them.
+                self.sessions
+                    .broadcast(guild, |_| Some(event(EventKind::GuildDeleted, guild)));
+                self.sessions.forget_guild(guild);
+                return;
+            }
             cell::GuildEventKind::MemberJoined => public::Event {
                 member: guild_event.member.as_ref().map(convert::member),
                 ..event(EventKind::MemberJoined, guild)
@@ -527,17 +538,62 @@ impl Inner {
                     .remove_guild(&member.user_id, guild, guild_event.seq);
                 return;
             }
-            cell::GuildEventKind::ChannelCreated => public::Event {
+            cell::GuildEventKind::ChannelCreated
+            | cell::GuildEventKind::ChannelUpdated
+            | cell::GuildEventKind::ChannelDeleted => public::Event {
                 channel: guild_event.channel.as_ref().map(convert::channel),
-                ..event(EventKind::ChannelCreated, guild)
+                ..event(
+                    match guild_event.kind {
+                        cell::GuildEventKind::ChannelCreated => EventKind::ChannelCreated,
+                        cell::GuildEventKind::ChannelUpdated => EventKind::ChannelUpdated,
+                        _ => EventKind::ChannelDeleted,
+                    },
+                    guild,
+                )
             },
-            cell::GuildEventKind::MessageCreated => public::Event {
-                message: guild_event.message.as_ref().map(convert::message),
-                ..event(EventKind::MessageCreated, guild)
-            },
-            cell::GuildEventKind::MessageEdited => public::Event {
-                message: guild_event.message.as_ref().map(convert::message),
-                ..event(EventKind::MessageEdited, guild)
+            cell::GuildEventKind::MessageCreated | cell::GuildEventKind::MessageEdited => {
+                let Some(message) = &guild_event.message else {
+                    return;
+                };
+                let kind = match guild_event.kind {
+                    cell::GuildEventKind::MessageCreated => EventKind::MessageCreated,
+                    _ => EventKind::MessageEdited,
+                };
+                // Each reader sees whether they reacted.
+                self.sessions.broadcast(guild, |session| {
+                    Some(public::Event {
+                        message: Some(convert::message(message, &session.user_id)),
+                        ..event(kind, guild)
+                    })
+                });
+                return;
+            }
+            cell::GuildEventKind::ReactionAdded | cell::GuildEventKind::ReactionRemoved => {
+                public::Event {
+                    reaction: guild_event.reaction.as_ref().map(|reaction| {
+                        public::ReactionChange {
+                            channel_id: reaction.channel_id.clone(),
+                            message_id: reaction.message_id.clone(),
+                            emoji: reaction.emoji.clone(),
+                            user_id: reaction.user_id.clone(),
+                            count: reaction.count,
+                        }
+                    }),
+                    ..event(
+                        match guild_event.kind {
+                            cell::GuildEventKind::ReactionAdded => EventKind::ReactionAdded,
+                            _ => EventKind::ReactionRemoved,
+                        },
+                        guild,
+                    )
+                }
+            }
+            cell::GuildEventKind::Typing => public::Event {
+                typing: guild_event.typing.as_ref().map(|typing| public::Typing {
+                    channel_id: typing.channel_id.clone(),
+                    user_id: typing.user_id.clone(),
+                }),
+                ..event(EventKind::Typing, guild)
             },
             cell::GuildEventKind::ReadStateUpdated | cell::GuildEventKind::NotificationsUpdated => {
                 let Some(user) = &guild_event.user_id else {
@@ -646,6 +702,7 @@ impl Inner {
         route: &Route,
         messages: Vec<cell::Message>,
         settings: &public::UserSettings,
+        reader: &str,
     ) -> ApiResult<Vec<public::MessageView>> {
         let policy = self.policy(route).await?;
         let view = self.view(&policy, settings);
@@ -674,7 +731,7 @@ impl Inner {
         Ok(messages
             .iter()
             .map(|message| public::MessageView {
-                message: convert::message(message),
+                message: convert::message(message, reader),
                 translation: translations
                     .remove(&message.id)
                     .map(|translated| convert::translation(&translated, &langs)),
@@ -986,6 +1043,66 @@ impl public::Guilds for Edge {
         Ok(convert::channel(&channel))
     }
 
+    async fn update_guild(
+        &self,
+        claim: Claim,
+        body: public::GuildUpdate,
+    ) -> ApiResult<public::Guild> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let guild = on_cell!(inner, &body.guild_id, |cell| cell.update_guild(
+            cell::GuildUpdate {
+                guild_id: body.guild_id.clone(),
+                user_id: claim.sub.clone(),
+                name: body.name.clone(),
+                description: body.description.clone(),
+            }
+        ))?;
+        Ok(convert::guild(&guild))
+    }
+
+    async fn delete_guild(&self, claim: Claim, guild_id: String) -> ApiResult<()> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        // Sessions forget it when its log says so.
+        on_cell!(inner, &guild_id, |cell| cell
+            .delete_guild(guild_id.clone(), claim.sub.clone()))
+    }
+
+    async fn update_channel(
+        &self,
+        claim: Claim,
+        body: public::ChannelUpdate,
+    ) -> ApiResult<public::Channel> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let channel = on_cell!(inner, &body.guild_id, |cell| cell.update_channel(
+            cell::ChannelUpdate {
+                guild_id: body.guild_id.clone(),
+                channel_id: body.channel_id.clone(),
+                user_id: claim.sub.clone(),
+                name: body.name.clone(),
+                topic: body.topic.clone(),
+            }
+        ))?;
+        Ok(convert::channel(&channel))
+    }
+
+    async fn delete_channel(
+        &self,
+        claim: Claim,
+        guild_id: String,
+        channel_id: String,
+    ) -> ApiResult<()> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        on_cell!(inner, &guild_id, |cell| cell.delete_channel(
+            guild_id.clone(),
+            channel_id.clone(),
+            claim.sub.clone()
+        ))
+    }
+
     async fn put_language_policy(
         &self,
         claim: Claim,
@@ -1120,7 +1237,7 @@ impl public::Messages for Edge {
             }
         ))?;
         Ok(public::MessageView {
-            message: convert::message(&message),
+            message: convert::message(&message, &claim.sub),
             translation: None,
         })
     }
@@ -1142,7 +1259,7 @@ impl public::Messages for Edge {
             }
         ))?;
         Ok(public::MessageView {
-            message: convert::message(&message),
+            message: convert::message(&message, &claim.sub),
             translation: None,
         })
     }
@@ -1160,6 +1277,56 @@ impl public::Messages for Edge {
             guild_id.clone(),
             channel_id.clone(),
             message_id.clone(),
+            claim.sub.clone()
+        ))
+    }
+
+    async fn add_reaction(
+        &self,
+        claim: Claim,
+        guild_id: String,
+        channel_id: String,
+        message_id: String,
+        emoji: String,
+    ) -> ApiResult<public::Message> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let message = on_cell!(inner, &guild_id, |cell| cell.add_reaction(
+            guild_id.clone(),
+            channel_id.clone(),
+            message_id.clone(),
+            claim.sub.clone(),
+            emoji.clone()
+        ))?;
+        Ok(convert::message(&message, &claim.sub))
+    }
+
+    async fn remove_reaction(
+        &self,
+        claim: Claim,
+        guild_id: String,
+        channel_id: String,
+        message_id: String,
+        emoji: String,
+    ) -> ApiResult<public::Message> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        let message = on_cell!(inner, &guild_id, |cell| cell.remove_reaction(
+            guild_id.clone(),
+            channel_id.clone(),
+            message_id.clone(),
+            claim.sub.clone(),
+            emoji.clone()
+        ))?;
+        Ok(convert::message(&message, &claim.sub))
+    }
+
+    async fn typing(&self, claim: Claim, guild_id: String, channel_id: String) -> ApiResult<()> {
+        let inner = &self.inner;
+        inner.write_allowed(&claim)?;
+        on_cell!(inner, &guild_id, |cell| cell.typing(
+            guild_id.clone(),
+            channel_id.clone(),
             claim.sub.clone()
         ))
     }
@@ -1182,7 +1349,9 @@ impl public::Messages for Edge {
             limit.clamp(1, MAX_PAGE),
         ))?;
         let route = inner.route(&guild_id).await?;
-        inner.message_views(&route, messages, &settings).await
+        inner
+            .message_views(&route, messages, &settings, &claim.sub)
+            .await
     }
 
     async fn ack(

@@ -51,9 +51,10 @@ receiver that lags (`RecvError::Lagged`) just redraws everything.
 
 | Update | When |
 |---|---|
-| `Guild { change: Joined / Left / Removed / MemberJoined / MemberLeft / MemberRemoved / ChannelCreated / Languages / Notifications / Refreshed }` | guild list or a guild's view changed (`Removed`: this user was kicked or banned) |
-| `Message { change: Created / Edited / Translated / Deleted }` | a message or its display changed (`Translated` covers server and device results) |
+| `Guild { change: Joined / Updated / Deleted / Left / Removed / MemberJoined / MemberLeft / MemberRemoved / ChannelCreated / ChannelUpdated / ChannelDeleted / Languages / Notifications / Refreshed }` | guild list or a guild's view changed (`Removed`: this user was kicked or banned; `Deleted`: the owner deleted the guild) |
+| `Message { change: Created / Edited / Translated / Deleted / Reactions }` | a message or its display changed (`Translated` covers server and device results) |
 | `Unread { channel_id }` | the channel's unread marker or mention count changed |
+| `Typing { channel_id }` | who is writing there changed (`typing_members`) |
 | `Notification(Notification)` | something the user wants to hear about, with its text in their language |
 | `Offline { error }` / `Online { reloaded }` | connection lost / back; with `reloaded`, redraw from scratch |
 | `SignedOut` | the token was rejected; the session stopped |
@@ -143,6 +144,28 @@ mirror the models it needs and serve them itself; fxtranslate takes another
 records URL from `FXTRANSLATE_RECORDS_URL`, and the files can be put in
 `models_dir` directly.
 
+## Reactions, writing, and managing channels
+
+- **Reactions.** `react(channel, message, emoji)` and `unreact` take one
+  Unicode emoji (`👍`; `❤` and `❤️` are the same one). Each message carries
+  its reactions in the order first used, each with a count and whether this
+  user is among them (`me`); reacting changes neither the text nor its
+  revision. The server answers with the message, and other sessions get
+  events carrying the new count, so state never counts a reaction twice.
+- **Writing.** Call `typing(channel)` as the user types: at most one
+  request goes out every 8 seconds per channel, and sending a message ends
+  it. `typing_members(channel)` lists the others writing there now; each
+  shows for 10 seconds after they last said so, or until their message
+  arrives, and `Update::Typing` fires when that changes (also when it
+  times out).
+- **Several lines.** Message text may hold newlines; nothing in the SDK
+  treats them specially.
+- **Renaming and deleting.** `update_guild` and `delete_guild` are the
+  owner's; `update_channel` and `delete_channel` the owner's, and a
+  thread's creator's for the thread (`may_manage(channel)` says whether
+  the user may). Deleting a channel takes its threads and messages along,
+  for everyone; deleting a guild takes everything.
+
 ## Saved sign-ins
 
 `babel_sdk::profile` keeps one sign-in per profile name in
@@ -224,7 +247,9 @@ messages of every channel it has seen, their translations, and the device
 translations of those messages, so they are not translated again. The file
 is written every `cache_interval` (5 s) while something changes, and when
 the session is dropped; it is replaced whole (temporary file + rename) and
-readable only by its owner (mode 0600).
+readable only by its owner (mode 0600). Signing out calls `forget_cache`,
+which deletes the file and stops every later write, one under way or the
+session's last, so no messages stay behind on the device.
 
 A session with a cache starts from it at once, offline too, and connects in
 the background exactly as it reconnects: the server's guilds replace the
@@ -247,4 +272,5 @@ on.
 
 - Mirroring the device models, and updating them when new versions ship.
 - Push notifications for devices that are not connected.
-- Typing indicators.
+- Who reacted with an emoji (the server knows; the public API gives counts).
+- A guild's own emoji, usable in other guilds too (they need image uploads).

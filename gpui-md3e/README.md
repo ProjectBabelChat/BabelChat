@@ -61,7 +61,7 @@ Apps with their own assets can serve `Md3eAssets::get(path)` from their
 | `Switch`, `Checkbox`, `RadioButton` | handle growth, drawn check mark, springing dot |
 | `Slider` | M3E handle with gap, value bubble, steps and stop indicators |
 | `Chip` | assist, filter (animated check), input, suggestion |
-| `TextField` | filled/outlined, floating label, IME composition (the candidate window follows the caret), submit, masked (passwords), scrolls to the caret, double/triple click selects a word/all, drag the selection to move it, accepts dropped text, also from other applications |
+| `TextField` | filled/outlined, floating label, IME composition (the candidate window follows the caret), submit, several lines (`multiline(n)`: wraps, Shift+Enter for a new line, Up/Down between lines, grows to n lines then scrolls), `TextFieldEvent::Edited` on the user's edits, masked (passwords), scrolls to the caret, double/triple click selects a word/all, drag the selection to move it, accepts dropped text, also from other applications |
 | `SelectableText` | read-only text the reader selects with the mouse (drag, double and triple click), copies (Ctrl+C) and drags into a text field or, on Wayland, into other applications |
 | `NavigationRail` | collapsed ↔ expanded with continuous item reflow |
 | `Card`, `ListItem`, `Toolbar`, `Snackbar` | including segmented (grouped) list items |
@@ -88,8 +88,7 @@ same way.
 - No letter spacing (GPUI has no tracking yet), so type tokens ignore it.
 - GPUI has no element transforms, so scale effects are done with layout.
 - Ripples clip to convex containers only.
-- Not yet: menus, dialogs, tooltips, tabs, app bars, search, date pickers,
-  multi-line text fields.
+- Not yet: menus, dialogs, tooltips, tabs, app bars, search, date pickers.
 
 ## Licenses
 

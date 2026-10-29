@@ -239,3 +239,71 @@ async fn other_channels_speak_up_through_notifications() {
     bob.wait_for("! you were removed from Rhythm Club").await;
     alice.wait_for("← bob was removed from Rhythm Club").await;
 }
+
+#[tokio::test]
+async fn reactions_lines_and_renames_as_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ServerConfig {
+        data_dir: dir.path().to_path_buf(),
+        message_cells: 1,
+        translation_cells: 1,
+        engine: EngineChoice::Mock {
+            latency: Duration::from_millis(20),
+        },
+        default_plan: Plan::Paid3,
+        daily_budget: None,
+    };
+    let (address, _server) = start(&config, "127.0.0.1:0").await.unwrap();
+    let url = format!("http://{address}");
+
+    let mut alice = Terminal::open(&url, "alice", "ja-JP").await;
+    let mut bob = Terminal::open(&url, "bob", "en-US").await;
+    alice.type_line("/create Rhythm Club").await;
+    alice.type_line("/languages ja en llm ja en").await;
+    alice.type_line("/channel general").await;
+    alice.type_line("/invite").await;
+    let code = alice
+        .recent()
+        .lines()
+        .find_map(|line| line.strip_prefix("Invite code: "))
+        .unwrap()
+        .to_string();
+    bob.type_line(&format!("/join {code}")).await;
+
+    // A line ending in a backslash goes on on the next one.
+    alice.type_line("一行目です\\").await;
+    assert_eq!(alice.recent(), "");
+    alice.type_line("二行目です").await;
+    assert!(
+        alice
+            .recent()
+            .contains("#1 alice: 一行目です\n      二行目です")
+    );
+    bob.wait_for("#1 alice: [en-US] 一行目です\n      二行目です")
+        .await;
+
+    // Reactions, by emoji or shortcode; the reader's own marked.
+    bob.type_line("/react #1 :thumbsup:").await;
+    alice.wait_for("#general #1  [👍 1]").await;
+    bob.wait_for("#general #1  [👍 1*]").await;
+    bob.type_line("/unreact #1 👍").await;
+    alice.wait_for("#general #1 (no reactions)").await;
+
+    // Renaming needs the owner; deleting needs the name typed.
+    bob.type_line("/rename lounge").await;
+    bob.wait_for("! the server refused").await;
+    alice.type_line("/rename lounge").await;
+    bob.wait_for("✎ #lounge in Rhythm Club").await;
+    alice.type_line("/rename-guild Jazz Club").await;
+    bob.wait_for("✎ Rhythm Club is now Jazz Club").await;
+    alice.type_line("/delete-channel").await;
+    assert!(
+        alice
+            .recent()
+            .contains("To go ahead: /delete-channel lounge")
+    );
+    alice.type_line("/delete-channel lounge").await;
+    bob.wait_for("- #lounge in Jazz Club was deleted").await;
+    alice.type_line("/delete-guild Jazz Club").await;
+    bob.wait_for("! Jazz Club was deleted").await;
+}

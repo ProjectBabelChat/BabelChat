@@ -188,6 +188,7 @@ mod tests {
             rev,
             created_at: 0,
             edited_at: None,
+            reactions: Vec::new(),
         }
     }
 

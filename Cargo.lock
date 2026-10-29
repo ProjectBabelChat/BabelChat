@@ -996,6 +996,7 @@ dependencies = [
  "babel-sdk",
  "babel-server",
  "clap",
+ "emojis",
  "rpassword",
  "tempfile",
  "tokio",
@@ -1022,6 +1023,7 @@ dependencies = [
  "babel-sdk",
  "chrono",
  "clap",
+ "emojis",
  "gpui",
  "gpui-md3e",
  "gpui_platform",
@@ -1119,6 +1121,7 @@ dependencies = [
  "babel-store",
  "babel-translation-cell",
  "clap",
+ "emojis",
  "metrics",
  "parking_lot",
  "reqwest",
@@ -2533,6 +2536,15 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "vswhom",
  "winreg",
+]
+
+[[package]]
+name = "emojis"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "589871e639330783bc20ad89d32ac1b049e02c273d96c907ca27478c8bc674a2"
+dependencies = [
+ "phf",
 ]
 
 [[package]]

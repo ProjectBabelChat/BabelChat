@@ -2,11 +2,14 @@
 //!
 //! Everything here is plain data behind the session's lock; no I/O.
 
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::{Duration, Instant},
+};
 
 use babel_api_edge_client::types::{
     Channel, Event, EventKind, GuildView, Member, Message, MessageTranslation, NotifyLevel,
-    ReadState, UserSettings,
+    Reaction, ReactionChange, ReadState, UserSettings,
 };
 
 use crate::session::{GuildChange, MessageChange, NotifyReason, Unread, Update};
@@ -16,6 +19,8 @@ const CHANNEL_LIMIT: usize = 2000;
 /// Translations that arrived before their message (the Edge follows the
 /// message and translation logs separately).
 const ORPHAN_LIMIT: usize = 1000;
+/// How long someone shows as writing after they said so.
+pub(crate) const TYPING_SHOWN: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -28,6 +33,8 @@ pub(crate) struct State {
     pub device: HashMap<crate::display::DeviceJob, Result<String, String>>,
     /// When device jobs failed in ways that may pass (not "no model").
     pub device_failed: HashMap<crate::display::DeviceJob, std::time::Instant>,
+    /// Channel -> who is writing there, since when (others only).
+    pub typing: HashMap<String, Vec<(String, Instant)>>,
 }
 
 #[derive(Default)]
@@ -274,7 +281,15 @@ impl State {
         let log = self.log(&message.guild_id, &message.channel_id);
         let key = MessageKey::new(&message.id);
         match log.messages.get_mut(&key) {
-            Some(entry) if entry.message.rev >= message.rev => None,
+            Some(entry) if entry.message.rev > message.rev => None,
+            // Reactions change without a new revision.
+            Some(entry) if entry.message.rev == message.rev => {
+                if entry.message.reactions == message.reactions {
+                    return None;
+                }
+                entry.message.reactions = message.reactions;
+                Some(MessageChange::Reactions)
+            }
             Some(entry) => {
                 entry.message = message;
                 Some(MessageChange::Edited)
@@ -345,6 +360,114 @@ impl State {
         true
     }
 
+    /// Applies someone's reaction (`added`) or its removal. The count comes
+    /// from the server, so hearing the same change twice does no harm.
+    pub fn put_reaction(&mut self, change: &ReactionChange, added: bool) -> bool {
+        let own = change.user_id == self.user_id;
+        let Some(entry) = self
+            .channels
+            .get_mut(&change.channel_id)
+            .and_then(|log| log.messages.get_mut(&MessageKey::new(&change.message_id)))
+        else {
+            return false;
+        };
+        let reactions = &mut entry.message.reactions;
+        let before = reactions.clone();
+        match reactions
+            .iter_mut()
+            .position(|reaction| reaction.emoji == change.emoji)
+        {
+            Some(at) => {
+                reactions[at].count = change.count;
+                if own {
+                    reactions[at].me = added;
+                }
+                if change.count <= 0 {
+                    reactions.remove(at);
+                }
+            }
+            None if change.count > 0 => reactions.push(Reaction {
+                emoji: change.emoji.clone(),
+                count: change.count,
+                me: own && added,
+            }),
+            None => {}
+        }
+        *reactions != before
+    }
+
+    /// Someone else is writing in a channel. True if they were not already.
+    pub fn put_typing(&mut self, channel: &str, user: &str, now: Instant) -> bool {
+        if user == self.user_id {
+            return false;
+        }
+        let writing = self.typing.entry(channel.to_string()).or_default();
+        let known = writing
+            .iter()
+            .any(|(who, since)| who == user && now.duration_since(*since) < TYPING_SHOWN);
+        writing.retain(|(who, _)| who != user);
+        writing.push((user.to_string(), now));
+        !known
+    }
+
+    /// They sent their message. True if they were writing.
+    fn stop_typing(&mut self, channel: &str, user: &str) -> bool {
+        let Some(writing) = self.typing.get_mut(channel) else {
+            return false;
+        };
+        let count = writing.len();
+        writing.retain(|(who, _)| who != user);
+        writing.len() != count
+    }
+
+    /// Who is writing in a channel now, earliest first.
+    pub fn typing(&self, channel: &str, now: Instant) -> Vec<String> {
+        self.typing
+            .get(channel)
+            .into_iter()
+            .flatten()
+            .filter(|(_, since)| now.duration_since(*since) < TYPING_SHOWN)
+            .map(|(who, _)| who.clone())
+            .collect()
+    }
+
+    /// Takes a renamed (or moved) channel. True if it changed anything.
+    pub fn put_channel(&mut self, channel: Channel) -> bool {
+        let Some(known) = self.guild_mut(&channel.guild_id).and_then(|view| {
+            view.channels
+                .iter_mut()
+                .find(|known| known.id == channel.id)
+        }) else {
+            return false;
+        };
+        if *known == channel {
+            return false;
+        }
+        // The newest message is tracked here as messages arrive.
+        let last = known.last_message_id.clone();
+        *known = channel;
+        if known.last_message_id.as_deref().map(id_number).unwrap_or(0)
+            < last.as_deref().map(id_number).unwrap_or(0)
+        {
+            known.last_message_id = last;
+        }
+        true
+    }
+
+    /// Forgets a deleted channel and its messages. True if it was known.
+    pub fn remove_channel(&mut self, guild: &str, channel: &str) -> bool {
+        let Some(view) = self.guild_mut(guild) else {
+            return false;
+        };
+        let count = view.channels.len();
+        view.channels.retain(|known| known.id != channel);
+        view.read_states.retain(|state| state.channel_id != channel);
+        let known = view.channels.len() != count;
+        self.channels.remove(channel);
+        self.typing.remove(channel);
+        known
+    }
+
     pub fn remove_message(&mut self, channel: &str, message: &str) -> Option<Message> {
         self.channels
             .get_mut(channel)
@@ -409,6 +532,23 @@ impl State {
                     GuildChange::Refreshed
                 })
             }
+            EventKind::GuildUpdated => {
+                let (Some(guild), Some(view)) = (event.guild_info, self.guild_mut(&guild_id))
+                else {
+                    return Vec::new();
+                };
+                if view.guild == guild {
+                    return Vec::new();
+                }
+                view.guild = guild;
+                guild_update(GuildChange::Updated)
+            }
+            EventKind::GuildDeleted => {
+                if !self.remove_guild(&guild_id) {
+                    return Vec::new();
+                }
+                guild_update(GuildChange::Deleted)
+            }
             EventKind::MemberJoined => {
                 let (Some(member), Some(view)) = (event.member, self.guild_mut(&guild_id)) else {
                     return Vec::new();
@@ -460,20 +600,75 @@ impl State {
                 view.channels.push(channel);
                 guild_update(GuildChange::ChannelCreated { channel_id })
             }
+            EventKind::ChannelUpdated => {
+                let Some(channel) = event.channel else {
+                    return Vec::new();
+                };
+                let channel_id = channel.id.clone();
+                if !self.put_channel(channel) {
+                    return Vec::new();
+                }
+                guild_update(GuildChange::ChannelUpdated { channel_id })
+            }
+            EventKind::ChannelDeleted => {
+                let Some(channel) = event.channel else {
+                    return Vec::new();
+                };
+                if !self.remove_channel(&guild_id, &channel.id) {
+                    return Vec::new();
+                }
+                guild_update(GuildChange::ChannelDeleted {
+                    channel_id: channel.id,
+                })
+            }
             EventKind::MessageCreated | EventKind::MessageEdited => {
                 let Some(message) = event.message else {
                     return Vec::new();
                 };
                 let (channel_id, message_id) = (message.channel_id.clone(), message.id.clone());
-                self.put_live(message)
-                    .map(|change| Update::Message {
+                let mut updates = Vec::new();
+                // Sending ends writing.
+                if event.kind == EventKind::MessageCreated
+                    && self.stop_typing(&channel_id, &message.author_id)
+                {
+                    updates.push(Update::Typing {
                         guild_id: guild_id.clone(),
-                        channel_id,
-                        message_id,
-                        change,
-                    })
-                    .into_iter()
-                    .collect()
+                        channel_id: channel_id.clone(),
+                    });
+                }
+                updates.extend(self.put_live(message).map(|change| Update::Message {
+                    guild_id: guild_id.clone(),
+                    channel_id,
+                    message_id,
+                    change,
+                }));
+                updates
+            }
+            EventKind::ReactionAdded | EventKind::ReactionRemoved => {
+                let Some(change) = event.reaction else {
+                    return Vec::new();
+                };
+                if !self.put_reaction(&change, event.kind == EventKind::ReactionAdded) {
+                    return Vec::new();
+                }
+                vec![Update::Message {
+                    guild_id,
+                    channel_id: change.channel_id,
+                    message_id: change.message_id,
+                    change: MessageChange::Reactions,
+                }]
+            }
+            EventKind::Typing => {
+                let Some(typing) = event.typing else {
+                    return Vec::new();
+                };
+                if !self.put_typing(&typing.channel_id, &typing.user_id, Instant::now()) {
+                    return Vec::new();
+                }
+                vec![Update::Typing {
+                    guild_id,
+                    channel_id: typing.channel_id,
+                }]
             }
             EventKind::MessageDeleted => {
                 let Some(deleted) = event.deleted else {

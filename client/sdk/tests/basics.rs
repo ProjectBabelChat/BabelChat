@@ -209,11 +209,19 @@ async fn sessions_start_from_their_cache_even_offline() {
     server.task.abort();
     let _ = server.task.await;
     let client = Client::with_token(client.server(), client.token()).unwrap();
-    let mut alice = connect(&client, config).await;
+    let mut alice = connect(&client, config.clone()).await;
     assert_eq!(alice.session.messages(&channel).len(), 2);
     alice
         .next(|update| matches!(update, Update::Offline { .. }).then_some(()))
         .await;
+
+    // Signing out forgets it for good: dropping the session writes nothing.
+    let path = config.cache.clone().unwrap();
+    assert!(path.exists());
+    alice.session.forget_cache();
+    alice.session.save_cache();
+    drop(alice);
+    assert!(!path.exists());
 }
 
 #[tokio::test]

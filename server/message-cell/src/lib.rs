@@ -28,10 +28,11 @@ use std::{
 use async_trait::async_trait;
 use babel_api_directory::types::Directory;
 use babel_api_message_cell::types::{
-    Ban, Channel, ChannelKind, DeletedMessage, Guild, GuildEvent, GuildEventBatch, GuildEventKind,
-    GuildExport, GuildImport, GuildSnapshot, Invite, Member, Message, MessageCellError,
-    MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage, NotificationSettings, NotifyLevel,
-    Permission, ReadState, Role,
+    Ban, Channel, ChannelKind, ChannelUpdate, DeletedMessage, Guild, GuildEvent, GuildEventBatch,
+    GuildEventKind, GuildExport, GuildImport, GuildSnapshot, GuildUpdate, Invite, Member, Message,
+    MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
+    NotificationSettings, NotifyLevel, Permission, Reaction, ReactionChange, ReadState, Role,
+    Typing,
 };
 use babel_api_translation_cell::types::TranslationCell;
 use babel_common::{
@@ -41,9 +42,9 @@ use babel_store::{Batch, KvStore, Scan, StoreError};
 use parking_lot::Mutex;
 pub use records::TABLES;
 use records::{
-    BANS, CHANNELS, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES, NOTIFY, OUTBOX,
-    OutboxEntry, READS, channel_key, guild_key, invite_key, log_key, member_key, message_key,
-    message_prefix, outbox_key, read_key, read_prefix,
+    BANS, CHANNELS, GUILD_TABLES, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES, NOTIFY,
+    OUTBOX, OutboxEntry, READS, channel_key, guild_key, invite_key, log_key, member_key,
+    message_key, message_prefix, outbox_key, read_key, read_prefix,
 };
 use tokio::sync::{Notify, OwnedMutexGuard};
 pub use trim::LOG_RETENTION;
@@ -55,6 +56,8 @@ const MAX_PAGE: i64 = 100;
 const POLL_LIMIT: usize = 100;
 const MAX_MENTIONS: usize = 20;
 const MAX_CHANNEL_SETTINGS: usize = 500;
+/// Different emoji on one message.
+const MAX_REACTIONS: usize = 20;
 /// Messages read when recounting a member's mentions after an ack.
 const RECOUNT_LIMIT: usize = 1000;
 
@@ -74,6 +77,8 @@ fn event(kind: GuildEventKind) -> GuildEvent {
         channel: None,
         message: None,
         deleted: None,
+        reaction: None,
+        typing: None,
         user_id: None,
         read_state: None,
         notifications: None,
@@ -137,6 +142,26 @@ fn mentions(message: &Message) -> &[String] {
 
 fn parse_id(id: &str) -> CellResult<u64> {
     id.parse().map_err(|_| MessageCellError::InvalidRequest)
+}
+
+/// One Unicode emoji, in its fully qualified form (`❤` becomes `❤️`), so
+/// the same emoji is always one reaction. Custom emoji (`custom:<id>`)
+/// will be checked against the emoji that exist; none do yet.
+fn emoji(text: &str) -> CellResult<String> {
+    emojis::get(text)
+        .map(|emoji| emoji.as_str().to_string())
+        .ok_or(MessageCellError::InvalidRequest)
+}
+
+/// Owners manage every channel; a thread's creator manages the thread.
+fn may_manage(member: &Member, channel: &Channel) -> CellResult<()> {
+    let creator = channel.kind == ChannelKind::Thread
+        && channel.created_by.as_deref() == Some(member.user_id.as_str());
+    if member.role == Role::Owner || creator {
+        Ok(())
+    } else {
+        Err(MessageCellError::Forbidden)
+    }
 }
 
 #[derive(Clone)]
@@ -217,6 +242,16 @@ impl Inner {
 
     /// The guild's record; `moved` once it lives on another cell.
     fn guild(&self, guild: &str) -> CellResult<GuildRecord> {
+        let record = self.guild_log(guild)?;
+        if record.deleted {
+            return Err(MessageCellError::NotFound);
+        }
+        Ok(record)
+    }
+
+    /// The guild's record while its log may still be read: deleted guilds
+    /// too.
+    fn guild_log(&self, guild: &str) -> CellResult<GuildRecord> {
         let record = self
             .store
             .get_value::<GuildRecord>(GUILDS, &guild_key(guild))
@@ -514,6 +549,7 @@ impl Inner {
             trimmed: 0,
             frozen: false,
             moved: false,
+            deleted: false,
         };
 
         let mut batch = Batch::new();
@@ -538,6 +574,77 @@ impl Inner {
         );
         self.commit(batch, &record)?;
         Ok(guild)
+    }
+
+    async fn update_guild(&self, update: GuildUpdate) -> CellResult<Guild> {
+        check_text(&update.name, MAX_NAME_CHARS)?;
+        if let Some(description) = &update.description {
+            check_text(description, MAX_TOPIC_CHARS)?;
+        }
+        let _guard = self.lock_writable(&update.guild_id).await?;
+        self.authorize(&update.guild_id, &update.user_id, Permission::ManageGuild)?;
+        let mut record = self.guild(&update.guild_id)?;
+        record.guild.name = update.name;
+        record.guild.description = update.description;
+
+        let guild = record.guild.clone();
+        let mut batch = Batch::new();
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                guild: Some(guild.clone()),
+                ..event(GuildEventKind::GuildUpdated)
+            },
+            true,
+        );
+        self.commit(batch, &record)?;
+        Ok(guild)
+    }
+
+    /// Drops everything but the record and the log, which tells Edges and
+    /// the outbox: the guild went, then each member, so the Directory
+    /// forgets their memberships.
+    async fn delete_guild(&self, guild: String, user: String) -> CellResult<()> {
+        let _guard = self.lock_writable(&guild).await?;
+        let member = self.authorize(&guild, &user, Permission::View)?;
+        if member.role != Role::Owner {
+            return Err(MessageCellError::Forbidden);
+        }
+        let mut record = self.guild(&guild)?;
+        let prefix = guild_key(&guild);
+        let members = self
+            .store
+            .scan_values::<Member>(Scan::prefix(MEMBERS, &prefix))
+            .map_err(storage)?;
+
+        let mut batch = Batch::new();
+        for table in GUILD_TABLES
+            .iter()
+            .copied()
+            .filter(|table| ![LOG, GUILDS].contains(table))
+        {
+            batch.delete_prefix(table, prefix.clone());
+        }
+        self.append(
+            &mut batch,
+            &mut record,
+            event(GuildEventKind::GuildDeleted),
+            true,
+        );
+        for (_, member) in members {
+            self.append(
+                &mut batch,
+                &mut record,
+                GuildEvent {
+                    member: Some(member),
+                    ..event(GuildEventKind::MemberRemoved)
+                },
+                true,
+            );
+        }
+        record.deleted = true;
+        self.commit(batch, &record)
     }
 
     async fn join_guild(
@@ -865,6 +972,7 @@ impl Inner {
             starter_message_id: new.starter_message_id,
             created_at: now_ms(),
             last_message_id: None,
+            created_by: Some(new.user_id.clone()),
         };
         let mut batch = Batch::new();
         batch.put_value(
@@ -883,6 +991,103 @@ impl Inner {
         );
         self.commit(batch, &record)?;
         Ok(channel)
+    }
+
+    async fn update_channel(&self, update: ChannelUpdate) -> CellResult<Channel> {
+        check_text(&update.name, MAX_NAME_CHARS)?;
+        if let Some(topic) = &update.topic {
+            check_text(topic, MAX_TOPIC_CHARS)?;
+        }
+        let guild = update.guild_id.clone();
+        let _guard = self.lock_writable(&guild).await?;
+        let member = self.authorize(&guild, &update.user_id, Permission::View)?;
+        let mut channel = self.channel(&guild, &update.channel_id)?;
+        may_manage(&member, &channel)?;
+        channel.name = update.name;
+        channel.topic = update.topic;
+
+        let mut record = self.guild(&guild)?;
+        let mut batch = Batch::new();
+        batch.put_value(CHANNELS, channel_key(&guild, &channel.id), &channel);
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                channel: Some(channel.clone()),
+                ..event(GuildEventKind::ChannelUpdated)
+            },
+            true,
+        );
+        self.commit(batch, &record)?;
+        Ok(channel)
+    }
+
+    /// Deletes a channel with its messages and members' read markers; a text
+    /// channel's threads go first. A category's channels move out of it.
+    async fn delete_channel(&self, guild: String, channel: String, user: String) -> CellResult<()> {
+        let _guard = self.lock_writable(&guild).await?;
+        let member = self.authorize(&guild, &user, Permission::View)?;
+        let channel = self.channel(&guild, &channel)?;
+        may_manage(&member, &channel)?;
+        let mut record = self.guild(&guild)?;
+        let prefix = guild_key(&guild);
+        let children = self
+            .store
+            .scan_values::<Channel>(Scan::prefix(CHANNELS, &prefix))
+            .map_err(storage)?
+            .into_iter()
+            .map(|(_, child)| child)
+            .filter(|child| child.parent_id.as_ref() == Some(&channel.id))
+            .collect::<Vec<_>>();
+
+        let mut batch = Batch::new();
+        let mut gone = Vec::new();
+        for mut child in children {
+            if channel.kind == ChannelKind::Category {
+                child.parent_id = None;
+                batch.put_value(CHANNELS, channel_key(&guild, &child.id), &child);
+                self.append(
+                    &mut batch,
+                    &mut record,
+                    GuildEvent {
+                        channel: Some(child),
+                        ..event(GuildEventKind::ChannelUpdated)
+                    },
+                    true,
+                );
+            } else {
+                gone.push(child);
+            }
+        }
+        gone.push(channel);
+
+        let ids = gone
+            .iter()
+            .map(|channel| channel.id.as_str())
+            .collect::<Vec<_>>();
+        for (key, state) in self
+            .store
+            .scan_values::<ReadState>(Scan::prefix(READS, &prefix))
+            .map_err(storage)?
+        {
+            if ids.contains(&state.channel_id.as_str()) {
+                batch.delete(READS, key);
+            }
+        }
+        for channel in gone {
+            batch.delete(CHANNELS, channel_key(&guild, &channel.id));
+            batch.delete_prefix(MESSAGES, message_prefix(&guild, &channel.id));
+            self.append(
+                &mut batch,
+                &mut record,
+                GuildEvent {
+                    channel: Some(channel),
+                    ..event(GuildEventKind::ChannelDeleted)
+                },
+                true,
+            );
+        }
+        self.commit(batch, &record)
     }
 
     async fn send_message(&self, new: NewMessage) -> CellResult<Message> {
@@ -924,6 +1129,7 @@ impl Inner {
             rev: 1,
             created_at: now,
             edited_at: None,
+            reactions: None,
         };
         channel.last_message_id = Some(message.id.clone());
 
@@ -1056,6 +1262,110 @@ impl Inner {
         self.commit(batch, &record)
     }
 
+    /// Adds (`add`) or takes back one member's reaction. Neither is an
+    /// edit: the text, its revision and its translations stay.
+    async fn react(
+        &self,
+        guild: String,
+        channel: String,
+        message_id: String,
+        user: String,
+        emoji: &str,
+        add: bool,
+    ) -> CellResult<Message> {
+        let emoji = self::emoji(emoji)?;
+        let _guard = self.lock_writable(&guild).await?;
+        let permission = if add {
+            Permission::SendMessages
+        } else {
+            Permission::View
+        };
+        self.authorize(&guild, &user, permission)?;
+        let mut message = self.message(&guild, &channel, &message_id)?;
+        let reactions = message.reactions.get_or_insert_with(Vec::new);
+        let at = reactions
+            .iter()
+            .position(|reaction| reaction.emoji == emoji);
+        let count = match (add, at) {
+            (true, Some(at)) if !reactions[at].user_ids.contains(&user) => {
+                reactions[at].user_ids.push(user.clone());
+                reactions[at].user_ids.len()
+            }
+            (true, None) if reactions.len() < MAX_REACTIONS => {
+                reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    user_ids: vec![user.clone()],
+                });
+                1
+            }
+            (true, None) => return Err(MessageCellError::InvalidRequest),
+            (false, Some(at)) if reactions[at].user_ids.contains(&user) => {
+                reactions[at].user_ids.retain(|known| *known != user);
+                let count = reactions[at].user_ids.len();
+                if count == 0 {
+                    reactions.remove(at);
+                }
+                count
+            }
+            // Already so.
+            _ => return Ok(message),
+        };
+
+        let mut record = self.guild(&guild)?;
+        let mut batch = Batch::new();
+        batch.put_value(
+            MESSAGES,
+            message_key(&guild, &channel, parse_id(&message.id)?),
+            &message,
+        );
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                reaction: Some(ReactionChange {
+                    channel_id: message.channel_id.clone(),
+                    message_id: message.id.clone(),
+                    emoji,
+                    user_id: user,
+                    count: count as i64,
+                }),
+                ..event(if add {
+                    GuildEventKind::ReactionAdded
+                } else {
+                    GuildEventKind::ReactionRemoved
+                })
+            },
+            false,
+        );
+        self.commit(batch, &record)?;
+        Ok(message)
+    }
+
+    /// Only the log hears of it: Edges pass it to sessions, and it is
+    /// trimmed with the rest.
+    async fn typing(&self, guild: String, channel: String, user: String) -> CellResult<()> {
+        let _guard = self.lock_writable(&guild).await?;
+        self.authorize(&guild, &user, Permission::SendMessages)?;
+        if self.channel(&guild, &channel)?.kind == ChannelKind::Category {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let mut record = self.guild(&guild)?;
+        let mut batch = Batch::new();
+        self.append(
+            &mut batch,
+            &mut record,
+            GuildEvent {
+                typing: Some(Typing {
+                    channel_id: channel,
+                    user_id: user,
+                }),
+                ..event(GuildEventKind::Typing)
+            },
+            false,
+        );
+        self.commit(batch, &record)
+    }
+
     fn get_messages(
         &self,
         guild: String,
@@ -1097,8 +1407,13 @@ impl Inner {
         after: i64,
         wait_ms: i64,
     ) -> CellResult<GuildEventBatch> {
-        let record = self.guild(&guild)?;
+        // A deleted guild's log is read to its end, then the guild is gone
+        // (and for followers that missed the end, trimmed meanwhile).
+        let record = self.guild_log(&guild)?;
         let head = record.last_seq;
+        if record.deleted && (after >= head || after < record.trimmed) {
+            return Err(MessageCellError::NotFound);
+        }
         let prefix = guild_key(&guild);
         let after_key = log_key(&guild, after.max(0));
         let read = || {
@@ -1119,7 +1434,7 @@ impl Inner {
                 .await
         {
             // It may have moved away meanwhile.
-            self.guild(&guild)?;
+            self.guild_log(&guild)?;
             events = read()?;
         }
 
@@ -1143,6 +1458,14 @@ impl Inner {
 impl babel_api_message_cell::types::MessageCell for MessageCell {
     async fn create_guild(&self, body: NewGuild) -> CellResult<Guild> {
         self.inner.create_guild(body).await
+    }
+
+    async fn update_guild(&self, body: GuildUpdate) -> CellResult<Guild> {
+        self.inner.update_guild(body).await
+    }
+
+    async fn delete_guild(&self, guild_id: String, user_id: String) -> CellResult<()> {
+        self.inner.delete_guild(guild_id, user_id).await
     }
 
     async fn get_guild(&self, guild_id: String, user_id: String) -> CellResult<GuildSnapshot> {
@@ -1244,6 +1567,21 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
         self.inner.create_channel(body).await
     }
 
+    async fn update_channel(&self, body: ChannelUpdate) -> CellResult<Channel> {
+        self.inner.update_channel(body).await
+    }
+
+    async fn delete_channel(
+        &self,
+        guild_id: String,
+        channel_id: String,
+        user_id: String,
+    ) -> CellResult<()> {
+        self.inner
+            .delete_channel(guild_id, channel_id, user_id)
+            .await
+    }
+
     async fn send_message(&self, body: NewMessage) -> CellResult<Message> {
         self.inner.send_message(body).await
     }
@@ -1262,6 +1600,41 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
         self.inner
             .delete_message(guild_id, channel_id, message_id, user_id)
             .await
+    }
+
+    async fn add_reaction(
+        &self,
+        guild_id: String,
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        emoji: String,
+    ) -> CellResult<Message> {
+        self.inner
+            .react(guild_id, channel_id, message_id, user_id, &emoji, true)
+            .await
+    }
+
+    async fn remove_reaction(
+        &self,
+        guild_id: String,
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        emoji: String,
+    ) -> CellResult<Message> {
+        self.inner
+            .react(guild_id, channel_id, message_id, user_id, &emoji, false)
+            .await
+    }
+
+    async fn typing(
+        &self,
+        guild_id: String,
+        channel_id: String,
+        user_id: String,
+    ) -> CellResult<()> {
+        self.inner.typing(guild_id, channel_id, user_id).await
     }
 
     async fn get_messages(

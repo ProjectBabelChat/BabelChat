@@ -7,8 +7,12 @@
 //! idempotent receivers (ingest is keyed by message and revision).
 //!
 //! ```text
-//! guild_created    ─▶ Translation Cell put_space
-//! channel_created  ─▶ Translation Cell put_node
+//! guild_created,
+//! guild_updated    ─▶ Translation Cell put_space
+//! guild_deleted    ─▶ Translation Cell delete_space
+//! channel_created,
+//! channel_updated  ─▶ Translation Cell put_node
+//! channel_deleted  ─▶ Translation Cell delete_node
 //! member_joined    ─▶ Directory add_membership
 //! member_left,
 //! member_removed   ─▶ Directory remove_membership
@@ -124,7 +128,7 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
     let guild_id = record.guild.id.clone();
 
     match event.kind {
-        GuildEventKind::GuildCreated => {
+        GuildEventKind::GuildCreated | GuildEventKind::GuildUpdated => {
             let Some(guild) = event.guild else {
                 return Delivery::Done;
             };
@@ -141,7 +145,10 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                 entry,
             )
         }
-        GuildEventKind::ChannelCreated => {
+        GuildEventKind::GuildDeleted => {
+            outcome(translation_cell.delete_space(guild_id).await, entry)
+        }
+        GuildEventKind::ChannelCreated | GuildEventKind::ChannelUpdated => {
             let Some(channel) = event.channel else {
                 return Delivery::Done;
             };
@@ -169,6 +176,15 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                         starter,
                     })
                     .await,
+                entry,
+            )
+        }
+        GuildEventKind::ChannelDeleted => {
+            let Some(channel) = event.channel else {
+                return Delivery::Done;
+            };
+            outcome(
+                translation_cell.delete_node(guild_id, channel.id).await,
                 entry,
             )
         }
@@ -232,7 +248,11 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
                 entry,
             )
         }
-        // Only Edges care about one member's markers and settings.
-        GuildEventKind::ReadStateUpdated | GuildEventKind::NotificationsUpdated => Delivery::Done,
+        // Only Edges care about these.
+        GuildEventKind::ReactionAdded
+        | GuildEventKind::ReactionRemoved
+        | GuildEventKind::Typing
+        | GuildEventKind::ReadStateUpdated
+        | GuildEventKind::NotificationsUpdated => Delivery::Done,
     }
 }

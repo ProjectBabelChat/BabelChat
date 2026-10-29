@@ -17,6 +17,7 @@ babel-lang.workspace = true
 babel-sdk.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 clap = { workspace = true, features = ["env"] }
+emojis.workspace = true
 gpui.workspace = true
 gpui-md3e = { path = "../../gpui-md3e" }
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
