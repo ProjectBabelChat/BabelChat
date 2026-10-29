@@ -40,6 +40,12 @@ batches are enough; no transactions are needed.
   (`?` in TYML), so records written before they existed still decode
   (`Message.mentions`, `Channel.last_message_id`); new tables are created on
   open.
+- Tables holding files (the Media service's `blobs`) are opened with
+  `RocksStore::open_with_blobs`: values from 64 KB up go to blob files
+  beside the LSM tree (RocksDB's integrated BlobDB), uncompressed, which
+  compactions do not rewrite; their space comes back through blob garbage
+  collection. Standbys open their copy with the primary's table options,
+  read from the checkpoint. See [Media](media.md).
 
 ## The event log is the backbone
 

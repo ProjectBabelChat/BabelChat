@@ -10,6 +10,7 @@
 //! bans      guild / user                     Ban
 //! reads     guild / user / channel           ReadState    (members' read markers)
 //! notify    guild / user                     NotificationSettings
+//! uploads   guild / user / attachment id     Upload       (files not sent yet; a day)
 //! log       guild / seq                      GuildEvent   (the guild's event log)
 //! outbox    seq                              OutboxEntry  (cell-wide, in commit order)
 //! ```
@@ -17,7 +18,7 @@
 //! Every key of a guild starts with the guild ID, so moving a guild to
 //! another cell is a range export of each table.
 
-use babel_api_message_cell::types::Guild;
+use babel_api_message_cell::types::{Attachment, Guild};
 use babel_store::{Key, Table};
 use serde::{Deserialize, Serialize};
 
@@ -29,18 +30,19 @@ pub const INVITES: Table = "invites";
 pub const BANS: Table = "bans";
 pub const READS: Table = "reads";
 pub const NOTIFY: Table = "notify";
+pub const UPLOADS: Table = "uploads";
 pub const LOG: Table = "log";
 pub const OUTBOX: Table = "outbox";
 
 pub const TABLES: &[Table] = &[
-    GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, LOG, OUTBOX,
+    GUILDS, MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, LOG, OUTBOX,
 ];
 
 /// The tables holding a guild's entries (every key starts with the guild),
 /// in the order a move copies them: the guild record last, so the guild is
 /// whole on the new cell before it exists there.
 pub const GUILD_TABLES: &[Table] = &[
-    MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, LOG, GUILDS,
+    MEMBERS, CHANNELS, MESSAGES, INVITES, BANS, READS, NOTIFY, UPLOADS, LOG, GUILDS,
 ];
 
 pub fn guild_key(guild: &str) -> Vec<u8> {
@@ -77,6 +79,14 @@ pub fn message_key(guild: &str, channel: &str, id: u64) -> Vec<u8> {
     Key::new().str(guild).str(channel).u64(id).build()
 }
 
+pub fn upload_prefix(guild: &str, user: &str) -> Vec<u8> {
+    Key::new().str(guild).str(user).build()
+}
+
+pub fn upload_key(guild: &str, user: &str, id: &str) -> Vec<u8> {
+    Key::new().str(guild).str(user).str(id).build()
+}
+
 pub fn log_key(guild: &str, seq: i64) -> Vec<u8> {
     Key::new().str(guild).u64(seq as u64).build()
 }
@@ -109,6 +119,14 @@ pub struct GuildRecord {
     /// answers `not_found`.
     #[serde(default)]
     pub deleted: bool,
+}
+
+/// A file a member put on a Media service and has not sent yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Upload {
+    pub channel_id: String,
+    pub attachment: Attachment,
+    pub uploaded_at: i64,
 }
 
 /// A pointer to a log entry that other services have not seen yet.

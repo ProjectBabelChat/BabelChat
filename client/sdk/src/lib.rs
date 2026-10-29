@@ -36,16 +36,16 @@ mod websocket;
 
 pub use api::{Client, Error, Result};
 pub use babel_api_edge_client::types::{
-    ApiError, Ban, Channel, ChannelKind, ChannelNotify, GuildView, Invite, LanguageAlias,
-    LanguagePolicy, LanguagePolicyUpdate, LanguageView, Member, Message, MessageTranslation,
-    NotificationSettings, NotifyLevel, ReadState, RegionMode, Token, Translation, TranslationModel,
-    UserSettings,
+    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelNotify, GuildView, Invite,
+    LanguageAlias, LanguagePolicy, LanguagePolicyUpdate, LanguageView, Member, Message,
+    MessageTranslation, NotificationSettings, NotifyLevel, ReadState, RegionMode, Token,
+    Translation, TranslationModel, UserSettings,
 };
 pub use device::{DeviceError, DeviceTranslator, MockDeviceTranslator};
 pub use display::{Display, Shown};
 pub use session::{
-    ChatMessage, GuildChange, MessageChange, Notification, NotifyReason, Session, SessionConfig,
-    Transport, Unread, Update,
+    ChatMessage, GuildChange, MAX_UPLOAD_BYTES, MessageChange, Notification, NotifyReason, Session,
+    SessionConfig, Transport, Unread, Update,
 };
 
 // Apps share one session between their UI thread and the runtime.

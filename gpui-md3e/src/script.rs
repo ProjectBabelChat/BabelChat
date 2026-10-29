@@ -3,7 +3,8 @@
 //!
 //! Commands: `move X Y`, `down`, `up`, `click X Y [count]` (count 2 is a
 //! double click), `key <keystroke>` (one key), `type <text>` (one character
-//! at a time), `keydown`/`keyup <keystroke>`, `scroll <lines>`, `wait <ms>`,
+//! at a time), `keydown`/`keyup <keystroke>`, `scroll <lines>`, `drop X Y
+//! <path>` (a file dragged in from another app and dropped), `wait <ms>`,
 //! `shot <png>` and `quit`.
 //!
 //! Events are dispatched straight into the window, so nothing reaches other
@@ -16,8 +17,9 @@ use std::time::Duration;
 const CLICK_STEP: Duration = Duration::from_millis(50);
 
 use gpui::{
-    AnyWindowHandle, App, AsyncApp, Keystroke, Modifiers, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta, ScrollEvent, point, px,
+    AnyWindowHandle, App, AsyncApp, ExternalPaths, FileDropEvent, Keystroke, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Point, ScrollDelta,
+    ScrollEvent, point, px,
 };
 
 enum Command {
@@ -30,6 +32,7 @@ enum Command {
     KeyDown(Keystroke),
     KeyUp(Keystroke),
     Scroll(f32),
+    Drop(Point<gpui::Pixels>, std::path::PathBuf),
     Wait(Duration),
     Shot(String),
     Quit,
@@ -61,6 +64,10 @@ fn parse(script: &str) -> Vec<Command> {
                 "keydown" => Command::KeyDown(keystroke(line)?),
                 "keyup" => Command::KeyUp(keystroke(line)?),
                 "scroll" => Command::Scroll(number()?),
+                "drop" => {
+                    let at = point(px(number()?), px(number()?));
+                    Command::Drop(at, line.splitn(4, ' ').nth(3)?.trim().into())
+                }
                 "wait" => Command::Wait(Duration::from_millis(number()? as u64)),
                 "shot" => Command::Shot(line.split_whitespace().nth(1)?.to_owned()),
                 "quit" => Command::Quit,
@@ -176,6 +183,19 @@ pub fn run(script: &str, window: AnyWindowHandle, cx: &mut App) {
                     delta: ScrollDelta::Lines(point(0.0, lines)),
                     ..Default::default()
                 })),
+                Command::Drop(to, path) => {
+                    position = to;
+                    dispatch(
+                        cx,
+                        window,
+                        PlatformInput::FileDrop(FileDropEvent::Entered {
+                            position,
+                            paths: ExternalPaths(vec![path].into()),
+                        }),
+                    );
+                    cx.background_executor().timer(CLICK_STEP).await;
+                    Some(PlatformInput::FileDrop(FileDropEvent::Submit { position }))
+                }
                 Command::Wait(duration) => {
                     cx.background_executor().timer(duration).await;
                     None

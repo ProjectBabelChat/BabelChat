@@ -7,18 +7,20 @@
 //! notifications (`🔔`), as the guild's notification settings say.
 //! Messages get short numbers (`#3`) for `/reply`, `/edit`, `/delete`,
 //! `/react` and `/thread`. A line ending in `\` goes on on the next one,
-//! for messages of several lines.
+//! for messages of several lines. `/attach` puts a file on the server for
+//! the next message (or `/send` alone); `/download` saves a message's.
 
 use std::{
     collections::{HashMap, HashSet},
     io::Write,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use babel_sdk::{
-    ChannelKind, ChannelNotify, ChatMessage, GuildChange, GuildView, LanguagePolicyUpdate,
-    MessageChange, Notification, NotifyLevel, NotifyReason, RegionMode, Session, Shown, Unread,
-    Update,
+    Attachment, ChannelKind, ChannelNotify, ChatMessage, GuildChange, GuildView,
+    LanguagePolicyUpdate, MAX_UPLOAD_BYTES, MessageChange, Notification, NotifyLevel, NotifyReason,
+    RegionMode, Session, Shown, Unread, Update,
 };
 
 /// How long a new message may wait for its translation before printing.
@@ -54,6 +56,8 @@ pub struct Repl {
     continued: String,
     /// Who was last shown writing in the open channel.
     writing: Vec<String>,
+    /// Files uploaded to the open channel for the next message.
+    attached: Vec<Attachment>,
 }
 
 pub const HELP: &str = "\
@@ -66,6 +70,8 @@ with \\ to go on on the next one. Commands:
   /reply <#n> <text>           answer a message          /thread <#n> <name>  thread from it
   /edit <#n> <text>            /delete <#n>
   /react <#n> <emoji>          react (👍 or :thumbsup:)  /unreact <#n> <emoji>
+  /attach <path>               a file for your next message (10 MB)
+  /send                        send attached files alone /download <#n> [dir]  save its files
   /create <name>               create a guild            /channel <name>   create a channel
   /rename <name>               rename this channel       /topic [text]     its topic
   /delete-channel <name>       delete this channel, its threads and messages
@@ -101,6 +107,7 @@ impl Repl {
             names: HashMap::new(),
             continued: String::new(),
             writing: Vec::new(),
+            attached: Vec::new(),
         }
     }
 
@@ -189,6 +196,9 @@ impl Repl {
                 None => self.say("/outside on|off"),
             },
             "edit" => self.edit(rest).await,
+            "attach" if !rest.is_empty() => self.attach(rest).await,
+            "send" => self.send(rest).await,
+            "download" => self.download(rest).await,
             "react" => self.react(rest, true).await,
             "unreact" => self.react(rest, false).await,
             "rename" if !rest.is_empty() => self.rename_channel(Some(rest), None).await,
@@ -344,6 +354,9 @@ impl Repl {
             marker(&message.display.shown),
             reactions_text(message)
         );
+        for file in &m.attachments {
+            text.push_str(&format!("\n      📎 {}", file_text(file)));
+        }
         if message.display.is_translated() && self.session.settings().show_original {
             text.push_str(&format!("\n      ┆ {}", m.text.replace('\n', "\n      ┆ ")));
         }
@@ -367,14 +380,96 @@ impl Repl {
         self.print(message, &format!("🔔 {why} "));
     }
 
+    /// Sends `text` with the attached files, if any.
     async fn send(&mut self, text: &str) {
         let Some(channel) = self.channel.clone() else {
             self.say("Open a channel first: /channels, then /open <name>.");
             return;
         };
-        match self.session.send(&channel, text).await {
-            Ok(message) => self.print(&message, ""),
+        if text.is_empty() && self.attached.is_empty() {
+            self.say("Nothing to send: /attach <path> first.");
+            return;
+        }
+        match self
+            .session
+            .send_with(&channel, text, None, &self.attached)
+            .await
+        {
+            Ok(message) => {
+                self.attached.clear();
+                self.print(&message, "")
+            }
             Err(error) => self.say(format!("! not sent: {error}")),
+        }
+    }
+
+    async fn attach(&mut self, path: &str) {
+        let Some(channel) = self.channel.clone() else {
+            self.say("Open a channel first: /channels, then /open <name>.");
+            return;
+        };
+        let path = Path::new(path);
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let read = match std::fs::metadata(path) {
+            Ok(metadata) if metadata.len() as i64 > MAX_UPLOAD_BYTES => {
+                self.say(format!("! {} is larger than 10 MB", path.display()));
+                return;
+            }
+            Ok(_) => std::fs::read(path),
+            Err(error) => Err(error),
+        };
+        let bytes = match read {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.say(format!("! {}: {error}", path.display()));
+                return;
+            }
+        };
+        match self.session.upload(&channel, &name, bytes).await {
+            Ok(file) => {
+                self.say(format!(
+                    "📎 {}: goes with your next message (or /send it alone)",
+                    file_text(&file)
+                ));
+                self.attached.push(file);
+            }
+            Err(error) => self.say(format!("! not attached: {error}")),
+        }
+    }
+
+    async fn download(&mut self, rest: &str) {
+        let (number, dir) = rest.split_once(' ').unwrap_or((rest, ""));
+        let message = self
+            .numbered(number)
+            .and_then(|(channel, message)| self.session.message(&channel, &message));
+        let Some(message) = message.filter(|message| !message.message.attachments.is_empty())
+        else {
+            self.say("/download <#n> [dir]: a message with files");
+            return;
+        };
+        let dir = PathBuf::from(if dir.trim().is_empty() {
+            "."
+        } else {
+            dir.trim()
+        });
+        for file in &message.message.attachments {
+            let saved = match self.session.download(file).await {
+                Ok(bytes) => {
+                    let path = free_path(&dir, &file.name);
+                    std::fs::write(&path, &bytes).map(|()| path)
+                }
+                Err(error) => {
+                    self.say(format!("! {}: {error}", file.name));
+                    continue;
+                }
+            };
+            match saved {
+                Ok(path) => self.say(format!("Saved {}", path.display())),
+                Err(error) => self.say(format!("! {}: {error}", file.name)),
+            }
         }
     }
 
@@ -385,8 +480,15 @@ impl Repl {
             self.say("/reply <#n> <text>");
             return;
         };
-        match self.session.reply(&channel, &message, text.trim()).await {
-            Ok(message) => self.print(&message, ""),
+        match self
+            .session
+            .send_with(&channel, text.trim(), Some(&message), &self.attached)
+            .await
+        {
+            Ok(message) => {
+                self.attached.clear();
+                self.print(&message, "")
+            }
             Err(error) => self.say(format!("! not sent: {error}")),
         }
     }
@@ -813,6 +915,13 @@ impl Repl {
     }
 
     async fn open(&mut self, channel_id: &str) {
+        if !self.attached.is_empty() && self.channel.as_deref() != Some(channel_id) {
+            let dropped = self.attached.len();
+            self.attached.clear();
+            self.say(format!(
+                "({dropped} attached file(s) not sent: they were for the last channel)"
+            ));
+        }
         self.channel = Some(channel_id.to_string());
         self.writing.clear();
         // Read as it grows, and quiet.
@@ -1274,6 +1383,38 @@ fn marker(shown: &Shown) -> String {
         }
         Shown::Untranslated { reason } => format!("  ‹untranslated: {reason}›"),
     }
+}
+
+/// `photo.png (1.4 MB, 640×480)`.
+fn file_text(file: &Attachment) -> String {
+    let size = match file.size {
+        size if size >= 1024 * 1024 => format!("{:.1} MB", size as f64 / (1024.0 * 1024.0)),
+        size if size >= 1024 => format!("{} KB", size / 1024),
+        size => format!("{size} B"),
+    };
+    match (file.width, file.height) {
+        (Some(width), Some(height)) => format!("{} ({size}, {width}×{height})", file.name),
+        _ => format!("{} ({size})", file.name),
+    }
+}
+
+/// Where to save `name` in `dir` without overwriting: `name`, else
+/// `stem (2).ext` and so on.
+fn free_path(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    if !path.exists() {
+        return path;
+    }
+    let name = Path::new(name);
+    let stem = name.file_stem().unwrap_or_default().to_string_lossy();
+    let extension = name
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
+    (2..)
+        .map(|n| dir.join(format!("{stem} ({n}){extension}")))
+        .find(|path| !path.exists())
+        .expect("some name is free")
 }
 
 /// `  [👍 2  ❤️ 1*]`, the user's own marked; empty without reactions.

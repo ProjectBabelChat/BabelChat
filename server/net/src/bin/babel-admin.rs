@@ -7,6 +7,7 @@
 //! babel-admin --cluster cluster.toml --name ops set-plan <guild id> paid1
 //! babel-admin --cluster cluster.toml --name ops signup-code --uses 5 --hours 48
 //! babel-admin --cluster cluster.toml --name ops health
+//! babel-admin --cluster cluster.toml --name ops media-usage
 //! babel-admin restore --backup-dir /backups/message-cell-0 --data data/message-cell-0
 //! ```
 
@@ -73,6 +74,8 @@ enum Command {
     /// Asks every service of the cluster file whether it runs. Fails if one
     /// does not answer.
     Health,
+    /// How many files every Media service holds, and their size.
+    MediaUsage,
     /// Puts the newest backup back into an empty data directory. The
     /// service must be stopped.
     Restore {
@@ -249,6 +252,28 @@ async fn main() -> anyhow::Result<()> {
             }
             if down > 0 {
                 bail!("{down} of the services did not answer");
+            }
+        }
+        Command::MediaUsage => {
+            let (cluster, credentials) = operator(&args)?;
+            for service in &cluster.media {
+                let peer = Identity {
+                    role: Role::Media,
+                    name: service.name.clone(),
+                };
+                let media = babel_api_media_client::types::Media {
+                    url: service.url.trim_end_matches('/').to_string(),
+                    client: credentials.http_client(&peer)?,
+                };
+                match media.get_usage().await {
+                    Ok(usage) => println!(
+                        "{:<24} {} files, {:.1} MB",
+                        service.name,
+                        usage.blobs,
+                        usage.bytes as f64 / (1024.0 * 1024.0)
+                    ),
+                    Err(error) => println!("{:<24} failed: {error:?}", service.name),
+                }
             }
         }
         Command::Restore { backup_dir, data } => {

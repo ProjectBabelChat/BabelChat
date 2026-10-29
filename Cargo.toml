@@ -14,6 +14,7 @@ members = [
     "server/engine",
     "server/translation-cell",
     "server/message-cell",
+    "server/media",
     "server/directory",
     "server/account",
     "server/edge",
@@ -36,6 +37,7 @@ babel-store = { path = "server/store" }
 babel-account = { path = "server/account" }
 babel-directory = { path = "server/directory" }
 babel-message-cell = { path = "server/message-cell" }
+babel-media = { path = "server/media" }
 babel-translation-cell = { path = "server/translation-cell" }
 babel-engine = { path = "server/engine" }
 babel-edge = { path = "server/edge" }
@@ -56,6 +58,8 @@ babel-api-directory-client = { path = "server/api/directory-client" }
 babel-api-message-cell-client = { path = "server/api/message-cell-client" }
 babel-api-message-cell = { path = "server/api/message-cell" }
 babel-api-translation-cell = { path = "server/api/translation-cell" }
+babel-api-media = { path = "server/api/media" }
+babel-api-media-client = { path = "server/api/media-client" }
 argon2 = "0.5"
 async-trait = "0.1"
 axum = "0.8"

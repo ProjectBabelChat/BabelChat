@@ -6,13 +6,15 @@ use async_trait::async_trait;
 use babel_api_directory::types::{
     Directory, DirectoryError, GuildRequest, MembershipBatch, Placement, PlacementBatch,
 };
+use babel_api_media::types::{BlobKind, Media as MediaApi, MediaError};
 use babel_api_message_cell::types::{
-    ChannelKind, ChannelNotify, ChannelUpdate, GuildEventKind, GuildUpdate, MessageCell as _,
-    MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
-    NotificationSettings, NotifyLevel, Permission, ReadState,
+    Attachment, ChannelKind, ChannelNotify, ChannelUpdate, GuildEventKind, GuildUpdate,
+    MessageCell as _, MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
+    NewUpload, NotificationSettings, NotifyLevel, Permission, ReadState,
 };
 use babel_api_translation_cell::types::{MessageRef, TranslationCell as _, TranslationQuery};
 use babel_engine::mock::MockConfig;
+use babel_media::{Blobs, Media, NewBlob};
 use babel_message_cell::MessageCell;
 use babel_store::{KvStore, MemStore};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
@@ -77,6 +79,7 @@ impl Directory for FakeDirectory {
 struct Fixture {
     cell: MessageCell,
     translation: TranslationCell,
+    media: Media,
     directory: Arc<FakeDirectory>,
 }
 
@@ -97,14 +100,24 @@ fn fixture() -> Fixture {
         Arc<dyn babel_api_translation_cell::types::TranslationCell>,
     > = HashMap::new();
     translation_cells.insert("tc-0".into(), Arc::new(translation.clone()));
+    let media = Media::open("media-0", Arc::new(MemStore::new()));
     let store: Arc<dyn KvStore> = Arc::new(MemStore::new());
-    let cell = MessageCell::open(store, translation_cells).unwrap();
+    let cell = MessageCell::open(
+        store,
+        translation_cells,
+        HashMap::from([(
+            "media-0".to_string(),
+            Arc::new(media.clone()) as Arc<dyn MediaApi>,
+        )]),
+    )
+    .unwrap();
     let directory = Arc::new(FakeDirectory::default());
     cell.connect_directory(directory.clone());
 
     Fixture {
         cell,
         translation,
+        media,
         directory,
     }
 }
@@ -158,6 +171,7 @@ async fn send(cell: &MessageCell, guild: &str, channel: &str, user: &str, text: 
         author_locale: Some("en-US".into()),
         text: text.into(),
         reply_to: None,
+        attachments: None,
     })
     .await
     .unwrap()
@@ -467,6 +481,7 @@ async fn mentions_and_replies_count_until_read() {
             author_locale: None,
             text: "hi @BOB, and @owner! mail@alice @bobby".into(),
             reply_to: None,
+            attachments: None,
         })
         .await
         .unwrap();
@@ -485,6 +500,7 @@ async fn mentions_and_replies_count_until_read() {
             author_locale: None,
             text: "welcome!".into(),
             reply_to: Some(hello.id.clone()),
+            attachments: None,
         })
         .await
         .unwrap();
@@ -809,7 +825,8 @@ async fn undelivered_entries_are_kept() {
             reqwest::Client::new(),
         )),
     );
-    let cell = MessageCell::open(Arc::new(MemStore::new()), translation_cells).unwrap();
+    let cell =
+        MessageCell::open(Arc::new(MemStore::new()), translation_cells, HashMap::new()).unwrap();
     cell.connect_directory(Arc::new(FakeDirectory::default()));
     let guild = guild(&cell).await;
     let channel = channel(&cell, &guild).await;
@@ -1171,6 +1188,7 @@ async fn deleted_guilds_are_read_to_the_end() {
                 author_locale: None,
                 text: "Anyone?".into(),
                 reply_to: None,
+                attachments: None,
             })
             .await,
         Err(MessageCellError::NotFound)
@@ -1219,4 +1237,202 @@ async fn deleted_guilds_are_read_to_the_end() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Puts a file on the Media service for `user` and records the upload, as
+/// an Edge does. Returns its ID.
+async fn upload(f: &Fixture, guild: &str, channel: &str, user: &str, name: &str) -> String {
+    let blob = f
+        .media
+        .put(
+            NewBlob {
+                guild_id: guild.into(),
+                channel_id: Some(channel.into()),
+                kind: BlobKind::Attachment,
+                uploader: user.into(),
+                name: name.into(),
+            },
+            Box::pin(futures::stream::iter([Ok(bytes::Bytes::from_static(
+                b"%PDF-1.7 setlist",
+            ))])),
+        )
+        .await
+        .unwrap();
+    f.cell
+        .add_upload(NewUpload {
+            guild_id: guild.into(),
+            channel_id: channel.into(),
+            user_id: user.into(),
+            attachment: Attachment {
+                id: blob.id.clone(),
+                name: blob.name,
+                content_type: blob.content_type,
+                size: blob.size,
+                width: blob.width,
+                height: blob.height,
+            },
+        })
+        .await
+        .unwrap();
+    blob.id
+}
+
+fn files(guild: &str, channel: &str, user: &str, text: &str, ids: &[&String]) -> NewMessage {
+    NewMessage {
+        guild_id: guild.into(),
+        channel_id: channel.into(),
+        user_id: user.into(),
+        author_locale: None,
+        text: text.into(),
+        reply_to: None,
+        attachments: Some(ids.iter().map(|id| id.to_string()).collect()),
+    }
+}
+
+/// Waits until the Media service has (`present`) or no longer has the file.
+async fn on_media(f: &Fixture, guild: &str, channel: &str, id: &str, attached: bool) -> bool {
+    for _ in 0..200 {
+        let blob = f
+            .media
+            .get_blob(guild.into(), Some(channel.into()), id.into())
+            .await;
+        match (&blob, attached) {
+            (Ok(blob), true) if blob.attached_at.is_some() => return true,
+            (Err(MediaError::NotFound), false) => return false,
+            _ => tokio::time::sleep(Duration::from_millis(5)).await,
+        }
+    }
+    panic!("the media service never caught up with {id}");
+}
+
+#[tokio::test]
+async fn files_go_with_their_message_and_leave_with_it() {
+    let f = fixture();
+    let (guild, channel) = club(&f.cell).await;
+    let setlist = upload(&f, &guild, &channel, "alice", "setlist.pdf").await;
+
+    // Only its uploader may send it, only where it was uploaded, once.
+    assert_eq!(
+        f.cell
+            .send_message(files(&guild, &channel, "bob", "", &[&setlist]))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    let other = f
+        .cell
+        .create_channel(NewChannel {
+            guild_id: guild.clone(),
+            user_id: "owner".into(),
+            kind: ChannelKind::Text,
+            name: "other".into(),
+            topic: None,
+            parent_id: None,
+            starter_message_id: None,
+        })
+        .await
+        .unwrap()
+        .id;
+    assert_eq!(
+        f.cell
+            .send_message(files(&guild, &other, "alice", "", &[&setlist]))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    // Text may be empty when files go with it, not otherwise.
+    assert_eq!(
+        f.cell
+            .send_message(files(&guild, &channel, "alice", " ", &[]))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    let message = f
+        .cell
+        .send_message(files(&guild, &channel, "alice", "", &[&setlist]))
+        .await
+        .unwrap();
+    let attachments = message.attachments.clone().unwrap();
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].name, "setlist.pdf");
+    assert_eq!(attachments[0].content_type, "application/pdf");
+    assert_eq!(
+        f.cell
+            .send_message(files(&guild, &channel, "alice", "again", &[&setlist]))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+    // The Media service keeps what a message took in.
+    assert!(on_media(&f, &guild, &channel, &setlist, true).await);
+
+    // Edits keep the files.
+    let edited = f
+        .cell
+        .edit_message(MessageEdit {
+            guild_id: guild.clone(),
+            channel_id: channel.clone(),
+            message_id: message.id.clone(),
+            user_id: "alice".into(),
+            text: "the setlist".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(edited.attachments, message.attachments);
+
+    // At most ten.
+    let mut many = Vec::new();
+    for n in 0..11 {
+        many.push(upload(&f, &guild, &channel, "bob", &format!("{n}.pdf")).await);
+    }
+    assert_eq!(
+        f.cell
+            .send_message(files(
+                &guild,
+                &channel,
+                "bob",
+                "",
+                &many.iter().collect::<Vec<_>>()
+            ))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+
+    // Deleting the message deletes its files.
+    f.cell
+        .delete_message(guild.clone(), channel.clone(), message.id, "alice".into())
+        .await
+        .unwrap();
+    assert!(!on_media(&f, &guild, &channel, &setlist, false).await);
+
+    // Uploads nobody sends are forgotten.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(f.cell.expire_uploads(Duration::ZERO).unwrap(), 11);
+    assert_eq!(
+        f.cell
+            .send_message(files(&guild, &channel, "bob", "", &[&many[0]]))
+            .await,
+        Err(MessageCellError::InvalidRequest)
+    );
+
+    // A deleted channel's files go with it, and a deleted guild's.
+    let poster = upload(&f, &guild, &other, "bob", "poster.pdf").await;
+    f.cell
+        .send_message(files(&guild, &other, "bob", "poster", &[&poster]))
+        .await
+        .unwrap();
+    let flyer = upload(&f, &guild, &channel, "bob", "flyer.pdf").await;
+    f.cell
+        .send_message(files(&guild, &channel, "bob", "flyer", &[&flyer]))
+        .await
+        .unwrap();
+    assert!(on_media(&f, &guild, &other, &poster, true).await);
+    f.cell
+        .delete_channel(guild.clone(), other.clone(), "owner".into())
+        .await
+        .unwrap();
+    assert!(!on_media(&f, &guild, &other, &poster, false).await);
+    assert!(on_media(&f, &guild, &channel, &flyer, true).await);
+    f.cell
+        .delete_guild(guild.clone(), "owner".into())
+        .await
+        .unwrap();
+    assert!(!on_media(&f, &guild, &channel, &flyer, false).await);
 }

@@ -4,6 +4,7 @@
 
 mod dialogs;
 mod emoji;
+mod files;
 mod messages;
 mod sidebar;
 
@@ -99,6 +100,7 @@ pub struct ChatView {
     members_open: bool,
     picker: Option<Picker>,
     guild_menu: bool,
+    files: files::Files,
     dialog: Option<Dialog>,
     toast: Option<Toast>,
     toast_epoch: u64,
@@ -211,6 +213,7 @@ impl ChatView {
             members_open: true,
             picker: None,
             guild_menu: false,
+            files: files::Files::default(),
             dialog: None,
             toast: None,
             toast_epoch: 0,
@@ -557,26 +560,50 @@ impl ChatView {
         let Some(channel) = self.channel.clone() else {
             return false;
         };
-        if text.is_empty() {
+        // Attached files go with a message or a reply, not an edit.
+        let files = match &self.compose {
+            Compose::Edit(_) => Vec::new(),
+            _ => match self.ready_files(&channel) {
+                Some(files) => files,
+                None => {
+                    let text = self.t().wait_for_uploads.to_string();
+                    self.show_toast(text, None, cx);
+                    return false;
+                }
+            },
+        };
+        if text.is_empty() && files.is_empty() {
             return false;
         }
         let compose = std::mem::replace(&mut self.compose, Compose::Message);
         let session = self.session.clone();
+        let sending = files.clone();
         let task = runtime::spawn(cx, async move {
             match compose {
-                Compose::Message => session.send(&channel, &text).await.map(drop),
-                Compose::Reply(id) => session.reply(&channel, &id, &text).await.map(drop),
+                Compose::Message => session
+                    .send_with(&channel, &text, None, &sending)
+                    .await
+                    .map(drop),
+                Compose::Reply(id) => session
+                    .send_with(&channel, &text, Some(&id), &sending)
+                    .await
+                    .map(drop),
                 Compose::Edit(id) => session.edit(&channel, &id, &text).await.map(drop),
             }
         });
         self.list.scroll_to_end();
         cx.spawn(async move |this, cx| {
-            if let Err(error) = task.await {
-                let _ = this.update(cx, |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.sent_files(&files);
+                    cx.notify();
+                }
+                Err(error) => {
                     let text = describe(&error, this.t());
                     this.show_toast(text, None, cx);
-                });
-            }
+                }
+            });
         })
         .detach();
         cx.notify();
@@ -686,7 +713,9 @@ impl ChatView {
     }
 
     fn cancel(&mut self, _: &Cancel, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_some() {
+        if self.files.viewer.is_some() {
+            self.files.viewer = None;
+        } else if self.picker.is_some() {
             self.picker = None;
         } else if self.dialog.is_some() {
             self.dialog = None;
@@ -869,6 +898,9 @@ impl Render for ChatView {
         }
         if self.dialog.is_some() {
             root = root.child(self.render_dialog(window, cx));
+        }
+        if let Some(viewer) = self.render_viewer(window, cx) {
+            root = root.child(viewer);
         }
         root
     }

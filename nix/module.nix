@@ -14,8 +14,8 @@
 # Edges also get Caddy, serving HTTPS to clients.
 #
 # Services listen on fixed ports (account 7101, directory 7102,
-# message-cell-N 7110+N, translation-cell-N 7120+N, engine-N 7140+N,
-# edge-N 7000+N), so they can share a machine in any combination. Moving a
+# message-cell-N 7110+N, translation-cell-N 7120+N, media-N 7130+N,
+# engine-N 7140+N, edge-N 7000+N), so they can share a machine in any combination. Moving a
 # service to another machine is changing its `machine`; one that keeps data
 # needs its data moved too (docs/deployment.md).
 #
@@ -169,6 +169,11 @@ let
               };
           }
         );
+      };
+      media = mkOption {
+        default = { };
+        description = "Media services: the files people upload. Without one, uploads are refused.";
+        type = types.attrsOf (types.submodule { options = placed // stores // { port = port 7130; }; });
       };
       engines = mkOption {
         default = { };
@@ -343,6 +348,16 @@ let
     }
   ) cluster.translationCells
   // lib.mapAttrs (
+    name: media:
+    media
+    // {
+      kind = "media";
+      inherit name;
+      port = portOf 7130 name media;
+      stores = true;
+    }
+  ) cluster.media
+  // lib.mapAttrs (
     name: engine:
     engine
     // {
@@ -390,6 +405,7 @@ let
       edge = map entry (ofKind "edge");
     }
     // lib.optionalAttrs (cluster.engines != { }) { engine = map entry (ofKind "engine"); }
+    // lib.optionalAttrs (cluster.media != { }) { media = map entry (ofKind "media"); }
   );
 
   here = lib.filter (service: service.machine == cfg.machine) (lib.attrValues services);
@@ -492,7 +508,11 @@ let
           "--signups"
           service.signups
         ]
-      else if service.kind == "directory" || service.kind == "message-cell" then
+      else if lib.elem service.kind [
+        "directory"
+        "message-cell"
+        "media"
+      ] then
         storeArgs service
       else if service.kind == "translation-cell" then
         storeArgs service

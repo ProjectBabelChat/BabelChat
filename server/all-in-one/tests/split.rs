@@ -7,12 +7,14 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use babel_account::Account;
 use babel_api_account::types::Account as AccountApi;
 use babel_api_directory::types::Directory as DirectoryApi;
+use babel_api_media::types::Media as MediaApi;
 use babel_api_message_cell::types::MessageCell as MessageCellApi;
 use babel_api_translation_cell::types::{Plan, TranslationCell as TranslationCellApi};
 use babel_common::{Identity, Role};
 use babel_directory::Directory;
 use babel_edge::{Cluster, Edge, EdgeConfig};
 use babel_engine::mock::MockConfig;
+use babel_media::{Blobs, Media, RemoteMedia};
 use babel_message_cell::MessageCell;
 use babel_net::{
     Policy,
@@ -31,6 +33,7 @@ use tokio::net::TcpListener;
 
 const MESSAGE_CELLS: [&str; 2] = ["message-cell-0", "message-cell-1"];
 const TRANSLATION_CELL: &str = "translation-cell-0";
+const MEDIA: &str = "media-0";
 
 /// A cluster of in-process services that only reach each other over the
 /// network.
@@ -99,6 +102,11 @@ impl Internal {
         )])
     }
 
+    fn media(&self, caller: &str) -> RemoteMedia {
+        let (_, url, client) = self.peer(caller, Role::Media, MEDIA);
+        RemoteMedia::with_client(url, client)
+    }
+
     fn serve(&self, name: &str, listener: TcpListener, router: axum::Router, policy: Policy) {
         let credentials = self.credentials(name);
         tokio::spawn(async move { serve(router, listener, &credentials, policy).await });
@@ -118,6 +126,7 @@ pub async fn start(edges: usize) -> SplitCluster {
         (Role::Account, "account".to_string()),
         (Role::Directory, "directory".to_string()),
         (Role::TranslationCell, TRANSLATION_CELL.to_string()),
+        (Role::Media, MEDIA.to_string()),
     ];
     services.extend(
         MESSAGE_CELLS
@@ -181,8 +190,21 @@ pub async fn start(edges: usize) -> SplitCluster {
         policies::translation_cell(),
     );
 
+    internal.serve(
+        MEDIA,
+        listener(MEDIA),
+        babel_media::router(Media::open(MEDIA, store())),
+        policies::media(),
+    );
+
     for name in MESSAGE_CELLS {
-        let cell = MessageCell::open(store(), internal.translation_cells(name)).unwrap();
+        let media = Arc::new(internal.media(name)) as Arc<dyn MediaApi>;
+        let cell = MessageCell::open(
+            store(),
+            internal.translation_cells(name),
+            HashMap::from([(MEDIA.to_string(), media)]),
+        )
+        .unwrap();
         cell.connect_directory(internal.directory(name));
         internal.serve(
             name,
@@ -213,6 +235,10 @@ pub async fn start(edges: usize) -> SplitCluster {
                 directory: internal.directory(name),
                 message_cells: internal.message_cells(name).into_iter().collect(),
                 translation_cells: internal.translation_cells(name),
+                media: HashMap::from([(
+                    MEDIA.to_string(),
+                    Arc::new(internal.media(name)) as Arc<dyn Blobs>,
+                )]),
             },
             EdgeConfig {
                 token_keys: vec![jsonwebtoken::DecodingKey::from_ed_der(&token_key)],
@@ -222,7 +248,7 @@ pub async fn start(edges: usize) -> SplitCluster {
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         public.push(format!("http://{}", listener.local_addr().unwrap()));
-        let router = babel_api_edge::router(edge.clone()).merge(edge.websocket_router());
+        let router = babel_api_edge::router(edge.clone()).merge(edge.routes());
         tokio::spawn(async move { axum::serve(listener, router).await });
     }
 

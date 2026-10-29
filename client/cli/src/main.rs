@@ -162,6 +162,8 @@ async fn main() -> anyhow::Result<()> {
             };
             let config = SessionConfig {
                 cache: (!args.no_cache).then(|| profile::cache_path(&dir, &args.profile)),
+                media_cache: (!args.no_cache)
+                    .then(|| profile::media_cache_path(&dir, &args.profile)),
                 transport: match args.transport.as_str() {
                     "websocket" => Transport::WebSocket,
                     "poll" => Transport::LongPoll,

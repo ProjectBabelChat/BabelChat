@@ -29,6 +29,7 @@ let
     "babel-account"
     "babel-directory"
     "babel-message-cell"
+    "babel-media"
     "babel-translation-cell"
     "babel-engine"
     "babel-edge"

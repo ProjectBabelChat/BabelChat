@@ -926,6 +926,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "babel-api-media"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "extension-fn",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "babel-api-media-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "babel-api-message-cell"
 version = "0.1.0"
 dependencies = [
@@ -1057,10 +1081,12 @@ dependencies = [
  "babel-api-account",
  "babel-api-directory",
  "babel-api-edge",
+ "babel-api-media",
  "babel-api-message-cell",
  "babel-api-translation-cell",
  "babel-common",
  "babel-lang",
+ "babel-media",
  "babel-net",
  "clap",
  "futures",
@@ -1107,21 +1133,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "babel-media"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "babel-api-media",
+ "babel-api-media-client",
+ "babel-common",
+ "babel-net",
+ "babel-store",
+ "bytes",
+ "clap",
+ "futures",
+ "imagesize",
+ "metrics",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "babel-message-cell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "babel-api-directory",
+ "babel-api-media",
  "babel-api-message-cell",
  "babel-api-translation-cell",
  "babel-common",
  "babel-engine",
+ "babel-media",
  "babel-net",
  "babel-store",
  "babel-translation-cell",
+ "bytes",
  "clap",
  "emojis",
+ "futures",
  "metrics",
  "parking_lot",
  "reqwest",
@@ -1141,6 +1196,7 @@ dependencies = [
  "babel-api-account-client",
  "babel-api-directory",
  "babel-api-directory-client",
+ "babel-api-media-client",
  "babel-api-message-cell",
  "babel-api-message-cell-client",
  "babel-api-translation-cell",
@@ -1178,6 +1234,7 @@ dependencies = [
  "babel-api-translation-cell",
  "babel-lang",
  "babel-server",
+ "bytes",
  "dirs",
  "futures",
  "parking_lot",
@@ -1203,12 +1260,14 @@ dependencies = [
  "babel-api-edge",
  "babel-api-edge-client",
  "babel-api-engine",
+ "babel-api-media",
  "babel-api-message-cell",
  "babel-api-translation-cell",
  "babel-common",
  "babel-directory",
  "babel-edge",
  "babel-engine",
+ "babel-media",
  "babel-message-cell",
  "babel-net",
  "babel-sdk",

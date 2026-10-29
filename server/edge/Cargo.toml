@@ -17,10 +17,12 @@ axum = { workspace = true, features = ["ws"] }
 babel-api-account.workspace = true
 babel-api-directory.workspace = true
 babel-api-edge.workspace = true
+babel-api-media.workspace = true
 babel-api-message-cell.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
 babel-lang.workspace = true
+babel-media.workspace = true
 babel-net.workspace = true
 clap.workspace = true
 futures.workspace = true

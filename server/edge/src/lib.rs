@@ -4,7 +4,8 @@
 //! client ─HTTPS─▶ Edge ─┬─▶ Account          (login; tokens are verified here, locally)
 //!                       ├─▶ Directory        (placement: guild -> cells)
 //!                       ├─▶ Message Cell     (guild data, permissions)
-//!                       └─▶ Translation Cell (policy, translations)
+//!                       ├─▶ Translation Cell (policy, translations)
+//!                       └─▶ Media            (files in and out)
 //! ```
 //!
 //! The Edge authenticates, rate-limits, resolves placement, and joins the
@@ -36,6 +37,7 @@ use babel_api_translation_cell::types::{
 };
 use babel_common::{now_ms, poll_timeout, random_id};
 use babel_lang::Normalizer;
+use babel_media::Blobs;
 use gateway::{Sessions, event};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use parking_lot::{Mutex, RwLock};
@@ -48,6 +50,9 @@ pub struct Cluster {
     pub directory: Arc<dyn Directory>,
     pub message_cells: HashMap<String, Arc<dyn MessageCell>>,
     pub translation_cells: HashMap<String, Arc<dyn TranslationCell>>,
+    /// Media services by name. New files go to one per guild; without any,
+    /// uploads are `unavailable`.
+    pub media: HashMap<String, Arc<dyn Blobs>>,
 }
 
 pub struct EdgeConfig {
@@ -78,6 +83,9 @@ struct Inner {
     followed: Mutex<HashSet<String>>,
     /// User -> tokens issued before this (ms) are revoked.
     revoked: RwLock<HashMap<String, i64>>,
+    /// (user, guild) -> when the user was last found allowed to see the
+    /// guild, for downloads.
+    viewers: Mutex<HashMap<(String, String), Instant>>,
 }
 
 const SETTINGS_TTL: Duration = Duration::from_secs(60);
@@ -98,15 +106,18 @@ macro_rules! on_cell {
             let route = $inner.route($guild).await?;
             let $cell = &route.cell;
             match $call.await {
-                Err(MessageCellError::Moved) if attempts < 3 => {
+                Err(babel_api_message_cell::types::MessageCellError::Moved) if attempts < 3 => {
                     attempts += 1;
                     $inner.placements.refresh($guild).await;
                 }
-                result => break result.map_err(convert::cell_error),
+                result => break result.map_err($crate::convert::cell_error),
             }
         }
     }};
 }
+
+// After `on_cell!`, which it uses.
+mod media;
 
 impl Edge {
     /// Starts an Edge: its placement watch and session sweeper. Must be
@@ -129,6 +140,7 @@ impl Edge {
             sessions: Sessions::default(),
             followed: Mutex::default(),
             revoked: RwLock::default(),
+            viewers: Mutex::default(),
         });
 
         let sweeper = Arc::downgrade(&inner);
@@ -146,10 +158,23 @@ impl Edge {
     }
 
     /// Routes served next to the generated API: the WebSocket gateway
-    /// (`GET /gateway/ws`), and `GET /health` for load balancers (`ok` while
-    /// the Edge runs).
-    pub fn websocket_router(&self) -> axum::Router {
-        websocket::router(self.clone()).route("/health", axum::routing::get(async || "ok\n"))
+    /// (`GET /gateway/ws`), files (`POST /media/upload`, `GET /media/…`),
+    /// and `GET /health` for load balancers (`ok` while the Edge runs).
+    pub fn routes(&self) -> axum::Router {
+        websocket::router(self.clone())
+            .merge(media::router(self.clone()))
+            .route("/health", axum::routing::get(async || "ok\n"))
+    }
+
+    /// The user a request's `Authorization: Bearer` token names, if valid.
+    fn bearer(&self, headers: &axum::http::HeaderMap) -> Option<Claim> {
+        use babel_api_edge::types::JwtValidator;
+
+        headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .and_then(|token| self.validate::<Claim>(token).ok())
     }
 }
 
@@ -1234,6 +1259,7 @@ impl public::Messages for Edge {
                 author_locale: Some(settings.locale.clone()),
                 text: body.text.clone(),
                 reply_to: body.reply_to.clone(),
+                attachments: body.attachments.clone(),
             }
         ))?;
         Ok(public::MessageView {

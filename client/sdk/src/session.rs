@@ -14,7 +14,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -23,9 +23,9 @@ use std::{
 };
 
 use babel_api_edge_client::types::{
-    ApiError, Ban, Channel, ChannelKind, ChannelUpdate, Guild, GuildUpdate, GuildView, Invite,
-    LanguagePolicy, LanguagePolicyUpdate, Member, MessageEdit, NewChannel, NewGuild, NewInvite,
-    NewMessage, NotificationSettings, TranslationModel, UserSettings,
+    ApiError, Attachment, Ban, Channel, ChannelKind, ChannelUpdate, Guild, GuildUpdate, GuildView,
+    Invite, LanguagePolicy, LanguagePolicyUpdate, Member, MessageEdit, NewChannel, NewGuild,
+    NewInvite, NewMessage, NotificationSettings, TranslationModel, UserSettings,
 };
 use babel_lang::Normalizer;
 use parking_lot::Mutex;
@@ -74,6 +74,9 @@ pub struct SessionConfig {
     pub cache: Option<PathBuf>,
     /// How often the cache is written while something changes.
     pub cache_interval: Duration,
+    /// Where downloaded files are kept (a directory), at most
+    /// [`MEDIA_CACHE_BYTES`]. `None`: every download asks the server.
+    pub media_cache: Option<PathBuf>,
 }
 
 impl Default for SessionConfig {
@@ -89,6 +92,60 @@ impl Default for SessionConfig {
             read_delay: Duration::from_millis(500),
             cache: None,
             cache_interval: Duration::from_secs(5),
+            media_cache: None,
+        }
+    }
+}
+
+/// The largest file the server takes. Check before reading a file in.
+pub const MAX_UPLOAD_BYTES: i64 = 10 * 1024 * 1024;
+/// Downloaded files kept on the device; the oldest go first.
+pub const MEDIA_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A downloaded file's name in the media cache: its ID, which names it for
+/// good, with anything unsafe in a file name replaced.
+fn media_name(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Saves a downloaded file into the media cache `dir`, then deletes the
+/// least recently written files beyond [`MEDIA_CACHE_BYTES`].
+fn keep_file(dir: &Path, path: &Path, bytes: &[u8]) {
+    let written = std::fs::create_dir_all(dir).and_then(|()| {
+        let partial = path.with_extension("partial");
+        std::fs::write(&partial, bytes)?;
+        std::fs::rename(&partial, path)
+    });
+    if let Err(error) = written {
+        tracing::warn!(%error, path = %path.display(), "could not keep a downloaded file");
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let metadata = entry.metadata().ok()?;
+            Some((metadata.modified().ok()?, metadata.len(), entry.path()))
+        })
+        .collect::<Vec<_>>();
+    let mut total = files.iter().map(|(_, len, _)| len).sum::<u64>();
+    files.sort();
+    for (_, len, path) in files {
+        if total <= MEDIA_CACHE_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= len;
         }
     }
 }
@@ -258,7 +315,7 @@ struct Shared {
     typing_sent: Mutex<HashMap<String, Instant>>,
     /// Held while the cache is written; true once it is forgotten, after
     /// which nothing writes it again.
-    cache_forgotten: Mutex<bool>,
+    cache_forgotten: Arc<Mutex<bool>>,
     websocket: AtomicBool,
     online: AtomicBool,
 }
@@ -291,7 +348,7 @@ impl Session {
             focus: Mutex::default(),
             reading: Mutex::default(),
             typing_sent: Mutex::default(),
-            cache_forgotten: Mutex::new(false),
+            cache_forgotten: Arc::new(Mutex::new(false)),
             websocket: AtomicBool::new(false),
             online: AtomicBool::new(false),
         });
@@ -420,7 +477,62 @@ impl Session {
 
     /// Sends a message. `@name` in the text notifies that member.
     pub async fn send(&self, channel_id: &str, text: &str) -> Result<ChatMessage> {
-        self.post(channel_id, text, None).await
+        self.post(channel_id, text, None, &[]).await
+    }
+
+    /// Sends `text` (which may be empty) with files uploaded to the channel
+    /// ([`Self::upload`]), as a reply to `reply_to` if given.
+    pub async fn send_with(
+        &self,
+        channel_id: &str,
+        text: &str,
+        reply_to: Option<&str>,
+        files: &[Attachment],
+    ) -> Result<ChatMessage> {
+        self.post(channel_id, text, reply_to, files).await
+    }
+
+    /// Puts a file on the server, to go with the user's next message in
+    /// the channel ([`Self::send_with`]) within a day. Files larger than
+    /// [`MAX_UPLOAD_BYTES`] are `Api(LimitExceeded)`.
+    pub async fn upload(&self, channel_id: &str, name: &str, bytes: Vec<u8>) -> Result<Attachment> {
+        if bytes.len() as i64 > MAX_UPLOAD_BYTES {
+            return Err(Error::Api(ApiError::LimitExceeded));
+        }
+        let guild_id = self.shared.guild_of(channel_id)?;
+        self.shared
+            .client
+            .upload(&guild_id, channel_id, name, bytes)
+            .await
+    }
+
+    /// A file's contents: from the device when downloaded before (a file
+    /// never changes under its ID), otherwise from the server.
+    pub async fn download(&self, file: &Attachment) -> Result<bytes::Bytes> {
+        let cached = self
+            .shared
+            .config
+            .media_cache
+            .as_ref()
+            .map(|dir| dir.join(media_name(&file.id)));
+        if let Some(path) = &cached
+            && let Ok(bytes) = tokio::fs::read(path).await
+        {
+            return Ok(bytes.into());
+        }
+        let bytes = self.shared.client.download(&file.url).await?;
+        if let (Some(path), Some(dir)) = (cached, self.shared.config.media_cache.clone()) {
+            let bytes = bytes.clone();
+            let forgotten = self.shared.cache_forgotten.clone();
+            tokio::task::spawn_blocking(move || {
+                // Not after signing out.
+                let forgotten = forgotten.lock();
+                if !*forgotten {
+                    keep_file(&dir, &path, &bytes);
+                }
+            });
+        }
+        Ok(bytes)
     }
 
     /// Answers a message in the same channel; its author is notified.
@@ -430,7 +542,7 @@ impl Session {
         message_id: &str,
         text: &str,
     ) -> Result<ChatMessage> {
-        self.post(channel_id, text, Some(message_id)).await
+        self.post(channel_id, text, Some(message_id), &[]).await
     }
 
     async fn post(
@@ -438,6 +550,7 @@ impl Session {
         channel_id: &str,
         text: &str,
         reply_to: Option<&str>,
+        files: &[Attachment],
     ) -> Result<ChatMessage> {
         let guild_id = self.shared.guild_of(channel_id)?;
         let view = self
@@ -451,6 +564,8 @@ impl Session {
                     channel_id: channel_id.to_string(),
                     text: text.to_string(),
                     reply_to: reply_to.map(str::to_string),
+                    attachments: (!files.is_empty())
+                        .then(|| files.iter().map(|file| file.id.clone()).collect()),
                 },
             )
             .await?;
@@ -1064,18 +1179,24 @@ impl Session {
         self.shared.save_cache();
     }
 
-    /// Deletes the cache and writes it no more, for signing out: neither
-    /// a write under way nor dropping the session brings it back.
+    /// Deletes the cache and the downloaded files and writes them no more,
+    /// for signing out: neither a write under way nor dropping the session
+    /// brings them back.
     pub fn forget_cache(&self) {
-        let Some(path) = &self.shared.config.cache else {
-            return;
-        };
         let mut forgotten = self.shared.cache_forgotten.lock();
         *forgotten = true;
-        if let Err(error) = std::fs::remove_file(path)
+        let config = &self.shared.config;
+        if let Some(path) = &config.cache
+            && let Err(error) = std::fs::remove_file(path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(%error, path = %path.display(), "could not delete the cache");
+        }
+        if let Some(dir) = &config.media_cache
+            && let Err(error) = std::fs::remove_dir_all(dir)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, path = %dir.display(), "could not delete downloaded files");
         }
     }
 }

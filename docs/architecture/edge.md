@@ -17,6 +17,7 @@ removed or replaced while traffic flows.
 | Permissions handoff | Asks the Message Cell (`check_permission`) before calling the Translation Cell on a user's behalf |
 | Invites | Builds public invite codes (`<guild id>-<secret>`) and routes them back to the guild's cell, which checks them ([Message Cell](message-cell.md#invites)) |
 | Fan-out | Follows each guild once and copies events into every interested session ([gateway](#gateway)) |
+| Files | Passes uploads to the guild's Media service and downloads back to the guild's members ([files](#files)) |
 | The public boundary | Converts internal types to public ones (`convert.rs`) |
 
 ## The public boundary
@@ -113,6 +114,31 @@ Translation log ───┘   (one per guild)└─▶ session C queue (carol, 
   pushed out of its queue. Either way the poll answers `not_found` and the
   client connects again and reloads (the SDK does this on its own; see
   [client SDK](client.md)).
+
+## Files
+
+Files go up and down outside the generated API (TYML has no type for
+them), next to it like the WebSocket gateway, with the same token
+(`media.rs`):
+
+```
+POST /media/upload?guild_id=&channel_id=&name=   body: the file -> Attachment (JSON)
+GET  /media/<guild>/<channel>/<attachment id>    -> the file
+```
+
+- An upload is checked like a message (the user may write in the guild;
+  rate-limited), refused early past 10 MB when `Content-Length` says so,
+  streamed to the guild's Media service, and recorded on the guild's
+  Message Cell, which hands it to the user's next message there. If the
+  cell refuses, the file is deleted at once.
+- A download is for the guild's members: whether a user may see a guild is
+  asked of its cell at most once a minute per user and guild (a member
+  removed meanwhile can still read files for that minute). The file
+  streams from the Media service its ID names; images come back as
+  themselves, anything else as a download, never sniffed by browsers
+  ([Media](media.md#reading-files)).
+- Errors are `ApiError` as JSON with 400, like the API's, and 401 without
+  a valid token.
 
 ## Language views
 

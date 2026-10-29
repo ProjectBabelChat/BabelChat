@@ -9,6 +9,7 @@
 //! <data>/directory             Directory
 //! <data>/message-cell-<n>      Message Cells
 //! <data>/translation-cell-<n>  Translation Cells
+//! <data>/media-0               Media (uploaded files)
 //! ```
 //!
 //! Splitting a service out later means putting an HTTP client behind the same
@@ -22,11 +23,13 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time:
 use anyhow::Context;
 use babel_account::Account;
 use babel_api_engine::types::Engine;
+use babel_api_media::types::Media as MediaApi;
 use babel_api_message_cell::types::MessageCell as MessageCellApi;
 use babel_api_translation_cell::types::{Plan, TranslationCell as TranslationCellApi};
 use babel_directory::Directory;
 use babel_edge::{Cluster, Edge, EdgeConfig};
 use babel_engine::{RemoteEngine, mock::MockConfig};
+use babel_media::{Blobs, Media};
 use babel_message_cell::MessageCell;
 use babel_store::{KvStore, RocksStore, Table};
 use babel_translation_cell::{TranslationCell, TranslationCellConfig};
@@ -60,10 +63,19 @@ fn open_store(
     name: &str,
     tables: &[Table],
 ) -> anyhow::Result<Arc<dyn KvStore>> {
+    open_store_with_blobs(config, name, tables, &[])
+}
+
+fn open_store_with_blobs(
+    config: &ServerConfig,
+    name: &str,
+    tables: &[Table],
+    blob_tables: &[Table],
+) -> anyhow::Result<Arc<dyn KvStore>> {
     let path = config.data_dir.join(name);
     std::fs::create_dir_all(&path)?;
-    let store =
-        RocksStore::open(&path, tables).with_context(|| format!("opening {}", path.display()))?;
+    let store = RocksStore::open_with_blobs(&path, tables, blob_tables)
+        .with_context(|| format!("opening {}", path.display()))?;
     Ok(Arc::new(store))
 }
 
@@ -94,12 +106,29 @@ impl Server {
             translation_cells.insert(name, Arc::new(cell));
         }
 
+        let media = Media::open(
+            "media-0",
+            open_store_with_blobs(
+                config,
+                "media-0",
+                babel_media::TABLES,
+                babel_media::BLOB_TABLES,
+            )?,
+        );
+
         let mut message_cells = Vec::new();
         let mut cell_handles = Vec::new();
         for n in 0..config.message_cells.max(1) {
             let name = format!("message-cell-{n}");
             let store = open_store(config, &name, babel_message_cell::TABLES)?;
-            let cell = MessageCell::open(store, translation_cells.clone())?;
+            let cell = MessageCell::open(
+                store,
+                translation_cells.clone(),
+                HashMap::from([(
+                    "media-0".to_string(),
+                    Arc::new(media.clone()) as Arc<dyn MediaApi>,
+                )]),
+            )?;
             cell_handles.push(cell.clone());
             message_cells.push((name, Arc::new(cell) as Arc<dyn MessageCellApi>));
         }
@@ -122,6 +151,7 @@ impl Server {
                 directory,
                 message_cells: message_cells.into_iter().collect(),
                 translation_cells,
+                media: HashMap::from([("media-0".to_string(), Arc::new(media) as Arc<dyn Blobs>)]),
             },
             EdgeConfig {
                 token_keys: vec![token_key],
@@ -135,7 +165,7 @@ impl Server {
 
     /// Serves the public Edge API on `listener` until the process ends.
     pub async fn serve(self, listener: tokio::net::TcpListener) -> anyhow::Result<()> {
-        let router = self.edge.websocket_router();
+        let router = self.edge.routes();
         axum::serve(listener, babel_api_edge::router(self.edge).merge(router)).await?;
         Ok(())
     }

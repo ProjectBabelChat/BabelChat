@@ -195,6 +195,14 @@ Done so far:
   `TextField` in `gpui-md3e`); renaming and deleting guilds and channels;
   starting threads from messages, renaming and deleting them, from the
   desktop app too.
+- Files sent with messages, on a new Media service: kept in its RocksDB
+  store's blob files (standbys, backups and failover as for every store),
+  up to 10 MB each and 10 per message; pictures shown in messages and
+  opened large, other files saved; uploading by button or drag and drop in
+  the desktop app, `/attach` and `/download` in the terminal; files deleted
+  with their message, channel or guild, and those nobody sent after two
+  days; every file timestamped and listed oldest first for maintenance
+  (`babel-admin media-usage`).
 
 Next:
 
@@ -204,8 +212,13 @@ Next:
 - Mirrored hosting for the on-device models, and model updates.
 - The desktop app: categories from the UI, keyboard navigation, tray
   icon.
-- Chat features not built yet: roles beyond owner and member, attachments
-  (and with them a guild's own emoji, usable in other guilds too), who
+- A guild's own emoji, usable in other guilds too (on the Media service:
+  blobs of kind `emoji`, readable by anyone signed in); then avatars and
+  guild icons.
+- Files: object storage (S3) behind the Media API as an option,
+  thumbnails, ranges (video), quotas, a maintenance program freeing space
+  by age.
+- Chat features not built yet: roles beyond owner and member, who
   reacted, push notifications to devices that are offline.
 - Before the first release, protocol compatibility. Until then contracts
   change freely, and a client only works against servers built from the

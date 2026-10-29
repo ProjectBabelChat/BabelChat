@@ -146,7 +146,10 @@ or any reader of a `--plan free` server, sees them:
 threads (`/thread #1 name`), `/reply #1 …`, `/edit #1 …`, `/delete #1`,
 `/react #1 👍` (or `:thumbsup:`), renaming and deleting channels and
 guilds, `/locale fr-FR`, `/original on` and more. A line ending in `\`
-goes on on the next one, for messages of several lines.
+goes on on the next one, for messages of several lines. `/attach
+~/photo.jpg` uploads a file for the next message (`/send` sends files
+alone), messages list theirs (`📎 photo.jpg (72 KB, 800×500)`), and
+`/download #2 ~/Downloads` saves a message's files.
 
 The open channel prints its messages; other channels speak up through
 notifications, already translated:
@@ -298,7 +301,7 @@ ssh -N -L 8001:127.0.0.1:8001 root@<gpu> &     # then load_test as above
 cargo test -p babel-lang -p babel-store -p babel-common -p babel-engine \
   -p babel-translation-cell -p babel-message-cell -p babel-directory \
   -p babel-account -p babel-edge -p babel-server -p babel-sdk -p babel-cli \
-  -p babel-bergamot -p babel-desktop -p gpui-md3e -p babel-net
+  -p babel-bergamot -p babel-desktop -p gpui-md3e -p babel-net -p babel-media
 cargo test -p babel-bergamot -- --ignored   # downloads three models
 nix build .#checks.x86_64-linux.cluster      # the NixOS module, on two VMs
 ```
@@ -306,18 +309,19 @@ nix build .#checks.x86_64-linux.cluster      # the NixOS module, on two VMs
 | Crate | What the tests show |
 |---|---|
 | `babel-lang` | normalization rules, viewer resolution |
-| `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike; standbys replaying a primary from a checkpoint; backups restoring |
+| `babel-store` | key ordering, scans, RocksDB and in-memory stores behave alike; standbys replaying a primary from a checkpoint; backups restoring; tables of files keeping large values in blob files, on standbys too |
 | `babel-net` | cluster files; certificates naming services; mutual TLS that tells servers who calls and refuses roles and misdirected clients; a standby following a live service; the egress proxy refusing internal addresses and plain HTTP; who may call what (only operators set plans and make sign-up codes) |
 | `babel-account` | registration and sign-in; names are one mentionable word; tokens verify with the public key only; sign-ups by invitation or closed; signing out other devices and changing the password revoke older tokens, in a stream that survives restarts |
 | `babel-directory` | the membership stream, and its trimming |
 | `babel-engine` | deterministic, injection-safe prompts; growing windows keep hitting the simulated cache; plain prompts sharing their background across targets; models files; requests choosing a model; OpenAI-compatible and Anthropic request shapes (thinking turned off, cache markers); remote engine over HTTP |
 | `babel-translation-cell` | N-to-N translation, free spaces, edits, thread context, window folding, budgets, jobs resumed after a restart; tenants kept apart by certificate; log trimming; spaces choosing a model; one catalog from several engines; a space sticking to one replica until it fails |
-| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries; reactions counted once per member; typing through the log only; renaming; deleted channels taking their threads and messages (and their Translation Cell conversations), deleted categories freeing their channels; deleted guilds read to the end of their log, then gone from the Directory and the Translation Cell |
-| `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again |
+| `babel-message-cell` | outbox delivery, roles, invites, history paging, long polls; mentions, replies and read markers; leaving, kicks and bans; notification settings; log trimming that spares undelivered entries; reactions counted once per member; typing through the log only; renaming; deleted channels taking their threads and messages (and their Translation Cell conversations), deleted categories freeing their channels; deleted guilds read to the end of their log, then gone from the Directory and the Translation Cell; files going with one message of their uploader, in their channel, at most ten, kept by the Media service, deleted with the message, the channel or the guild, and uploads nobody sent forgotten |
+| `babel-edge` | sessions that fall behind their queue must reconnect; removals spare sessions that joined again; file names losing paths and control characters, and the download name header |
+| `babel-media` | files coming back as they went in, in chunks, known by their first bytes and measured; too large and empty files refused and leaving nothing; files no message took in swept, the rest kept; channels and guilds taking their files; listing oldest first by kind, in pages; the same over HTTP |
 | `babel-server` | the whole system over HTTP with the generated client; probing resistance; crash recovery of the real binary; SDK sessions reconnecting across a server restart; split up over mutual TLS: people on different Edges chatting, a user's devices on two Edges staying in step, guilds moving between cells while people write |
-| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling; signing the other devices out (they are signed out, this one carries on live) and changing the password; reactions with each reader's own marked; others writing, until their message (of several lines) arrives; threads, channels and guilds renamed and deleted for everyone |
+| `babel-sdk` | saved sign-ins; display decisions, device chains through English; paid and free guilds, edits, deletions, history paging, locale changes, invites against an in-process server; notifications in the reader's language, unread markers synced across devices, leaving and bans, starting from the cache offline, WebSocket and long polling; signing the other devices out (they are signed out, this one carries on live) and changing the password; reactions with each reader's own marked; others writing, until their message (of several lines) arrives; threads, channels and guilds renamed and deleted for everyone; files uploaded, sent alone, downloaded by members only and kept on the device until signing out |
 | `babel-bergamot` | tag-to-model mapping, byte pieces; with `--ignored`, real models downloaded and run (ja→en, en→ja, en→fr) |
-| `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks; lines continued with `\`, reactions by emoji or shortcode, renaming and deleting with the name typed to confirm |
+| `babel-cli` | two people chatting through the terminal client, as typed; notifications from other channels, replies, kicks; lines continued with `\`, reactions by emoji or shortcode, renaming and deleting with the name typed to confirm; files attached, sent and saved |
 | `babel-desktop` | channel order, avatars, the UI's words in both languages; the screens themselves are checked by scripted runs (`BABEL_SCRIPT`) |
 
 ## Changing an API

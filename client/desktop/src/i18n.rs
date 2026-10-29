@@ -148,6 +148,14 @@ pub struct Strings {
     pub typing_one: &'static str,
     pub typing_two: &'static str,
     pub typing_many: &'static str,
+
+    pub attach_files: &'static str,
+    pub uploading: &'static str,
+    pub too_large: &'static str,
+    pub wait_for_uploads: &'static str,
+    pub save_file: &'static str,
+    pub saved_to: &'static str,
+    pub file_unavailable: &'static str,
 }
 
 pub static EN: Strings = Strings {
@@ -295,6 +303,14 @@ pub static EN: Strings = Strings {
     typing_one: "{0} is typing…",
     typing_two: "{0} and {1} are typing…",
     typing_many: "Several people are typing…",
+
+    attach_files: "Attach files",
+    uploading: "Uploading…",
+    too_large: "{0} is larger than 10 MB.",
+    wait_for_uploads: "Wait until the files are uploaded.",
+    save_file: "Save",
+    saved_to: "Saved to {0}",
+    file_unavailable: "This file is no longer available.",
 };
 
 pub static JA: Strings = Strings {
@@ -442,6 +458,14 @@ pub static JA: Strings = Strings {
     typing_one: "{0} が入力中…",
     typing_two: "{0} と {1} が入力中…",
     typing_many: "複数の人が入力中…",
+
+    attach_files: "ファイルを添付",
+    uploading: "アップロード中…",
+    too_large: "{0} は 10 MB を超えています。",
+    wait_for_uploads: "ファイルのアップロードが終わるまでお待ちください。",
+    save_file: "保存",
+    saved_to: "{0} に保存しました",
+    file_unavailable: "このファイルはもうありません。",
 };
 
 /// The strings for a reader of `locale` (a BCP 47 tag).

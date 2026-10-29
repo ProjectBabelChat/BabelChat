@@ -7,6 +7,7 @@
 //! | Message Cell | Edges; the Directory (creating and moving guilds) |
 //! | Translation Cell | Edges, Message Cells, tenants (other platforms, each in its own spaces); operators (setting plans) |
 //! | Engine | Translation Cells |
+//! | Media | Edges (files in and out); Message Cells (files messages took in or dropped); operators (listing, usage, deleting) |
 //!
 //! Every service also lets its own standbys copy it ([`Policy::with_replication`]).
 
@@ -59,6 +60,18 @@ pub fn engine() -> Policy {
     Policy::roles(&[Role::TranslationCell])
 }
 
+pub fn media() -> Policy {
+    Policy::new(|caller, path| match path {
+        "/media/attach_blobs" | "/media/delete_channel" | "/media/delete_guild" => {
+            caller.role == Role::MessageCell
+        }
+        "/media/delete_blobs" => matches!(caller.role, Role::MessageCell | Role::Admin),
+        "/media/list_blobs" | "/media/get_usage" => caller.role == Role::Admin,
+        // get_blob, and the file routes (`/media/blobs`, `/media/blobs/…`).
+        _ => caller.role == Role::Edge,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use babel_common::Identity;
@@ -95,6 +108,18 @@ mod tests {
         assert!(!account.allows(&caller(Role::Edge), "/account/create_signup_code"));
         assert!(account.allows(&caller(Role::Admin), "/account/create_signup_code"));
         assert!(!account.allows(&caller(Role::Admin), "/account/login"));
+    }
+
+    #[test]
+    fn only_edges_pass_files() {
+        let media = media();
+        assert!(media.allows(&caller(Role::Edge), "/media/blobs"));
+        assert!(media.allows(&caller(Role::Edge), "/media/blobs/g/c/media-0.x"));
+        assert!(!media.allows(&caller(Role::MessageCell), "/media/blobs"));
+        assert!(media.allows(&caller(Role::MessageCell), "/media/delete_guild"));
+        assert!(!media.allows(&caller(Role::Edge), "/media/delete_guild"));
+        assert!(media.allows(&caller(Role::Admin), "/media/list_blobs"));
+        assert!(!media.allows(&caller(Role::Admin), "/media/blobs"));
     }
 
     #[test]

@@ -144,6 +144,23 @@ terminal client: `babelchat --profile alice` and `babel --profile alice`
 are the same user with the same cache file. Several profiles run side by
 side, one window each.
 
+## Files
+
+The paperclip beside the composer opens the system's file dialog
+(several at once), and files dropped anywhere on the channel are attached
+too. Each is uploaded at once and waits above the composer as a chip
+(name, then its size once uploaded; ✕ takes it back) until the next
+message or reply in that channel takes it; Enter waits for uploads still
+going. Files larger than 10 MB are refused before they are read.
+
+Under a message, pictures (PNG, JPEG, GIF, WebP) show at their own size up
+to 360 × 280, fitted to the column, laid out from the size the server
+measured before they arrive; clicking one opens it large over the window
+(Esc or a click closes it). Other files are cards with their name, size and
+a save button, which asks where (the Downloads folder first). Files come
+through the SDK's media cache (`<profile>.media` beside the sign-in), which
+signing out deletes.
+
 ## Checking it without a person
 
 `BABEL_SCRIPT` drives the window with `gpui_md3e::script` (the gallery's
@@ -155,13 +172,16 @@ BABEL_SCRIPT="wait 1500; click 34 50; wait 600; type 音ゲー部; key enter; wa
   cargo run -p babel-desktop -- --profile alice
 ```
 
+`drop X Y <path>` drops a file onto the window as if dragged from another
+app (attaching it, over a channel).
+
 Coordinates are the window's logical pixels. Screenshots are of the whole
 screen in its own pixels, so convert with the window's origin and scale
 (`MD3E_SCRIPT_DEBUG=1` prints the viewport and scale factor).
 
 ## Not yet
 
-- Attachments, and a guild's own emoji (both need uploads).
+- A guild's own emoji (next), and pasting images from the clipboard.
 - Who reacted with an emoji, and skin tones in the picker.
 - Creating categories and moving channels between them from the UI
   (categories made elsewhere are listed).

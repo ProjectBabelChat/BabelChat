@@ -76,9 +76,15 @@ pub fn cache_path(dir: &Path, profile: &str) -> PathBuf {
     dir.join(format!("{profile}.cache.json"))
 }
 
-/// Forgets the sign-in and its cache.
+/// Where the profile's sessions keep downloaded files (a directory).
+pub fn media_cache_path(dir: &Path, profile: &str) -> PathBuf {
+    dir.join(format!("{profile}.media"))
+}
+
+/// Forgets the sign-in, its cache and its downloaded files.
 pub fn remove(dir: &Path, profile: &str) -> io::Result<bool> {
     let _ = fs::remove_file(cache_path(dir, profile));
+    let _ = fs::remove_dir_all(media_cache_path(dir, profile));
     let path = path(dir, profile);
     match fs::remove_file(&path) {
         Ok(()) => Ok(true),

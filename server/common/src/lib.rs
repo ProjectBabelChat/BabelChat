@@ -116,6 +116,7 @@ pub enum Role {
     MessageCell,
     TranslationCell,
     Engine,
+    Media,
     Edge,
     /// Operators' tools (moving guilds, for instance).
     Admin,
@@ -124,12 +125,13 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 8] = [
+    pub const ALL: [Role; 9] = [
         Role::Account,
         Role::Directory,
         Role::MessageCell,
         Role::TranslationCell,
         Role::Engine,
+        Role::Media,
         Role::Edge,
         Role::Admin,
         Role::Tenant,
@@ -142,6 +144,7 @@ impl Role {
             Role::MessageCell => "message-cell",
             Role::TranslationCell => "translation-cell",
             Role::Engine => "engine",
+            Role::Media => "media",
             Role::Edge => "edge",
             Role::Admin => "admin",
             Role::Tenant => "tenant",

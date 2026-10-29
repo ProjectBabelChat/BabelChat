@@ -137,3 +137,16 @@ channels needed:
 | Typing, which nothing should keep | A log entry like any other (`typing`), not forwarded by the outbox and trimmed with the log |
 | New events | More `kind` values with one optional payload field each (`guild_info`, `reaction`, `typing`), as before |
 | Room for a guild's own emoji later | `emoji: string`, with `custom:<id>` reserved in its doc comment; no union type needed |
+
+## Phase 7 (attachments)
+
+No TYML changes. Files sent with messages, on a new Media service
+(`types/media.tyml`), needed:
+
+| Need | How |
+|---|---|
+| File contents, which TYML has no type for | Routes written by hand next to the generated ones (`POST /media/upload`, `GET /media/…` on Edges; `PUT`/`GET /media/blobs` on Media services), described in the TYML files' comments, like the WebSocket gateway; what they answer is a TYML type (`Attachment`, `Blob`, `ApiError`/`MediaError` as JSON). Base64 strings in JSON would have worked with no route of our own, at a third more bytes and whole files in memory |
+| A file's kind (attachment now, emoji later) deciding who may read it | An enum (`BlobKind`) in the stored record |
+| Fields added to stored and public types (a message's files; a message's files to delete) | Optional fields (`attachments: [Attachment]?`, `DeletedMessage.attachments: [string]?`); the public `Message.attachments` is required and the Edge fills in an empty list, as for reactions |
+| Where a file is, without a lookup | Its ID (`media-0.3f9c…`), a string, as invite codes carry their guild |
+| Pages of files oldest first, for maintenance | `after: string?` cursor and `next: string?`, as in `export_guild` |

@@ -7,6 +7,7 @@
 use babel_api_account::types::AccountError;
 use babel_api_directory::types::DirectoryError;
 use babel_api_edge::types as public;
+use babel_api_media::types::MediaError;
 use babel_api_message_cell::types as cell;
 use babel_api_translation_cell::types as translation;
 
@@ -164,6 +165,34 @@ pub fn message(message: &cell::Message, reader: &str) -> public::Message {
                 me: reaction.user_ids.iter().any(|user| user == reader),
             })
             .collect(),
+        attachments: message
+            .attachments
+            .iter()
+            .flatten()
+            .map(|file| attachment(&message.guild_id, &message.channel_id, file))
+            .collect(),
+    }
+}
+
+/// A message's file, with where to download it (`media.rs`).
+pub fn attachment(guild: &str, channel: &str, file: &cell::Attachment) -> public::Attachment {
+    public::Attachment {
+        id: file.id.clone(),
+        name: file.name.clone(),
+        content_type: file.content_type.clone(),
+        size: file.size,
+        width: file.width,
+        height: file.height,
+        url: format!("/media/{guild}/{channel}/{}", file.id),
+    }
+}
+
+pub fn media_error(error: MediaError) -> public::ApiError {
+    match error {
+        MediaError::NotFound => public::ApiError::NotFound,
+        MediaError::InvalidRequest => public::ApiError::InvalidRequest,
+        MediaError::LimitExceeded => public::ApiError::LimitExceeded,
+        MediaError::Unavailable => public::ApiError::Unavailable,
     }
 }
 

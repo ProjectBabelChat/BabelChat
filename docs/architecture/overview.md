@@ -23,6 +23,7 @@
                          ├─▶ Account           login, tokens, settings (closed in production)
                          ├─▶ Directory         guild -> cells, user -> guilds
                          ├─▶ Message Cell × N  guilds, channels, members, original messages
+                         ├─▶ Media × N         uploaded files
                          └─▶ Translation Cell × N
                                  │  translations, context, language policy
                                  ▼
@@ -35,6 +36,7 @@
 | [Directory](directory.md) | placement table, membership index | small; replicate |
 | [Message Cell](message-cell.md) | a set of guilds | adding cells, moving guilds |
 | [Translation Cell](translation-cell.md) | translations of a set of spaces | adding cells |
+| [Media](media.md) | uploaded files | adding services (new files go to them) |
 | [Translation Engine](translation-engine.md) | nothing | adding replicas |
 
 On the other side of the Edge, the [client SDK](client.md) keeps a session

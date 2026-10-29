@@ -1,4 +1,4 @@
-# A production-like BabelChat cluster on eight virtual machines: every
+# A production-like BabelChat cluster on nine virtual machines: every
 # service apart, with a standby for every store (docs/deployment.md).
 #
 # 1. Create the machines (Debian, x86-64, your SSH key added for root) and
@@ -54,6 +54,11 @@
         address = "45.77.134.197";
         wireguardAddress = "10.8.0.7";
       };
+      # The Media service: uploaded files (61 GB disk).
+      media = {
+        address = "149.28.31.252";
+        wireguardAddress = "10.8.0.8";
+      };
     };
 
     account = {
@@ -92,6 +97,12 @@
         standby = "spare";
         plan = "paid3";
       };
+    };
+
+    # Uploaded files, in the store's blob files.
+    media.media-0 = {
+      machine = "media";
+      standby = "cell-a";
     };
 
     engines.engine-0 = {

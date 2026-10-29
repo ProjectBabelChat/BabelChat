@@ -18,11 +18,11 @@ use axum::{
         Query, State,
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
-use babel_api_edge::types::{Claim, EventBatch, JwtValidator};
+use babel_api_edge::types::{Claim, EventBatch};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
@@ -50,12 +50,7 @@ async fn upgrade(
     Query(resume): Query<Resume>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let claim = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .and_then(|token| edge.validate::<Claim>(token).ok());
-    let Some(claim) = claim else {
+    let Some(claim) = edge.bearer(&headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     // Same answer as a poll for someone else's session.

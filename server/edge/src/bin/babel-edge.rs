@@ -8,8 +8,11 @@
 //! TLS in front, at a load balancer or a reverse proxy). Everything behind
 //! it is called over mutual TLS. Tokens are verified with `pki/token.pub`.
 
+use std::sync::Arc;
+
 use babel_common::Role;
 use babel_edge::{Cluster, Edge, EdgeConfig};
+use babel_media::Blobs;
 use babel_net::{Node, NodeArgs};
 use clap::Parser;
 use jsonwebtoken::DecodingKey;
@@ -45,6 +48,10 @@ async fn main() -> anyhow::Result<()> {
             directory: node.directory()?,
             message_cells: node.message_cells()?.into_iter().collect(),
             translation_cells: node.translation_cells()?,
+            media: babel_media::connect(&node)?
+                .into_iter()
+                .map(|(name, media)| (name, media as Arc<dyn Blobs>))
+                .collect(),
         },
         EdgeConfig {
             token_keys,
@@ -57,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(edge = %node.identity, %address, url = %node.service.url, "serving clients");
     let router = babel_api_edge::router(edge.clone())
-        .merge(edge.websocket_router())
+        .merge(edge.routes())
         .route_layer(axum::middleware::from_fn(babel_net::prometheus::track));
     axum::serve(listener, router).await?;
     Ok(())

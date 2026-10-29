@@ -80,6 +80,13 @@ const TARGETS: &[(&str, &str, &str, Kind)] = &[
         "babel-api-translation-cell-client",
         Kind::Client,
     ),
+    ("media.tyml", "media", "babel-api-media", Kind::Server),
+    (
+        "media.tyml",
+        "media-client",
+        "babel-api-media-client",
+        Kind::Client,
+    ),
 ];
 
 fn main() -> ExitCode {

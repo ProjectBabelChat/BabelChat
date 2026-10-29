@@ -78,10 +78,10 @@ MD3E_PAGE=3 MD3E_SCRIPT="move 474 335; down; wait 90; shot /tmp/press.png; up; q
 ```
 
 Commands: `move X Y`, `down`, `up`, `click X Y [count]`, `key <keystroke>`,
-`type <text>`, `scroll <lines>`, `wait <ms>`, `shot <png>` (runs `grim`),
-`quit`. Events are dispatched into the gallery window only. The driver is
-`gpui_md3e::script`, so apps built on gpui-md3e can script themselves the
-same way.
+`type <text>`, `scroll <lines>`, `drop X Y <path>` (a file dropped from
+another app), `wait <ms>`, `shot <png>` (runs `grim`), `quit`. Events are
+dispatched into the gallery window only. The driver is `gpui_md3e::script`,
+so apps built on gpui-md3e can script themselves the same way.
 
 ## Known gaps
 

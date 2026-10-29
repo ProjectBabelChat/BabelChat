@@ -30,6 +30,7 @@ babel-api-account.workspace = true
 babel-api-account-client.workspace = true
 babel-api-directory.workspace = true
 babel-api-directory-client.workspace = true
+babel-api-media-client.workspace = true
 babel-api-message-cell.workspace = true
 babel-api-message-cell-client.workspace = true
 babel-api-translation-cell.workspace = true

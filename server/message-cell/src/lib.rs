@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! state change + log entry (+ outbox entry)
-//!        │            │              └─▶ outbox worker ─▶ Translation Cell, Directory
+//!        │            │              └─▶ outbox worker ─▶ Translation Cell, Directory, Media
 //!        │            └─▶ poll_events ─▶ Edges ─▶ clients
 //!        └─▶ reads (get_guild, get_messages)
 //! ```
@@ -27,12 +27,13 @@ use std::{
 
 use async_trait::async_trait;
 use babel_api_directory::types::Directory;
+use babel_api_media::types::Media;
 use babel_api_message_cell::types::{
-    Ban, Channel, ChannelKind, ChannelUpdate, DeletedMessage, Guild, GuildEvent, GuildEventBatch,
-    GuildEventKind, GuildExport, GuildImport, GuildSnapshot, GuildUpdate, Invite, Member, Message,
-    MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
-    NotificationSettings, NotifyLevel, Permission, Reaction, ReactionChange, ReadState, Role,
-    Typing,
+    Attachment, Ban, Channel, ChannelKind, ChannelUpdate, DeletedMessage, Guild, GuildEvent,
+    GuildEventBatch, GuildEventKind, GuildExport, GuildImport, GuildSnapshot, GuildUpdate, Invite,
+    Member, Message, MessageCellError, MessageEdit, NewChannel, NewGuild, NewInvite, NewMessage,
+    NewUpload, NotificationSettings, NotifyLevel, Permission, Reaction, ReactionChange, ReadState,
+    Role, Typing,
 };
 use babel_api_translation_cell::types::TranslationCell;
 use babel_common::{
@@ -43,11 +44,12 @@ use parking_lot::Mutex;
 pub use records::TABLES;
 use records::{
     BANS, CHANNELS, GUILD_TABLES, GUILDS, GuildRecord, INVITES, LOG, MEMBERS, MESSAGES, NOTIFY,
-    OUTBOX, OutboxEntry, READS, channel_key, guild_key, invite_key, log_key, member_key,
-    message_key, message_prefix, outbox_key, read_key, read_prefix,
+    OUTBOX, OutboxEntry, READS, UPLOADS, Upload, channel_key, guild_key, invite_key, log_key,
+    member_key, message_key, message_prefix, outbox_key, read_key, read_prefix, upload_key,
+    upload_prefix,
 };
 use tokio::sync::{Notify, OwnedMutexGuard};
-pub use trim::LOG_RETENTION;
+pub use trim::{LOG_RETENTION, UPLOADS_KEPT};
 
 const MAX_NAME_CHARS: usize = 100;
 const MAX_TOPIC_CHARS: usize = 1000;
@@ -58,6 +60,10 @@ const MAX_MENTIONS: usize = 20;
 const MAX_CHANNEL_SETTINGS: usize = 500;
 /// Different emoji on one message.
 const MAX_REACTIONS: usize = 20;
+/// Files sent with one message.
+const MAX_ATTACHMENTS: usize = 10;
+/// Files a member may have uploaded and not sent yet, per guild.
+const MAX_UPLOADS: usize = 50;
 /// Messages read when recounting a member's mentions after an ack.
 const RECOUNT_LIMIT: usize = 1000;
 
@@ -91,6 +97,14 @@ fn check_text(text: &str, max: usize) -> CellResult<()> {
         return Err(MessageCellError::InvalidRequest);
     }
     Ok(())
+}
+
+/// A message's text, which may be empty when files go with it.
+fn check_message_text(text: &str, attachments: usize) -> CellResult<()> {
+    if attachments > 0 && text.trim().is_empty() {
+        return Ok(());
+    }
+    check_text(text, MAX_TEXT_CHARS)
 }
 
 /// Members named with `@name` in `text`. Names are unique and hold no
@@ -173,6 +187,9 @@ pub(crate) struct Inner {
     pub(crate) store: Arc<dyn KvStore>,
     /// Translation Cells by name; each guild records which one it uses.
     pub(crate) translation_cells: HashMap<String, Arc<dyn TranslationCell>>,
+    /// Media services by name; an attachment's ID begins with the one
+    /// holding it.
+    pub(crate) media: HashMap<String, Arc<dyn Media>>,
     /// Set once the Directory exists (it also needs the Message Cells).
     pub(crate) directory: OnceLock<Arc<dyn Directory>>,
     pub(crate) outbox_signal: Notify,
@@ -192,6 +209,7 @@ impl MessageCell {
     pub fn open(
         store: Arc<dyn KvStore>,
         translation_cells: HashMap<String, Arc<dyn TranslationCell>>,
+        media: HashMap<String, Arc<dyn Media>>,
     ) -> Result<Self, StoreError> {
         let last = store.scan(Scan::prefix(OUTBOX, &[]).reverse().limit(1))?;
         let next_outbox = last
@@ -203,6 +221,7 @@ impl MessageCell {
         let inner = Arc::new(Inner {
             store,
             translation_cells,
+            media,
             directory: OnceLock::new(),
             outbox_signal: Notify::new(),
             locks: Mutex::default(),
@@ -226,6 +245,12 @@ impl MessageCell {
     /// few minutes, to [`LOG_RETENTION`]). Returns how many entries went.
     pub async fn trim_logs(&self, retention: std::time::Duration) -> Result<usize, StoreError> {
         self.inner.trim_logs(retention).await
+    }
+
+    /// Forgets uploads nobody sent within `kept` now (it also happens every
+    /// few minutes, after [`UPLOADS_KEPT`]). Returns how many went.
+    pub fn expire_uploads(&self, kept: std::time::Duration) -> Result<usize, StoreError> {
+        self.inner.expire_uploads(kept)
     }
 }
 
@@ -1090,8 +1115,68 @@ impl Inner {
         self.commit(batch, &record)
     }
 
+    async fn add_upload(&self, new: NewUpload) -> CellResult<()> {
+        let guild = new.guild_id.clone();
+        let _guard = self.lock_writable(&guild).await?;
+        self.authorize(&guild, &new.user_id, Permission::SendMessages)?;
+        let channel = self.channel(&guild, &new.channel_id)?;
+        if channel.kind == ChannelKind::Category {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let pending = self
+            .store
+            .scan(Scan::prefix(UPLOADS, &upload_prefix(&guild, &new.user_id)).limit(MAX_UPLOADS))
+            .map_err(storage)?;
+        if pending.len() >= MAX_UPLOADS {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let mut batch = Batch::new();
+        batch.put_value(
+            UPLOADS,
+            upload_key(&guild, &new.user_id, &new.attachment.id),
+            &Upload {
+                channel_id: channel.id,
+                attachment: new.attachment,
+                uploaded_at: now_ms(),
+            },
+        );
+        self.store.write(batch).map_err(storage)
+    }
+
+    /// The member's uploads to the channel named by `ids`, which sending
+    /// takes: deleted in `batch`.
+    fn take_uploads(
+        &self,
+        batch: &mut Batch,
+        guild: &str,
+        user: &str,
+        channel: &str,
+        ids: &[String],
+    ) -> CellResult<Vec<Attachment>> {
+        if ids.len() > MAX_ATTACHMENTS {
+            return Err(MessageCellError::InvalidRequest);
+        }
+        let mut attachments = Vec::<Attachment>::new();
+        for id in ids {
+            let key = upload_key(guild, user, id);
+            let upload = self
+                .store
+                .get_value::<Upload>(UPLOADS, &key)
+                .map_err(storage)?
+                .filter(|upload| upload.channel_id == channel)
+                .ok_or(MessageCellError::InvalidRequest)?;
+            if attachments.iter().any(|attachment| &attachment.id == id) {
+                return Err(MessageCellError::InvalidRequest);
+            }
+            batch.delete(UPLOADS, key);
+            attachments.push(upload.attachment);
+        }
+        Ok(attachments)
+    }
+
     async fn send_message(&self, new: NewMessage) -> CellResult<Message> {
-        check_text(&new.text, MAX_TEXT_CHARS)?;
+        let ids = new.attachments.clone().unwrap_or_default();
+        check_message_text(&new.text, ids.len())?;
         let guild = new.guild_id.clone();
         let _guard = self.lock_writable(&guild).await?;
         let member = self.authorize(&guild, &new.user_id, Permission::SendMessages)?;
@@ -1099,6 +1184,8 @@ impl Inner {
         if channel.kind == ChannelKind::Category {
             return Err(MessageCellError::InvalidRequest);
         }
+        let mut batch = Batch::new();
+        let attachments = self.take_uploads(&mut batch, &guild, &new.user_id, &channel.id, &ids)?;
         let reply_author = new
             .reply_to
             .as_ref()
@@ -1130,10 +1217,10 @@ impl Inner {
             created_at: now,
             edited_at: None,
             reactions: None,
+            attachments: (!attachments.is_empty()).then_some(attachments),
         };
         channel.last_message_id = Some(message.id.clone());
 
-        let mut batch = Batch::new();
         batch.put_value(MESSAGES, message_key(&guild, &channel.id, id), &message);
         batch.put_value(CHANNELS, channel_key(&guild, &channel.id), &channel);
         // Writing in a channel reads it.
@@ -1254,6 +1341,12 @@ impl Inner {
                 deleted: Some(DeletedMessage {
                     channel_id: channel,
                     message_id,
+                    attachments: message.attachments.map(|attachments| {
+                        attachments
+                            .into_iter()
+                            .map(|attachment| attachment.id)
+                            .collect()
+                    }),
                 }),
                 ..event(GuildEventKind::MessageDeleted)
             },
@@ -1580,6 +1673,10 @@ impl babel_api_message_cell::types::MessageCell for MessageCell {
         self.inner
             .delete_channel(guild_id, channel_id, user_id)
             .await
+    }
+
+    async fn add_upload(&self, body: NewUpload) -> CellResult<()> {
+        self.inner.add_upload(body).await
     }
 
     async fn send_message(&self, body: NewMessage) -> CellResult<Message> {

@@ -1,0 +1,104 @@
+// Media API (internal)
+//
+// A Media service keeps the files people upload: attachments of messages
+// (and, later, a guild's emoji). It is never reachable from the internet;
+// Edges pass files on after checking who may send or see them, and
+// Message Cells tell it which files messages took in and which went.
+//
+// File contents do not fit TYML: two routes next to the generated ones
+// carry them (Edges only):
+//
+//   PUT /media/blobs?guild_id=&channel_id=&kind=&uploader=&name=
+//       body: the file -> Blob (JSON); MediaError as JSON with 400
+//   GET /media/blobs/<guild_id>/<channel_id or "-">/<id>
+//       -> the file (Content-Type, Content-Length)
+//
+// Blob IDs begin with the name of the Media service that holds them
+// ("media-0.3f9c…"), so anyone holding one knows where to ask. Every
+// blob records when it was uploaded, and `list_blobs` walks them by that
+// time: what maintenance needs to free space.
+//
+// See docs/architecture/media.md.
+
+enum BlobKind {
+    /// A file sent with a message, seen by the guild's members.
+    "attachment"
+    /// A guild's own emoji, usable and seen in every guild (not yet).
+    "emoji"
+}
+
+type Blob {
+    /// "<media service>.<random>".
+    id: string
+    guild_id: string
+    /// The channel an attachment was sent in; absent for emoji.
+    channel_id: string?
+    kind: BlobKind
+    uploader: string
+    /// As the uploader named it.
+    name: string
+    /// Read from the file itself, never taken from the uploader:
+    /// `image/png`, `image/jpeg`, `image/gif`, `image/webp`, a few
+    /// others, else `application/octet-stream`.
+    content_type: string
+    size: int
+    /// Of images.
+    width: int?
+    height: int?
+    created_at: int
+    /// When a message took it in. Blobs nothing took in within two days
+    /// are deleted.
+    attached_at: int?
+}
+
+type BlobRef {
+    guild_id: string
+    channel_id: string?
+    id: string
+}
+
+type BlobRefs {
+    blobs: [BlobRef]
+}
+
+type BlobPage {
+    blobs: [Blob]
+    /// Pass as `after` for the next page; absent on the last.
+    next: string?
+}
+
+type MediaUsage {
+    blobs: int
+    bytes: int
+}
+
+enum MediaError {
+    "not_found"
+    "invalid_request"
+    /// The file is larger than the service takes (10 MB).
+    "limit_exceeded"
+    "unavailable"
+}
+
+interface Media {
+    function get_blob(guild_id: string, channel_id: string?, id: string) -> Blob throws MediaError
+
+    /// Messages took these in: they stay until deleted. Unknown blobs are
+    /// skipped; marking twice changes nothing.
+    function attach_blobs(@body: BlobRefs) throws MediaError
+
+    /// Unknown blobs are skipped.
+    function delete_blobs(@body: BlobRefs) throws MediaError
+
+    /// Every blob of a channel (a deleted channel or thread).
+    function delete_channel(guild_id: string, channel_id: string) throws MediaError
+
+    /// Every blob of a guild (a deleted guild).
+    function delete_guild(guild_id: string) throws MediaError
+
+    /// Blobs uploaded before `before` (ms since the epoch), oldest first,
+    /// `kind` only if given. For maintenance tools.
+    function list_blobs(before: int, kind: BlobKind?, after: string?, limit: int) -> BlobPage throws MediaError
+
+    function get_usage() -> MediaUsage throws MediaError
+}

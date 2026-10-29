@@ -172,13 +172,24 @@ impl Node {
         args: &StoreArgs,
         tables: &[babel_store::Table],
     ) -> anyhow::Result<Arc<RocksStore>> {
+        self.open_store_with_blobs(args, tables, &[])
+    }
+
+    /// Like [`Self::open_store`], with `blob_tables` (among `tables`)
+    /// holding files (`RocksStore::open_with_blobs`).
+    pub fn open_store_with_blobs(
+        &self,
+        args: &StoreArgs,
+        tables: &[babel_store::Table],
+        blob_tables: &[babel_store::Table],
+    ) -> anyhow::Result<Arc<RocksStore>> {
         let data = args
             .data
             .clone()
             .unwrap_or_else(|| PathBuf::from("data").join(&self.identity.name));
         std::fs::create_dir_all(&data)?;
         let store = Arc::new(
-            RocksStore::open(&data, tables)
+            RocksStore::open_with_blobs(&data, tables, blob_tables)
                 .with_context(|| format!("opening {}", data.display()))?,
         );
         if let Some(dir) = &args.backup_dir {

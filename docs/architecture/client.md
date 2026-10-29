@@ -170,7 +170,8 @@ records URL from `FXTRANSLATE_RECORDS_URL`, and the files can be put in
 
 `babel_sdk::profile` keeps one sign-in per profile name in
 `~/.config/babelchat/<profile>.json` (mode 0600), with the session cache
-next to it (`<profile>.cache.json`). Every app on the machine shares them:
+and the downloaded files next to it (`<profile>.cache.json`,
+`<profile>.media/`). Every app on the machine shares them:
 a profile signed in from the terminal client opens in the desktop app, and
 the other way round.
 
@@ -239,6 +240,24 @@ translation can arrive before its message (the Edge follows the two logs
 separately). State is keyed by message ID and revision, so duplicates are
 dropped and early translations wait for their message.
 
+## Files
+
+- **Sending.** `upload(channel, name, bytes)` puts a file on the server
+  for the user's next message in that channel (within a day; at most
+  `MAX_UPLOAD_BYTES`, 10 MB, checked before anything is sent) and returns
+  its `Attachment`. `send_with(channel, text, reply_to, files)` sends up to
+  10 of them with the message, whose text may then be empty; each upload
+  goes with one message only.
+- **Showing.** Messages carry `attachments`: name, type (read from the file
+  by the server), size, and an image's width and height, so a client lays
+  it out before the image arrives. A message of files alone shows as it is
+  (nothing to translate).
+- **Downloading.** `download(file)` returns its bytes. With
+  `SessionConfig::media_cache` (a directory), downloaded files are kept by
+  ID (a file never changes under its ID), at most 256 MB, the least
+  recently written going first; `forget_cache` deletes them with the rest.
+  Downloads are for the guild's members (`Api(NotFound)` otherwise).
+
 ## The cache
 
 With `SessionConfig::cache` set to a file, the session keeps its state
@@ -273,4 +292,6 @@ on.
 - Mirroring the device models, and updating them when new versions ship.
 - Push notifications for devices that are not connected.
 - Who reacted with an emoji (the server knows; the public API gives counts).
-- A guild's own emoji, usable in other guilds too (they need image uploads).
+- A guild's own emoji, usable in other guilds too (next, on the Media
+  service).
+- Upload progress (an upload is one request).

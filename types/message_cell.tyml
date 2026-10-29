@@ -58,6 +58,19 @@ type Member {
     joined_at: int
 }
 
+/// A file sent with a message. Its contents are on a Media service.
+type Attachment {
+    /// "<media service>.<random>": where the file is comes first.
+    id: string
+    name: string
+    /// Read from the file by the Media service.
+    content_type: string
+    size: int
+    /// Of images.
+    width: int?
+    height: int?
+}
+
 /// Everyone who reacted to a message with one emoji.
 type Reaction {
     /// A Unicode emoji. Room is left for a guild's own emoji as
@@ -91,6 +104,8 @@ type Message {
     /// In the order first used. Reacting changes neither `rev` nor
     /// `edited_at`. Absent on messages stored before reactions existed.
     reactions: [Reaction]?
+    /// Files sent with it, in the order given. Edits keep them.
+    attachments: [Attachment]?
 }
 
 /// How far one member has read one channel.
@@ -171,6 +186,9 @@ type NewMessage {
     author_locale: string?
     text: string
     reply_to: string?
+    /// Uploads of this member in this channel (`add_upload`), at most 10;
+    /// with any, `text` may be empty.
+    attachments: [string]?
 }
 
 type GuildUpdate {
@@ -219,6 +237,17 @@ type NewInvite {
 type DeletedMessage {
     channel_id: string
     message_id: string
+    /// Its attachments' IDs, for the outbox to delete them.
+    attachments: [string]?
+}
+
+/// A file a member put on a Media service, to send with their next message
+/// in the channel. Kept for a day.
+type NewUpload {
+    guild_id: string
+    channel_id: string
+    user_id: string
+    attachment: Attachment
 }
 
 /// One member added or took back one reaction.
@@ -390,6 +419,10 @@ interface MessageCell {
     /// Managers; for a thread, its creator too. A channel's threads and
     /// messages go with it; a category's channels stay, outside it.
     function delete_channel(guild_id: string, channel_id: string, user_id: string) throws MessageCellError
+
+    /// Records a file the Edge put on a Media service for the member, who
+    /// must be allowed to write in the channel. Sending a message takes it.
+    function add_upload(@body: NewUpload) throws MessageCellError
 
     function send_message(@body: NewMessage) -> Message throws MessageCellError
 

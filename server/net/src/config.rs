@@ -25,6 +25,10 @@
 //! name = "engine-0"
 //! url = "https://10.8.0.5:7140"
 //!
+//! [[media]]                         # optional; without one, no files
+//! name = "media-0"
+//! url = "https://10.8.0.7:7130"
+//!
 //! [[edge]]                          # url: where clients reach it
 //! name = "edge-0"
 //! url = "http://203.0.113.10:7000"
@@ -80,6 +84,8 @@ pub struct Cluster {
     #[serde(default)]
     pub engine: Vec<Service>,
     #[serde(default)]
+    pub media: Vec<Service>,
+    #[serde(default)]
     pub edge: Vec<Service>,
 }
 
@@ -130,6 +136,7 @@ impl Cluster {
                 .map(|s| (Role::TranslationCell, s)),
         )
         .chain(self.engine.iter().map(|s| (Role::Engine, s)))
+        .chain(self.media.iter().map(|s| (Role::Media, s)))
         .chain(self.edge.iter().map(|s| (Role::Edge, s)))
     }
 

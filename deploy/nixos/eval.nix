@@ -55,6 +55,7 @@ let
     directory = place "directory" description.cluster.directory;
     messageCells = lib.mapAttrs place description.cluster.messageCells;
     translationCells = lib.mapAttrs place description.cluster.translationCells;
+    media = lib.mapAttrs place (description.cluster.media or { });
   };
 
   # Every service that keeps data, with its machine and standby.
@@ -63,7 +64,7 @@ let
     (cluster.directory // { name = "directory"; })
   ]
   ++ lib.mapAttrsToList (name: service: service // { inherit name; }) (
-    cluster.messageCells // cluster.translationCells
+    cluster.messageCells // cluster.translationCells // cluster.media
   );
 
   nixos =

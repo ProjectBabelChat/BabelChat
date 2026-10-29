@@ -289,6 +289,30 @@ async fn reactions_lines_and_renames_as_typed() {
     bob.type_line("/unreact #1 👍").await;
     alice.wait_for("#general #1 (no reactions)").await;
 
+    // Files go with the next message, or alone; whoever reads saves them.
+    let files = tempfile::tempdir().unwrap();
+    let notes = files.path().join("notes.txt");
+    std::fs::write(&notes, "bring a capo").unwrap();
+    alice
+        .type_line(&format!("/attach {}", notes.display()))
+        .await;
+    assert!(
+        alice
+            .recent()
+            .contains("📎 notes.txt (12 B): goes with your next message")
+    );
+    alice.type_line("/send").await;
+    bob.wait_for("#2 alice: \n      📎 notes.txt (12 B)").await;
+    let saved = files.path().join("saved");
+    std::fs::create_dir(&saved).unwrap();
+    bob.type_line(&format!("/download #2 {}", saved.display()))
+        .await;
+    bob.wait_for("Saved ").await;
+    assert_eq!(
+        std::fs::read_to_string(saved.join("notes.txt")).unwrap(),
+        "bring a capo"
+    );
+
     // Renaming needs the owner; deleting needs the name typed.
     bob.type_line("/rename lounge").await;
     bob.wait_for("! the server refused").await;

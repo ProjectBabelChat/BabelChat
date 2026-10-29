@@ -3,7 +3,7 @@
 use babel_sdk::{ChannelKind, ChatMessage, GuildView, Shown};
 use chrono::{DateTime, Local, TimeZone as _};
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, IntoElement, SharedString, Window, div, list, px};
+use gpui::{AnyElement, Context, ExternalPaths, IntoElement, SharedString, Window, div, list, px};
 use gpui_md3e::prelude::*;
 
 use super::{ChatView, Compose, Dialog};
@@ -140,12 +140,18 @@ impl ChatView {
             body = body.child(messages);
         }
 
+        // Files dropped anywhere on the channel are attached.
+        let dropping = colors.primary_container.opacity(0.35);
         div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(dropping))
+            .on_drop(
+                cx.listener(|this, paths: &ExternalPaths, _, cx| this.on_drop_files(paths, cx)),
+            )
             .child(header)
             .child(body)
             .child(self.render_composer(cx))
@@ -201,6 +207,10 @@ impl ChatView {
             );
         }
 
+        if let Some(uploads) = self.render_uploads(cx) {
+            column = column.child(uploads);
+        }
+
         let composer = self.composer.clone();
         // A line kept for it, so the composer does not jump.
         let typing = div()
@@ -218,6 +228,13 @@ impl ChatView {
                     .flex_row()
                     .items_end()
                     .gap_3()
+                    .child(
+                        div().pb(px(8.0)).child(
+                            IconButton::new("attach", Icon::AttachFile)
+                                .size(ButtonSize::Medium)
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_files(cx))),
+                        ),
+                    )
                     .child(div().flex_1().min_w_0().child(self.composer.clone()))
                     // Level with the composer's last line as it grows.
                     .child(
@@ -341,15 +358,18 @@ impl ChatView {
         } else {
             chat.display.text.clone()
         };
-        content = content.child(
-            div()
-                .md_type(TypeRole::BodyLarge, cx)
-                .text_color(colors.on_surface)
-                .child(SelectableText::new(
-                    SharedString::from(format!("message-text-{id}")),
-                    body,
-                )),
-        );
+        // Files alone have no text.
+        if !body.is_empty() {
+            content = content.child(
+                div()
+                    .md_type(TypeRole::BodyLarge, cx)
+                    .text_color(colors.on_surface)
+                    .child(SelectableText::new(
+                        SharedString::from(format!("message-text-{id}")),
+                        body,
+                    )),
+            );
+        }
         if settings.show_original && chat.display.is_translated() && !show_original {
             content = content.child(
                 div()
@@ -363,6 +383,9 @@ impl ChatView {
         }
         if let Some(meta) = self.translation_meta(&chat, show_original, cx) {
             content = content.child(meta);
+        }
+        if !message.attachments.is_empty() {
+            content = content.child(self.render_attachments(&id, &message.attachments, cx));
         }
         if let Some(threads) = self.thread_links(&channel, &id, cx) {
             content = content.child(threads);

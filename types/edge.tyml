@@ -240,6 +240,24 @@ type LanguagePolicyUpdate {
 
 // ---- Messages --------------------------------------------------------------
 
+/// A file sent with a message.
+type Attachment {
+    id: string
+    name: string
+    /// Read from the file by the server, not taken from the sender:
+    /// `image/png`, `image/jpeg`, `image/gif`, `image/webp`, a few
+    /// others, else `application/octet-stream`.
+    content_type: string
+    size: int
+    /// Of images.
+    width: int?
+    height: int?
+    /// Where to download it on this server: `GET` with the token, like the
+    /// API. Images come back as themselves, anything else as a download
+    /// (`Content-Disposition: attachment`).
+    url: string
+}
+
 /// One emoji people reacted with.
 type Reaction {
     /// A Unicode emoji. Later also `custom:<id>`, a guild's own emoji
@@ -268,6 +286,8 @@ type Message {
     /// In the order first used. Reacting changes neither `rev` nor
     /// `edited_at`.
     reactions: [Reaction]
+    /// In the order sent. Edits keep them.
+    attachments: [Attachment]
 }
 
 type Translation {
@@ -301,6 +321,9 @@ type NewMessage {
     /// `@name` notifies that member.
     text: string
     reply_to: string?
+    /// IDs of the user's uploads to this channel (`POST /media/upload`),
+    /// at most 10; with any, `text` may be empty.
+    attachments: [string]?
 }
 
 type MessageEdit {
@@ -502,6 +525,16 @@ interface Guilds {
     authed function put_notification_settings(@claim: Claim, @body: NotificationSettings) -> NotificationSettings throws ApiError
 }
 
+/// Files go up and down outside the JSON API, with the same token
+/// (`Authorization: Bearer`):
+///
+///   POST /media/upload?guild_id=&channel_id=&name=   body: the file
+///       -> Attachment (JSON). Up to 10 MB (`limit_exceeded`); the user
+///       must be allowed to write in the channel. Send it within a day.
+///   GET  <Attachment.url>  -> the file, for the guild's members.
+///
+/// Errors are ApiError as JSON with 400, like the API's (401 without a
+/// valid token).
 interface Messages {
     authed function send_message(@claim: Claim, @body: NewMessage) -> MessageView throws ApiError
 

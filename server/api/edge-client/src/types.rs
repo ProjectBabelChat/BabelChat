@@ -298,6 +298,9 @@ pub struct NewMessage {
     /// `@name` notifies that member.
     pub text: String,
     pub reply_to: Option<String>,
+    /// IDs of the user's uploads to this channel (`POST /media/upload`),
+    /// at most 10; with any, `text` may be empty.
+    pub attachments: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -325,6 +328,8 @@ pub struct Message {
     /// In the order first used. Reacting changes neither `rev` nor
     /// `edited_at`.
     pub reactions: Vec<Reaction>,
+    /// In the order sent. Edits keep them.
+    pub attachments: Vec<Attachment>,
 }
 
 /// One emoji people reacted with.
@@ -336,6 +341,25 @@ pub struct Reaction {
     pub count: i64,
     /// The user is among them.
     pub me: bool,
+}
+
+/// A file sent with a message.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Attachment {
+    pub id: String,
+    pub name: String,
+    /// Read from the file by the server, not taken from the sender:
+    /// `image/png`, `image/jpeg`, `image/gif`, `image/webp`, a few
+    /// others, else `application/octet-stream`.
+    pub content_type: String,
+    pub size: i64,
+    /// Of images.
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    /// Where to download it on this server: `GET` with the token, like the
+    /// API. Images come back as themselves, anything else as a download
+    /// (`Content-Disposition: attachment`).
+    pub url: String,
 }
 
 /// Translations of one message, filtered to what the user needs: their own
@@ -996,6 +1020,16 @@ impl Guilds {
         }
     }
 }
+/// Files go up and down outside the JSON API, with the same token
+/// (`Authorization: Bearer`):
+///
+///   POST /media/upload?guild_id=&channel_id=&name=   body: the file
+///       -> Attachment (JSON). Up to 10 MB (`limit_exceeded`); the user
+///       must be allowed to write in the channel. Send it within a day.
+///   GET  <Attachment.url>  -> the file, for the guild's members.
+///
+/// Errors are ApiError as JSON with 400, like the API's (401 without a
+/// valid token).
 pub struct Messages {
     pub url: String,
     pub client: reqwest::Client,

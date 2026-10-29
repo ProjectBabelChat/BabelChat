@@ -199,6 +199,30 @@ pub struct ChannelUpdate {
     pub topic: Option<String>,
 }
 
+/// A file a member put on a Media service, to send with their next message
+/// in the channel. Kept for a day.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct NewUpload {
+    pub guild_id: String,
+    pub channel_id: String,
+    pub user_id: String,
+    pub attachment: Attachment,
+}
+
+/// A file sent with a message. Its contents are on a Media service.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Attachment {
+    /// "<media service>.<random>": where the file is comes first.
+    pub id: String,
+    pub name: String,
+    /// Read from the file by the Media service.
+    pub content_type: String,
+    pub size: i64,
+    /// Of images.
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct NewMessage {
     pub guild_id: String,
@@ -209,6 +233,9 @@ pub struct NewMessage {
     pub author_locale: Option<String>,
     pub text: String,
     pub reply_to: Option<String>,
+    /// Uploads of this member in this channel (`add_upload`), at most 10;
+    /// with any, `text` may be empty.
+    pub attachments: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -236,6 +263,8 @@ pub struct Message {
     /// In the order first used. Reacting changes neither `rev` nor
     /// `edited_at`. Absent on messages stored before reactions existed.
     pub reactions: Option<Vec<Reaction>>,
+    /// Files sent with it, in the order given. Edits keep them.
+    pub attachments: Option<Vec<Attachment>>,
 }
 
 /// Everyone who reacted to a message with one emoji.
@@ -342,6 +371,8 @@ pub enum GuildEventKind {
 pub struct DeletedMessage {
     pub channel_id: String,
     pub message_id: String,
+    /// Its attachments' IDs, for the outbox to delete them.
+    pub attachments: Option<Vec<String>>,
 }
 
 /// One member added or took back one reaction.
@@ -426,6 +457,9 @@ pub trait MessageCell: Send + Sync + 'static {
     /// Managers; for a thread, its creator too. A channel's threads and
     /// messages go with it; a category's channels stay, outside it.
     async fn delete_channel(&self, guild_id: String, channel_id: String, user_id: String) -> Result<(), MessageCellError>;
+    /// Records a file the Edge put on a Media service for the member, who
+    /// must be allowed to write in the channel. Sending a message takes it.
+    async fn add_upload(&self, body: NewUpload) -> Result<(), MessageCellError>;
     async fn send_message(&self, body: NewMessage) -> Result<Message, MessageCellError>;
     async fn edit_message(&self, body: MessageEdit) -> Result<Message, MessageCellError>;
     async fn delete_message(&self, guild_id: String, channel_id: String, message_id: String, user_id: String) -> Result<(), MessageCellError>;

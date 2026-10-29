@@ -14,9 +14,11 @@ path = "src/bin/babel-message-cell.rs"
 anyhow.workspace = true
 async-trait.workspace = true
 babel-api-directory.workspace = true
+babel-api-media.workspace = true
 babel-api-message-cell.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
+babel-media.workspace = true
 babel-net.workspace = true
 babel-store.workspace = true
 clap.workspace = true
@@ -28,6 +30,8 @@ metrics.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+futures.workspace = true
 emojis.workspace = true
 babel-engine.workspace = true
 babel-translation-cell.workspace = true

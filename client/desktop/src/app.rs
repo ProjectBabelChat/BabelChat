@@ -58,6 +58,9 @@ impl BabelApp {
             cache: config
                 .cache
                 .then(|| profile::cache_path(&config.dir, &config.profile)),
+            media_cache: config
+                .cache
+                .then(|| profile::media_cache_path(&config.dir, &config.profile)),
             transport: config.transport,
             ..SessionConfig::default()
         };

@@ -12,6 +12,7 @@ under `types/`, one file per boundary. Rust code is generated from them into
 | `message_cell.tyml` | Edge, Directory → Message Cell | `babel-api-message-cell` | `babel-api-message-cell-client` |
 | `translation_cell.tyml` | platforms → Translation Cell | `babel-api-translation-cell` | `babel-api-translation-cell-client` |
 | `engine.tyml` | Translation Cell → Engine | `babel-api-engine` | `babel-api-engine-client` |
+| `media.tyml` | Edge, Message Cells, operators → Media | `babel-api-media` | `babel-api-media-client` |
 
 A server crate contains the types, one async trait per `interface`, and an
 Axum router (`router(api)`, `serve(api, address)`). A service implements the
@@ -47,6 +48,12 @@ ones:
   in-process and over HTTP. Clients can also take the gateway's batches
   over a WebSocket (`/gateway/ws`), which carries the same `EventBatch`
   type and is documented on the `Gateway` interface.
+- **File contents.** TYML has no type for bytes, and JSON would carry
+  them as base64 a third larger. Files go up and down through routes next
+  to the generated ones, written by hand (`POST /media/upload` and
+  `GET /media/<guild>/<channel>/<id>` on Edges, `PUT`/`GET /media/blobs` on
+  Media services), documented in the TYML file's comments; what they
+  answer (`Attachment`, `Blob`, the errors) is a TYML type.
 - **Maps.** Arrays of pairs (`[LanguageAlias]`) where order matters or keys
   are user input.
 - **Timestamps.** `int` milliseconds since the Unix epoch.

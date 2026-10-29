@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, Direction, Env, IteratorMode, Options, WriteBatch,
+    Cache, ColumnFamilyDescriptor, DB, DBCompressionType, Direction, Env, IteratorMode, Options,
+    WriteBatch,
     backup::{BackupEngine, BackupEngineOptions, RestoreOptions},
     checkpoint::Checkpoint,
 };
@@ -15,7 +16,7 @@ const WAL_LIMIT_MB: u64 = 4 * 1024;
 
 /// RocksDB with one column family per table.
 pub struct RocksStore {
-    db: DB,
+    pub(crate) db: DB,
 }
 
 /// One write of the primary, as a standby replays it.
@@ -36,21 +37,50 @@ fn options() -> Options {
     options
 }
 
+/// A table whose values are files (attachments): values from 64 KB up go to
+/// blob files beside the LSM tree, which compactions do not rewrite, and
+/// are reclaimed as their keys are deleted. They are stored uncompressed:
+/// images and archives already are.
+fn blob_table_options() -> Options {
+    let mut options = Options::default();
+    options.set_enable_blob_files(true);
+    options.set_min_blob_size(64 * 1024);
+    options.set_blob_file_size(256 * 1024 * 1024);
+    options.set_blob_compression_type(DBCompressionType::None);
+    options.set_enable_blob_gc(true);
+    options.set_blob_gc_age_cutoff(0.25);
+    options
+}
+
 impl RocksStore {
     /// Opens (or creates) the store in `path` with the given tables.
     pub fn open(path: &Path, tables: &[Table]) -> Result<Self> {
-        let families = tables
-            .iter()
-            .map(|table| ColumnFamilyDescriptor::new(*table, Options::default()));
+        Self::open_with_blobs(path, tables, &[])
+    }
+
+    /// Like [`Self::open`]; the tables in `blob_tables` hold files, kept in
+    /// blob files (see `blob_table_options`).
+    pub fn open_with_blobs(path: &Path, tables: &[Table], blob_tables: &[Table]) -> Result<Self> {
+        let families = tables.iter().map(|table| {
+            let options = if blob_tables.contains(table) {
+                blob_table_options()
+            } else {
+                Options::default()
+            };
+            ColumnFamilyDescriptor::new(*table, options)
+        });
         let db = DB::open_cf_descriptors(&options(), path, families)?;
         Ok(Self { db })
     }
 
     /// Opens a store with whatever tables it has, for replaying a primary's
     /// writes into it (a standby does not know which service it copies).
+    /// Each table keeps the options the primary gave it (its checkpoint
+    /// carries them), blob files included.
     pub fn open_existing(path: &Path) -> Result<Self> {
-        let families = DB::list_cf(&options(), path)?;
-        let db = DB::open_cf(&options(), path, families)?;
+        let (_, families) =
+            Options::load_latest(path, Env::new()?, true, Cache::new_lru_cache(8 << 20))?;
+        let db = DB::open_cf_descriptors(&options(), path, families)?;
         Ok(Self { db })
     }
 

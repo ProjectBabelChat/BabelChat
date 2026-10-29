@@ -9,21 +9,23 @@
 //! ```text
 //! guild_created,
 //! guild_updated    ─▶ Translation Cell put_space
-//! guild_deleted    ─▶ Translation Cell delete_space
+//! guild_deleted    ─▶ Translation Cell delete_space, every Media service delete_guild
 //! channel_created,
 //! channel_updated  ─▶ Translation Cell put_node
-//! channel_deleted  ─▶ Translation Cell delete_node
+//! channel_deleted  ─▶ Translation Cell delete_node, every Media service delete_channel
 //! member_joined    ─▶ Directory add_membership
 //! member_left,
 //! member_removed   ─▶ Directory remove_membership
-//! message_created  ─▶ Translation Cell ingest
+//! message_created  ─▶ Translation Cell ingest (unless it has no text),
+//!                     Media attach_blobs (its attachments)
 //! message_edited   ─▶ Translation Cell ingest (new revision)
-//! message_deleted  ─▶ Translation Cell delete_message
+//! message_deleted  ─▶ Translation Cell delete_message, Media delete_blobs
 //! ```
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use babel_api_directory::types::DirectoryError;
+use babel_api_media::types::{BlobRef, BlobRefs, Media, MediaError};
 use babel_api_message_cell::types::{ChannelKind, GuildEvent, GuildEventKind};
 use babel_api_translation_cell::types::{
     ContextNode, IngestMessage, MessageRef, NodeKind, SpaceContext, TranslationCellError,
@@ -107,6 +109,78 @@ fn directory_outcome(result: Result<(), DirectoryError>, entry: &OutboxEntry) ->
     }
 }
 
+fn media_outcome(result: Result<(), MediaError>, entry: &OutboxEntry) -> Delivery {
+    match result {
+        Ok(()) => Delivery::Done,
+        Err(MediaError::Unavailable) => Delivery::Retry,
+        Err(error) => {
+            tracing::warn!(?error, ?entry, "dropping an outbox entry");
+            Delivery::Done
+        }
+    }
+}
+
+/// Goes on with `next` once `first` is done: an entry is retried whole,
+/// which receivers allow.
+async fn then(first: Delivery, next: impl Future<Output = Delivery>) -> Delivery {
+    match first {
+        Delivery::Done => next.await,
+        Delivery::Retry => Delivery::Retry,
+    }
+}
+
+/// Calls every Media service: a channel's or a guild's files may be on
+/// any of them.
+async fn every_media<F, Fut>(inner: &Inner, entry: &OutboxEntry, call: F) -> Delivery
+where
+    F: Fn(Arc<dyn Media>) -> Fut,
+    Fut: Future<Output = Result<(), MediaError>>,
+{
+    for media in inner.media.values() {
+        if let Delivery::Retry = media_outcome(call(media.clone()).await, entry) {
+            return Delivery::Retry;
+        }
+    }
+    Delivery::Done
+}
+
+/// Attaches (`attach`) or deletes a message's files, on the Media services
+/// their IDs name.
+async fn message_files(
+    inner: &Inner,
+    entry: &OutboxEntry,
+    guild_id: &str,
+    channel_id: &str,
+    ids: Vec<String>,
+    attach: bool,
+) -> Delivery {
+    let mut by_media = HashMap::<&str, Vec<BlobRef>>::new();
+    for id in &ids {
+        let name = id.split_once('.').map_or("", |(name, _)| name);
+        by_media.entry(name).or_default().push(BlobRef {
+            guild_id: guild_id.to_string(),
+            channel_id: Some(channel_id.to_string()),
+            id: id.clone(),
+        });
+    }
+    for (name, blobs) in by_media {
+        let Some(media) = inner.media.get(name) else {
+            tracing::warn!(media = name, "attachment on an unknown media service");
+            continue;
+        };
+        let refs = BlobRefs { blobs };
+        let result = if attach {
+            media.attach_blobs(refs).await
+        } else {
+            media.delete_blobs(refs).await
+        };
+        if let Delivery::Retry = media_outcome(result, entry) {
+            return Delivery::Retry;
+        }
+    }
+    Delivery::Done
+}
+
 async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
     let (event, record) = match (
         inner
@@ -146,7 +220,15 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             )
         }
         GuildEventKind::GuildDeleted => {
-            outcome(translation_cell.delete_space(guild_id).await, entry)
+            let deleted = outcome(translation_cell.delete_space(guild_id.clone()).await, entry);
+            then(
+                deleted,
+                every_media(inner, entry, |media| {
+                    let guild_id = guild_id.clone();
+                    async move { media.delete_guild(guild_id).await }
+                }),
+            )
+            .await
         }
         GuildEventKind::ChannelCreated | GuildEventKind::ChannelUpdated => {
             let Some(channel) = event.channel else {
@@ -183,10 +265,20 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             let Some(channel) = event.channel else {
                 return Delivery::Done;
             };
-            outcome(
-                translation_cell.delete_node(guild_id, channel.id).await,
+            let deleted = outcome(
+                translation_cell
+                    .delete_node(guild_id.clone(), channel.id.clone())
+                    .await,
                 entry,
+            );
+            then(
+                deleted,
+                every_media(inner, entry, |media| {
+                    let (guild_id, channel_id) = (guild_id.clone(), channel.id.clone());
+                    async move { media.delete_channel(guild_id, channel_id).await }
+                }),
             )
+            .await
         }
         GuildEventKind::MemberJoined => {
             let (Some(member), Some(directory)) = (event.member, inner.directory.get()) else {
@@ -210,6 +302,20 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             let Some(message) = event.message else {
                 return Delivery::Done;
             };
+            if event.kind == GuildEventKind::MessageCreated
+                && let Some(attachments) = &message.attachments
+            {
+                let ids = attachments.iter().map(|file| file.id.clone()).collect();
+                let attached =
+                    message_files(inner, entry, &guild_id, &message.channel_id, ids, true).await;
+                if let Delivery::Retry = attached {
+                    return Delivery::Retry;
+                }
+            }
+            // Files alone: nothing to translate.
+            if message.text.trim().is_empty() {
+                return Delivery::Done;
+            }
             outcome(
                 translation_cell
                     .ingest(IngestMessage {
@@ -237,16 +343,22 @@ async fn deliver(inner: &Inner, entry: &OutboxEntry) -> Delivery {
             let Some(deleted) = event.deleted else {
                 return Delivery::Done;
             };
-            outcome(
+            let forgotten = outcome(
                 translation_cell
                     .delete_message(MessageRef {
-                        space: guild_id,
-                        conversation: deleted.channel_id,
+                        space: guild_id.clone(),
+                        conversation: deleted.channel_id.clone(),
                         id: deleted.message_id,
                     })
                     .await,
                 entry,
+            );
+            let ids = deleted.attachments.unwrap_or_default();
+            then(
+                forgotten,
+                message_files(inner, entry, &guild_id, &deleted.channel_id, ids, false),
             )
+            .await
         }
         // Only Edges care about these.
         GuildEventKind::ReactionAdded

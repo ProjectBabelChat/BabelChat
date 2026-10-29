@@ -89,7 +89,11 @@ pub(crate) fn plan(
             shown,
         })
     };
-    if message.author_id == me || !(view.llm || view.client_translation) {
+    // Files alone carry no text to translate.
+    if message.author_id == me
+        || message.text.trim().is_empty()
+        || !(view.llm || view.client_translation)
+    {
         return original(Shown::Original);
     }
     // Translations of an older revision do not count.
@@ -189,6 +193,7 @@ mod tests {
             created_at: 0,
             edited_at: None,
             reactions: Vec::new(),
+            attachments: Vec::new(),
         }
     }
 

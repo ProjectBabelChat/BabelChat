@@ -3,8 +3,8 @@
 use std::{sync::Arc, time::Duration};
 
 use babel_api_edge_client::types::{
-    ApiError, Auth, Credentials, Gateway, Guilds, Me, Messages, PasswordChange, Registration,
-    ThrowsOrOtherError, Token,
+    ApiError, Attachment, Auth, Credentials, Gateway, Guilds, Me, Messages, PasswordChange,
+    Registration, ThrowsOrOtherError, Token,
 };
 use parking_lot::RwLock;
 
@@ -42,6 +42,22 @@ impl From<ThrowsOrOtherError<ApiError>> for Error {
 /// Long polls wait up to 25 s on the server; give them room.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Files take as long as the line needs: 10 MB at 200 kbit/s.
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// A response of the file routes, or the error it carries (`ApiError` as
+/// JSON with 400, 401 without a valid token).
+async fn answered(response: reqwest::Result<reqwest::Response>) -> Result<reqwest::Response> {
+    let response = response.map_err(|error| Error::Transport(error.to_string()))?;
+    match response.status() {
+        status if status.is_success() => Ok(response),
+        reqwest::StatusCode::UNAUTHORIZED => Err(Error::Unauthorized),
+        status => match response.json::<ApiError>().await {
+            Ok(error) => Err(Error::Api(error)),
+            Err(_) => Err(Error::Transport(format!("the server answered {status}"))),
+        },
+    }
+}
 
 /// A signed-in user on one server. Cheap to clone.
 #[derive(Clone)]
@@ -205,6 +221,53 @@ impl Client {
         config: SessionConfig,
     ) -> Result<Session> {
         Session::connect(self.clone(), translator, config).await
+    }
+
+    /// Puts a file on the server for the user's next message in the
+    /// channel (`POST /media/upload`).
+    pub(crate) async fn upload(
+        &self,
+        guild_id: &str,
+        channel_id: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Attachment> {
+        let response = self
+            .inner
+            .http
+            .post(format!("{}/media/upload", self.inner.server))
+            .query(&[
+                ("guild_id", guild_id),
+                ("channel_id", channel_id),
+                ("name", name),
+            ])
+            .bearer_auth(self.jwt())
+            .timeout(MEDIA_TIMEOUT)
+            .body(bytes)
+            .send()
+            .await;
+        let response = answered(response).await?;
+        response
+            .json()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))
+    }
+
+    /// A file at `url`, an attachment's path on this server.
+    pub(crate) async fn download(&self, url: &str) -> Result<bytes::Bytes> {
+        let response = self
+            .inner
+            .http
+            .get(format!("{}{url}", self.inner.server))
+            .bearer_auth(self.jwt())
+            .timeout(MEDIA_TIMEOUT)
+            .send()
+            .await;
+        answered(response)
+            .await?
+            .bytes()
+            .await
+            .map_err(|error| Error::Transport(error.to_string()))
     }
 
     pub(crate) fn jwt(&self) -> String {

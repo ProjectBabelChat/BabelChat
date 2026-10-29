@@ -15,9 +15,9 @@ development and small self-hosting.)
                     ▼                   ▼
                  edge-0              edge-1            public: HTTP behind the proxy
 ═════════════════════│═══════════════════│══════════ WireGuard + mutual TLS
-        ┌────────────┼───────────┬───────┴──────┬─────────────────┐
-        ▼            ▼           ▼              ▼                 ▼
-     account     directory   message-cell-N  translation-cell-N  engine-N
+        ┌────────────┼───────────┬───────┴──────┬─────────────────┬──────────┐
+        ▼            ▼           ▼              ▼                 ▼          ▼
+     account     directory   message-cell-N  translation-cell-N  engine-N   media-N
                                                    │
                                                    └─▶ egress proxy ─▶ internet
                                                        (hosted models only)
@@ -31,6 +31,7 @@ development and small self-hosting.)
 | `babel-message-cell` | `babel-message-cell` | Edges, the Directory | yes |
 | `babel-translation-cell` | `babel-translation-cell` | Edges, Message Cells, tenants | yes |
 | `babel-engine` | `babel-engine` | Translation Cells | no |
+| `babel-media` | `babel-media` | Edges, Message Cells, operators | yes (uploaded files) |
 | `babel-egress` | `babel-net` | services calling the internet | no |
 | `babel-standby` | `babel-net` | — (copies a service's store) | yes |
 | `babel-pki`, `babel-admin` | `babel-net` | operators' tools | — |
@@ -83,6 +84,10 @@ url = "https://10.8.0.4:7120"
 name = "engine-0"                 # with several, guilds choose from all their models
 url = "https://10.8.0.5:7140"
 
+[[media]]                         # optional: without one, uploads are refused
+name = "media-0"
+url = "https://10.8.0.7:7130"
+
 [[edge]]
 name = "edge-0"
 url = "http://10.8.0.6:7000"      # behind the load balancer
@@ -118,7 +123,7 @@ line with `BABEL_LOG_FORMAT=json` (`RUST_LOG` filters as usual).
 
 `deploy/nixos` deploys a cluster to NixOS machines from one description,
 `deploy/<name>/cluster.nix`: the machines, and which service runs on which.
-`deploy/vultr/cluster.nix` is a production-like example on eight virtual
+`deploy/vultr/cluster.nix` is a production-like example on nine virtual
 machines; any provider of KVM machines with one disk works the same.
 
 ```nix
@@ -140,7 +145,7 @@ per service, standby (`babelchat-standby-<name>`) and local model placed on
 it; machines with Edges get Caddy, with a Let's Encrypt certificate for
 each Edge's host name (`sslip.io` names need no DNS). Services listen on
 fixed ports (account 7101, directory 7102, message-cell-N 7110+N,
-translation-cell-N 7120+N, engine-N 7140+N, edge-N 7000+N), so any of them
+translation-cell-N 7120+N, media-N 7130+N, engine-N 7140+N, edge-N 7000+N), so any of them
 can share a machine: putting several on one is naming the same `machine`.
 
 ```sh
@@ -464,6 +469,8 @@ Every internal service answers `GET /health` to any certificate of the
 cluster, and Edges answer it in plain HTTP (for load balancers).
 `babel-admin health` asks every service of the cluster file and fails if
 one does not answer.
+`babel-admin media-usage` says how many files each Media service holds and
+their size.
 
 ## Metrics
 

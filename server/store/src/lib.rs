@@ -306,6 +306,57 @@ mod tests {
     }
 
     #[test]
+    fn blob_tables_keep_files_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary_path = dir.path().join("primary");
+        let primary = RocksStore::open_with_blobs(&primary_path, &["t", "b"], &["b"]).unwrap();
+        let file = vec![7u8; 200 * 1024];
+        let mut batch = Batch::new();
+        batch.put("b", b"f".to_vec(), file.clone());
+        batch.put("t", b"k".to_vec(), vec![1]);
+        primary.write(batch).unwrap();
+        primary
+            .db
+            .flush_cf(primary.db.cf_handle("b").unwrap())
+            .unwrap();
+        let blob_files = |path: &std::path::Path| {
+            std::fs::read_dir(path)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "blob")
+                })
+                .count()
+        };
+        assert_eq!(blob_files(&primary_path), 1);
+        assert_eq!(primary.get("b", b"f").unwrap(), Some(file.clone()));
+
+        // A standby opens it as it is, blob files included.
+        let standby_path = dir.path().join("standby");
+        primary.checkpoint(&standby_path).unwrap();
+        let standby = RocksStore::open_existing(&standby_path).unwrap();
+        assert_eq!(standby.get("b", b"f").unwrap(), Some(file));
+        let mut batch = Batch::new();
+        batch.put("b", b"g".to_vec(), vec![8u8; 100 * 1024]);
+        primary.write(batch).unwrap();
+        for update in primary
+            .updates_since(standby.latest_sequence(), 1 << 20)
+            .unwrap()
+        {
+            standby.apply(&update).unwrap();
+        }
+        standby
+            .db
+            .flush_cf(standby.db.cf_handle("b").unwrap())
+            .unwrap();
+        assert_eq!(blob_files(&standby_path), 2);
+    }
+
+    #[test]
     fn backups_restore() {
         let dir = tempfile::tempdir().unwrap();
         let backups = dir.path().join("backups");

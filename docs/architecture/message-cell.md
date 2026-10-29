@@ -22,7 +22,7 @@ Every change is one atomic batch:
 
 ```
 state change + guild log entry (+ outbox entry)
-     │                │                  └─▶ outbox worker ─▶ Translation Cell, Directory
+     │                │                  └─▶ outbox worker ─▶ Translation Cell, Directory, Media
      │                └─▶ poll_events ─▶ Edges ─▶ clients
      └─▶ reads: get_guild, get_messages
 ```
@@ -46,13 +46,13 @@ state change + guild log entry (+ outbox entry)
 | Event | Forwarded as |
 |---|---|
 | `guild_created`, `guild_updated` | Translation Cell `put_space` |
-| `guild_deleted` | Translation Cell `delete_space` |
+| `guild_deleted` | Translation Cell `delete_space`; every Media service `delete_guild` |
 | `channel_created`, `channel_updated` | Translation Cell `put_node` (threads carry their starter message) |
-| `channel_deleted` | Translation Cell `delete_node` |
+| `channel_deleted` | Translation Cell `delete_node`; every Media service `delete_channel` |
 | `member_joined` | Directory `add_membership` |
 | `member_left`, `member_removed` | Directory `remove_membership` |
-| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer) |
-| `message_deleted` | Translation Cell `delete_message` |
+| `message_created`, `message_edited` | Translation Cell `ingest` (revision = edit count; replies carry the message they answer; not for a message of files alone); for a new message's files, Media `attach_blobs` |
+| `message_deleted` | Translation Cell `delete_message`; its files, Media `delete_blobs` |
 | `reaction_added`, `reaction_removed`, `typing`, `read_state_updated`, `notifications_updated` | nothing: only Edges read them |
 
 Delivery is at least once; receivers are idempotent (`ingest` is keyed by
@@ -66,7 +66,7 @@ Roles are guild data, so permission checks live here. Phase 0 has two roles:
 
 | | owner | member |
 |---|---|---|
-| view, send messages, react, start threads, invite | ✓ | ✓ |
+| view, send messages and files, react, start threads, invite | ✓ | ✓ |
 | leave the guild | | ✓ |
 | create, rename and delete categories and channels; change the language policy | ✓ | |
 | rename and delete a thread | any | own |
@@ -107,6 +107,25 @@ harm. Emoji are Unicode emoji in their fully qualified form (`❤` is stored
 as `❤️`), checked against the Unicode list; anything else is
 `invalid_request`. A guild's own emoji would be `custom:<id>`, usable in
 other guilds too, once images can be uploaded; nothing refers to them yet.
+
+## Attachments
+
+Files themselves are on a [Media](media.md) service; a message keeps
+their records (`attachments`: ID, name, type, size, image size).
+
+- **Uploads.** The Edge stores a file on a Media service, then records it
+  here (`add_upload`) for the member, who must be allowed to write in the
+  channel: `uploads` holds it under the member for a day (at most 50 per
+  member and guild). Older ones are forgotten with the log trimming; the
+  Media service deletes their files on its own.
+- **Sending** (`send_message` with `attachments`) takes up to 10 of the
+  member's uploads to that channel, in the same write as the message, so
+  each goes with one message only. With files, the text may be empty;
+  such a message is not sent to the Translation Cell.
+- **Edits** keep the files. Deleting a message lists its files in the
+  `message_deleted` entry (`DeletedMessage.attachments`) for the outbox to
+  delete; deleting a channel or a guild deletes theirs on every Media
+  service.
 
 ## Deleting a guild
 
@@ -179,11 +198,12 @@ guilds    guild                       GuildRecord (guild, translation cell, last
                                       trimmed up to, frozen, moved, deleted)
 members   guild / user                Member
 channels  guild / channel             Channel (with its newest message id and creator)
-messages  guild / channel / id        Message (with its reactions)
+messages  guild / channel / id        Message (with its reactions and attachments)
 invites   guild / secret              Invite (expiry, uses)
 bans      guild / user                Ban
 reads     guild / user / channel      ReadState (read marker, unread mentions)
 notify    guild / user                NotificationSettings
+uploads   guild / user / attachment    Upload (a file not sent yet; a day)
 log       guild / seq                 GuildEvent
 outbox    seq                         OutboxEntry
 ```
