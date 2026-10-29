@@ -152,6 +152,7 @@ can share a machine: putting several on one is naming the same `machine`.
 deploy/nixos/deploy.sh init                # WireGuard keys, CA, certificates
 deploy/nixos/deploy.sh install core        # Debian -> NixOS (erases the disk)
 deploy/nixos/deploy.sh switch              # build here once, copy to all at once, activate one by one
+deploy/nixos/deploy.sh switch --via cell-b # the same, sending once (compressed) to cell-b, which copies on
 deploy/nixos/deploy.sh admin health        # babel-admin on the operator's machine
 deploy/nixos/deploy.sh admin signup-code --uses 5
 deploy/nixos/deploy.sh ssh core journalctl -u babelchat-account -f
@@ -178,6 +179,17 @@ Certificates); run again after an interruption, they go on.
 On the eight-machine example, `rotate ca` took 5 minutes and `rotate
 token-key` 3, every call through both Edges answering meanwhile (tokens
 from before included), and certificates of the old CA refused after.
+
+`switch` sends what changed to every machine from here, so a new server
+binary (160 MB) crosses this machine's link once per machine. Over a slow
+or metered link, `--via <machine>` sends it once, compressed by SSH (about
+60 MB), to that machine, which copies to the others over the provider's
+network. It logs in to them with this machine's SSH agent, forwarded (no
+key is left on it), checking their host keys against `secrets/known_hosts`.
+The relay keeps every machine's system, so the first `--via` through a
+machine copies more than the change. A copy stopped midway can leave a
+machine's receiving `nix-store --serve` holding a path's lock, and the
+next copy then waits: `deploy.sh ssh <machine> pkill -f 'nix-store --[s]erve'`.
 
 Data lives in `/var/lib/babelchat/<name>` (a standby keeps its copy at the
 same path on its machine) and backups in `/var/lib/babelchat-backups/<name>`

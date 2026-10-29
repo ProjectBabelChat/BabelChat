@@ -5,6 +5,9 @@
 #   deploy/nixos/deploy.sh init                 # keys and certificates, once
 #   deploy/nixos/deploy.sh install <machine>    # replace its OS with NixOS (erases it)
 #   deploy/nixos/deploy.sh switch [<machine>…]  # build, copy at once, activate in turn (all by default)
+#   deploy/nixos/deploy.sh switch --via <relay> [<machine>…]
+#                                               # the same, copying once (compressed) to
+#                                               # <relay>, which copies to the others
 #   deploy/nixos/deploy.sh admin <args…>        # babel-admin on the operator's machine
 #   deploy/nixos/deploy.sh dashboard            # Grafana at http://localhost:3000
 #   deploy/nixos/deploy.sh failover <service|machine>… [--primary-lost]
@@ -180,6 +183,54 @@ copy_machine() {
   say "Copying to $name ($address)"
   NIX_SSHOPTS="${ssh_options[*]}" nix copy --substitute-on-destination \
     --to "ssh://root@$address" "$toplevel"
+}
+
+# Puts built systems ("<name> <toplevel>" lines) on their machines through
+# <relay>, for a slow or metered link here: one compressed copy of them all
+# from here, then copies from the relay to the others, over the provider's
+# network. The relay logs in to them with this machine's SSH agent
+# (forwarded; no key is left on it) and checks their host keys against
+# secrets/known_hosts.
+relay_machines() {
+  local relay=$1 built=$2 relay_address name toplevel known targets=()
+  relay_address=$(address_of "$relay")
+  say "Copying to $relay ($relay_address), compressed"
+  # shellcheck disable=SC2046 # one path per machine
+  NIX_SSHOPTS="${ssh_options[*]} -o Compression=yes" nix copy --substitute-on-destination \
+    --to "ssh://root@$relay_address" $(awk '{ print $2 }' <<<"$built")
+  while read -r name toplevel; do
+    [ "$name" = "$relay" ] || targets+=("$name" "$(address_of "$name")" "$toplevel")
+  done <<<"$built"
+  [ ${#targets[@]} -gt 0 ] || return 0
+  say "Copying from $relay to the others"
+  known=$(base64 -w0 <"$secrets/known_hosts")
+  ssh -A "${ssh_options[@]}" "root@$relay_address" "KNOWN=$known bash -s -- ${targets[*]}" <<'RELAY'
+set -u
+known=$(mktemp -d)
+trap 'rm -rf "$known"' EXIT
+base64 -d <<<"$KNOWN" >"$known/hosts"
+export NIX_SSHOPTS="-o UserKnownHostsFile=$known/hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
+pids=()
+while [ $# -gt 0 ]; do
+  name=$1 address=$2 toplevel=$3
+  shift 3
+  # Output to a file, not a pipe, which SSH's connection sharing could
+  # keep open after the copy.
+  (
+    if nix copy --substitute-on-destination --to "ssh://root@$address" "$toplevel" \
+      </dev/null >"$known/$name.log" 2>&1; then
+      echo "[$name] copied"
+    else
+      sed "s/^/[$name] /" "$known/$name.log"
+      exit 1
+    fi
+  ) &
+  pids+=($!)
+done
+failed=0
+for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+exit $failed
+RELAY
 }
 
 # Activates a system copied to <name>, with the secrets it needs.
@@ -492,12 +543,19 @@ pki() {
 }
 
 # Switches the machines given (all by default) with what one build made:
-# copied to all at once, then activated one after another, so that the
-# services on the others answer while one restarts.
+# copied to all at once (or through a relay: `--via <machine>`), then
+# activated one after another, so that the services on the others answer
+# while one restarts.
 switch_all() {
-  local built machine toplevel failed=0 pids=()
+  local built machine toplevel failed=0 pids=() relay=
   local -A toplevel_of
+  if [ "${1:-}" = --via ]; then
+    [ $# -ge 2 ] || { echo "usage: deploy.sh switch --via <machine> [<machine>…]" >&2; exit 1; }
+    relay=$2
+    shift 2
+  fi
   load_inventory
+  [ -z "$relay" ] || address_of "$relay" >/dev/null
   [ $# -gt 0 ] || set -- $(inventory | awk '{ print $1 }')
   for machine in "$@"; do
     address_of "$machine" >/dev/null
@@ -507,14 +565,19 @@ switch_all() {
   while read -r machine toplevel; do
     toplevel_of[$machine]=$toplevel
   done <<<"$built"
-  for machine in "$@"; do
-    copy_machine "$machine" "${toplevel_of[$machine]}" </dev/null 2>&1 \
-      | sed -u "s/^/[$machine] /" &
-    pids+=($!)
-  done
-  for machine in "${pids[@]}"; do
-    wait "$machine" || failed=1
-  done
+  if [ -n "$relay" ]; then
+    relay_machines "$relay" "$(for machine in "$@"; do echo "$machine ${toplevel_of[$machine]}"; done)" \
+      </dev/null || failed=1
+  else
+    for machine in "$@"; do
+      copy_machine "$machine" "${toplevel_of[$machine]}" </dev/null 2>&1 \
+        | sed -u "s/^/[$machine] /" &
+      pids+=($!)
+    done
+    for machine in "${pids[@]}"; do
+      wait "$machine" || failed=1
+    done
+  fi
   if [ $failed = 1 ]; then
     echo "copying failed (above); nothing was activated" >&2
     exit 1
@@ -628,7 +691,7 @@ case $command in
     ssh "${ssh_options[@]}" "root@$(address_of "$name")" "$@"
     ;;
   *)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
