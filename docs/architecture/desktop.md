@@ -108,13 +108,14 @@ the guild. The picker shows the user's guilds' emoji first, the open
 guild's leading, from the reactions' smiley and from a smiley beside the
 composer, which writes the emoji at the caret.
 
-In the composer, as on Discord, typing `:` and two letters of a name
-offers up to ten emoji above it (the user's guilds' own, then Unicode
-emoji by shortcode; exact matches, then those starting with the letters,
-then the rest). Up and Down choose, Enter or Tab writes the emoji in place
-of the name, Esc closes the list, and a click takes one. A `:name:` typed
-in full (after a space, punctuation or the start, so not `10:30:`)
-becomes its emoji at once: one of the user's guilds' emoji first, as when
+In the composer, as on Discord, typing `:` and a letter of a name offers
+up to ten emoji above it (the user's guilds' own, then Unicode emoji by
+shortcode; exact matches, then those starting with the letters, then the
+rest), wherever the colon is but in a time (`10:30`), a path (`std::fmt`)
+or a code. Up and Down choose, Tab writes the emoji in place of the name,
+Esc closes the list, and a click takes one. Enter writes it once the name
+has two letters or one was chosen; after one letter it still sends, so
+`:D` stays a smiley. A `:name:` typed in full becomes its emoji at once: one of the user's guilds' emoji first, as when
 sending, then a Unicode shortcode (`:smile:` → 😄). A guild's emoji goes
 into the text as its code, which the composer shows as its picture
 (`TextField::inline_pictures`): the caret moves past it and Backspace

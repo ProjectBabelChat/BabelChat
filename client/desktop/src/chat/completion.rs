@@ -1,7 +1,11 @@
-//! Emoji in the composer, as on Discord: `:pa` offers the emoji whose names
+//! Emoji in the composer, as on Discord: `:p` offers the emoji whose names
 //! match (the user's guilds' own first, then Unicode emoji by shortcode),
 //! and a `:name:` typed in full becomes its emoji at once. A guild's emoji
 //! goes into the text as its code, which the composer shows as its picture.
+//!
+//! Enter takes the emoji offered once the name has two letters, or once one
+//! is chosen with Up or Down: after one letter it still sends, so `:D`
+//! stays a smiley. Tab takes one at any time.
 
 use std::ops::Range;
 
@@ -13,8 +17,8 @@ use gpui_md3e::prelude::*;
 use super::ChatView;
 use crate::i18n::fill;
 
-/// Letters a query needs before emoji are offered.
-const MIN_QUERY: usize = 2;
+/// Letters a name needs before Enter takes the first emoji offered.
+const ENTER_QUERY: usize = 2;
 /// Emoji offered at once.
 const SHOWN: usize = 10;
 
@@ -24,7 +28,8 @@ pub(super) struct Completion {
     range: Range<usize>,
     query: String,
     items: Vec<Suggestion>,
-    selected: usize,
+    /// The emoji Enter takes, if any.
+    selected: Option<usize>,
 }
 
 struct Suggestion {
@@ -41,20 +46,20 @@ fn name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-')
 }
 
-/// The `:name` being typed at the end of `before`, with where its colon is:
-/// a colon at the start, after a space or after punctuation (not in `10:30`,
-/// nor in a code's `<:`).
+/// The `:name` being typed at the end of `before`, with where its colon is.
+/// Not a time (`10:30`), a path (`std::fmt`) or a code's `<:`.
 fn typing_name(before: &str) -> Option<(usize, &str)> {
     let start = before.trim_end_matches(name_char).len();
     let colon = start.checked_sub(1)?;
     if !before[..start].ends_with(':') {
         return None;
     }
-    let ok = before[..colon]
-        .chars()
-        .next_back()
-        .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, ':' | '<'));
-    ok.then(|| (colon, &before[start..]))
+    let name = &before[start..];
+    let ok = before[..colon].chars().next_back().is_none_or(|c| {
+        !matches!(c, ':' | '<')
+            && !(c.is_ascii_digit() && name.starts_with(|c: char| c.is_ascii_digit()))
+    });
+    ok.then_some((colon, name))
         .filter(|(_, name)| !name.is_empty())
 }
 
@@ -128,9 +133,7 @@ impl ChatView {
             });
             return;
         }
-        let Some((start, query)) =
-            typing_name(&text[..caret]).filter(|(_, query)| query.chars().count() >= MIN_QUERY)
-        else {
+        let Some((start, query)) = typing_name(&text[..caret]) else {
             self.completion = None;
             cx.notify();
             return;
@@ -138,12 +141,12 @@ impl ChatView {
         let query = query.to_lowercase();
         let selected = match &self.completion {
             Some(open) if open.query == query => open.selected,
-            _ => 0,
+            _ => (query.chars().count() >= ENTER_QUERY).then_some(0),
         };
         let items = self.suggestions(&query, cx);
         self.completion = (!items.is_empty()).then(|| Completion {
             range: start..caret,
-            selected: selected.min(items.len() - 1),
+            selected: selected.map(|selected| selected.min(items.len() - 1)),
             query,
             items,
         });
@@ -197,17 +200,29 @@ impl ChatView {
                 .is_some_and(|typed| typed[1..].eq_ignore_ascii_case(&open.query))
     }
 
+    /// Whether Enter takes an offered emoji.
+    pub(super) fn completion_chosen(&self, cx: &App) -> bool {
+        self.completing(cx)
+            && self
+                .completion
+                .as_ref()
+                .is_some_and(|open| open.selected.is_some())
+    }
+
     /// Up or Down in the offered emoji.
     pub(super) fn move_completion(&mut self, by: isize, cx: &mut Context<Self>) {
         if let Some(open) = &mut self.completion {
             let count = open.items.len() as isize;
-            open.selected = (open.selected as isize + by).rem_euclid(count) as usize;
+            let from = open
+                .selected
+                .map_or(if by > 0 { -1 } else { 0 }, |ix| ix as isize);
+            open.selected = Some((from + by).rem_euclid(count) as usize);
             cx.notify();
         }
     }
 
-    /// Writes the offered emoji `ix` (the selected one if None) in place of
-    /// the name typed.
+    /// Writes the offered emoji `ix` (the selected one, or the first, if
+    /// None) in place of the name typed.
     pub(super) fn accept_completion(
         &mut self,
         ix: Option<usize>,
@@ -221,7 +236,7 @@ impl ChatView {
         let Some(open) = self.completion.take() else {
             return;
         };
-        let Some(chosen) = open.items.get(ix.unwrap_or(open.selected)) else {
+        let Some(chosen) = open.items.get(ix.or(open.selected).unwrap_or(0)) else {
             return;
         };
         let text = format!("{} ", chosen.text);
@@ -310,7 +325,7 @@ impl ChatView {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.accept_completion(Some(ix), window, cx)
                 }));
-            if ix == selected {
+            if Some(ix) == selected {
                 row = row.bg(colors.secondary_container);
             }
             list = list.child(row);
@@ -328,12 +343,17 @@ mod tests {
         assert_eq!(typing_name(":pa"), Some((0, "pa")));
         assert_eq!(typing_name("hi :party_1"), Some((3, "party_1")));
         assert_eq!(typing_name("(:+1"), Some((1, "+1")));
+        assert_eq!(typing_name("yay:p"), Some((3, "p")));
+        assert_eq!(typing_name("やった:party"), Some((9, "party")));
         assert_eq!(typing_name("10:30"), None);
+        assert_eq!(typing_name("10:am"), Some((2, "am")));
+        assert_eq!(typing_name("std::fmt"), None);
         assert_eq!(typing_name("<:party"), None);
         assert_eq!(typing_name("hi :"), None);
         assert_eq!(typing_name("hi"), None);
         assert_eq!(typed_name("so :smile:"), Some((3, "smile")));
         assert_eq!(typed_name("so :smile"), None);
+        assert_eq!(typed_name("so:smile:"), Some((2, "smile")));
         assert_eq!(typed_name("at 10:30:"), None);
     }
 

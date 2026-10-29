@@ -86,7 +86,8 @@ const MIN_CONFIDENCE: f64 = 0.5;
 
 /// The detected language and whether detection is confident about it.
 fn detect_language(text: &str) -> Option<(&'static str, bool)> {
-    let info = whatlang::detect(text)?;
+    // An emoji's name would read as Latin words of no language in particular.
+    let info = whatlang::detect(&babel_emoji::words(text))?;
     let code = info.lang().code();
     ISO_639_3_TO_1
         .iter()
@@ -160,6 +161,12 @@ mod tests {
             "zh-Hant-TW"
         );
         assert_eq!(source_language(&n, chinese, None, &merged), "zh-CN");
+
+        // Emoji names are not words.
+        assert_eq!(
+            source_language(&n, "鍵を渡します！:rage:", Some("en-US"), &merged),
+            "ja-JP"
+        );
 
         // Too short to detect: trust the author.
         assert_eq!(source_language(&n, "ok", Some("ko-KR"), &merged), "ko-KR");

@@ -137,6 +137,18 @@ pub fn only_emoji(text: &str) -> bool {
         })
 }
 
+/// `text` without its codes and `:name:`s: the words, for telling their
+/// language (`鍵を渡します！:rage:` is not Danish).
+pub fn words(text: &str) -> String {
+    let mut words = String::with_capacity(text.len());
+    for segment in segments(text) {
+        if let Segment::Text(text) = segment {
+            fill_run(text, &mut |_| Some(String::new()), &mut words);
+        }
+    }
+    words
+}
+
 /// Replaces each `:name:` outside codes for which `code_for` gives a code.
 pub fn fill(text: &str, mut code_for: impl FnMut(&str) -> Option<String>) -> String {
     let mut filled = String::with_capacity(text.len());
@@ -244,6 +256,10 @@ mod tests {
         assert_eq!(
             filled,
             format!("at 10:30: {PARTY} and :cake: {PARTY} :{PARTY}:")
+        );
+        assert_eq!(
+            words(&format!("鍵を渡します！:rage: {PARTY}")),
+            "鍵を渡します！ "
         );
     }
 

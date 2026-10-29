@@ -283,7 +283,7 @@ impl ChatView {
     }
 
     /// The composer. While emoji are offered for a name being typed, Up,
-    /// Down, Enter and Tab choose among them.
+    /// Down, Enter and Tab choose among them (see `completion.rs`).
     fn render_composer_field(&mut self, cx: &mut Context<Self>) -> AnyElement {
         use gpui_md3e::components::text_field::{Down, Submit, Up};
         div()
@@ -302,7 +302,7 @@ impl ChatView {
                 }
             }))
             .capture_action(cx.listener(|this, _: &Submit, window, cx| {
-                if this.completing(cx) {
+                if this.completion_chosen(cx) {
                     this.accept_completion(None, window, cx);
                     cx.stop_propagation();
                 }

@@ -1311,6 +1311,7 @@ dependencies = [
  "babel-api-engine",
  "babel-api-translation-cell",
  "babel-common",
+ "babel-emoji",
  "babel-engine",
  "babel-lang",
  "babel-net",

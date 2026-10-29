@@ -80,7 +80,10 @@ the result (`LanguageView`) so clients need no tables.
 ## Source language detection
 
 Text tells the language but rarely the region, and for Chinese not even the
-script. `detect.rs` combines detection (whatlang) with the author's locale:
+script. `detect.rs` combines detection (whatlang) with the author's locale.
+Emoji names (`:rage:`) and codes are left out of what whatlang reads: a
+Latin name in Japanese text would make it read as Latin text (Danish, for
+`鍵を渡します！:rage:`).
 
 - detection agrees with the author's language → the author's locale
   (a Taiwanese author's Chinese is `zh-Hant-TW`);

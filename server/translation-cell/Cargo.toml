@@ -16,6 +16,7 @@ async-trait.workspace = true
 babel-api-engine.workspace = true
 babel-api-translation-cell.workspace = true
 babel-common.workspace = true
+babel-emoji.workspace = true
 babel-engine.workspace = true
 babel-lang.workspace = true
 babel-net.workspace = true
